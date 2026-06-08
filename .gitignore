@@ -94,3 +94,17 @@ cypress/videos/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# ------------------------------------------
+# SQLite database files
+# ------------------------------------------
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+
+# ------------------------------------------
+# Test result files
+# ------------------------------------------
+TestResults/
+*.trx

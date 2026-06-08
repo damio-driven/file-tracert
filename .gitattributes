@@ -1,0 +1,22 @@
+# Let git decide line endings automatically based on platform
+* text=auto
+
+# Force LF for POSIX scripts and configs
+*.sh text eol=lf
+*.bash text eol=lf
+Makefile text eol=lf
+
+# Force CRLF for Windows-specific files
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary files - no line ending conversion
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.db binary
+*.db-wal binary
+*.db-shm binary
