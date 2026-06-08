@@ -1,0 +1,96 @@
+# ==========================================
+# Gitignore per .NET 10 + Angular CLI
+# ==========================================
+
+# ------------------------------------------
+# Configurazione .NET / C# / Visual Studio
+# ------------------------------------------
+## Output di Build (Compilazione)
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+
+## Cache e Impostazioni Utente di Visual Studio
+.vs/
+*.[Cc]sproj.user
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+## JetBrains Rider / ReSharper
+.idea/
+*.sln.imbcl
+_ReSharper*/
+*.[Re]Sharper
+*.DotSettings.user
+
+## OmniSharp & Roslyn
+.omnisharp/
+.roslyn/
+
+## Visual Studio Code (Vengono mantenuti i file di configurazione condivisi utili)
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.history/
+
+## Log di MSBuild
+*.log
+*.binlog
+
+## File di Segreti e Configurazioni Locali
+# Evita di pushare password, stringhe di connessione locali o token di sviluppo
+appsettings.Development.json
+appsettings.Local.json
+*.secrets.json
+.microsoft.dotnet.secretmanager/
+
+# ------------------------------------------
+# Configurazione Angular / Node.js
+# ------------------------------------------
+## Dipendenze NPM / Yarn
+node_modules/
+jspm_packages/
+.pnpm-store/
+
+## Cache e Output di Angular
+.angular/
+dist/
+tmp/
+out-of-memory.log
+
+## Log di pacchetti ed errori frontend
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+## Test & Coverage
+/coverage
+/.nyc_output
+.protractor-xml-reports/
+Visual Studio Test Results/
+cypress/screenshots/
+cypress/videos/
+
+# ------------------------------------------
+# File di Sistema (OS Specific)
+# ------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
