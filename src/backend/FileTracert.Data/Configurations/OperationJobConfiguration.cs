@@ -1,0 +1,45 @@
+using FileTracert.Data.Entities;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+
+namespace FileTracert.Data.Configurations;
+
+public sealed class OperationJobConfiguration : IEntityTypeConfiguration<OperationJob>
+{
+    public void Configure(EntityTypeBuilder<OperationJob> builder)
+    {
+        builder.ToTable("OperationJobs");
+        builder.HasKey(x => x.Id);
+
+        builder.Property(x => x.Type).HasConversion<string>();
+        builder.Property(x => x.State).HasConversion<string>();
+        builder.Property(x => x.BlockReason).HasConversion<string>();
+
+        builder.HasOne(x => x.SourceVolume)
+            .WithMany()
+            .HasForeignKey(x => x.SourceVolumeId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        builder.HasOne(x => x.TargetVolume)
+            .WithMany()
+            .HasForeignKey(x => x.TargetVolumeId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        builder.HasOne(x => x.DependsOnJob)
+            .WithMany()
+            .HasForeignKey(x => x.DependsOnJobId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        builder.HasMany(x => x.Items)
+            .WithOne(x => x.Job)
+            .HasForeignKey(x => x.JobId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        builder.HasMany(x => x.LedgerEntries)
+            .WithOne(x => x.Job)
+            .HasForeignKey(x => x.JobId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        builder.HasIndex(x => x.SequenceOrder);
+    }
+}
