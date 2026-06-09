@@ -8,6 +8,8 @@ namespace FileTracert.Data.Configurations;
 
 public sealed class AppSettingsConfiguration : IEntityTypeConfiguration<AppSettings>
 {
+    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.General);
+
     public void Configure(EntityTypeBuilder<AppSettings> builder)
     {
         builder.ToTable("AppSettings");
@@ -36,8 +38,8 @@ public sealed class AppSettingsConfiguration : IEntityTypeConfiguration<AppSetti
             .HasColumnName(columnName)
             .HasColumnType("TEXT")
             .HasConversion(
-                v => JsonSerializer.Serialize(v, (JsonSerializerOptions?)null),
-                v => JsonSerializer.Deserialize<List<string>>(v, (JsonSerializerOptions?)null) ?? new List<string>())
+                v => JsonSerializer.Serialize(v, SerializerOptions),
+                v => JsonSerializer.Deserialize<List<string>>(v, SerializerOptions) ?? new List<string>())
             .Metadata.SetValueComparer(comparer);
     }
 }
