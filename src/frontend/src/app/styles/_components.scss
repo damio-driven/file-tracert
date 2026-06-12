@@ -1,0 +1,111 @@
+// Reusable component-level classes that aren't worth a wrapper component:
+// the dense data table, buttons, the page heading and the stale badge. Used by
+// every feature so the chrome stays identical screen to screen.
+
+@use 'mixins' as *;
+
+// ---- Page heading ----
+.ft-h1 {
+  font-size: 21px;
+  font-weight: 600;
+  letter-spacing: -0.4px;
+}
+
+.ft-sub {
+  color: var(--txt-dim);
+  font-size: 13px;
+  margin: var(--sp-1) 0 var(--sp-6);
+  max-width: 70ch;
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+
+// ---- Data table ----
+.ft-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+
+  th {
+    text-align: left;
+    padding: 10px 17px;
+    border-bottom: 1px solid var(--line);
+    @include eyebrow;
+  }
+
+  td {
+    padding: 12px 17px;
+    border-bottom: 1px solid var(--line-soft);
+    vertical-align: middle;
+  }
+
+  tbody tr {
+    transition: background var(--t-fast);
+  }
+  tbody tr:hover {
+    background: var(--panel-2);
+  }
+  tbody tr:last-child td {
+    border-bottom: none;
+  }
+
+  // Key/value detail variant: label column fixed, dimmed.
+  &.ft-table--kv td:first-child {
+    color: var(--txt-dim);
+    width: 175px;
+    font-size: 12.5px;
+  }
+}
+
+// ---- Buttons ----
+.ft-btn {
+  border: none;
+  border-radius: var(--r-ctl);
+  padding: 9px 17px;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--t-med), border-color var(--t-med), color var(--t-med);
+
+  &:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+}
+
+.ft-btn--primary {
+  background: var(--teal);
+  color: var(--bg);
+
+  &:not(:disabled):hover {
+    background: var(--teal-bright);
+  }
+}
+
+.ft-btn--ghost {
+  background: transparent;
+  color: var(--txt-dim);
+  border: 1px solid var(--line);
+
+  &:not(:disabled):hover {
+    border-color: var(--txt-faint);
+    color: var(--txt);
+  }
+}
+
+// ---- Stale estimate badge ----
+.ft-stale {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--amber);
+  font-family: var(--font-mono);
+  margin-left: 7px;
+}
+
+// ---- Staggered reveal on screen enter (degrades under reduced-motion) ----
+.ft-rise > * {
+  animation: ft-rise 0.42s var(--ease-out) backwards;
+}
+.ft-rise > *:nth-child(2) { animation-delay: 0.05s; }
+.ft-rise > *:nth-child(3) { animation-delay: 0.1s; }
+.ft-rise > *:nth-child(4) { animation-delay: 0.15s; }

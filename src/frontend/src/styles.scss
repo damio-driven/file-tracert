@@ -1,5 +1,73 @@
-/* You can add global styles to this file, and also import other style files */
-
+// Global stylesheet. Tokens/mixins/utilities first, then the dark base shell.
 @use 'styles/tokens' as *;
 @use 'styles/mixins' as *;
 @use 'styles/utilities' as *;
+@use 'styles/components' as *;
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--txt);
+  // Deep blue-black with two faint brand glows (teal top-right, lime bottom-left).
+  background:
+    radial-gradient(1200px 600px at 80% -10%, rgba(46, 196, 182, 0.06), transparent 60%),
+    radial-gradient(900px 500px at -5% 110%, rgba(168, 224, 99, 0.05), transparent 55%),
+    var(--bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+h1, h2, h3, h4 {
+  margin: 0;
+  font-weight: 600;
+  text-wrap: balance;
+}
+
+button {
+  font-family: inherit;
+}
+
+a {
+  color: var(--teal);
+  text-decoration: none;
+}
+
+:focus-visible {
+  @include focus-ring;
+}
+
+// ---- Shared keyframes ----
+@keyframes ft-rise {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes ft-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(168, 224, 99, 0.5); }
+  70% { box-shadow: 0 0 0 7px rgba(168, 224, 99, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(168, 224, 99, 0); }
+}
+
+// Reveal animations enhance an already-visible default; motion is opt-in via class.
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

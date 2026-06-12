@@ -1,1 +1,57 @@
-// Shared SCSS mixins (@mixin panel, pill, flex-center, etc.)
+// Shared SCSS mixins. Keep visual primitives here so components compose them
+// instead of redefining the same panel/pill/button chrome.
+
+@mixin flex-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+// Bordered dark container (panels, cards).
+@mixin panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-panel);
+}
+
+// Status pill in the given state hue + tinted background.
+// $glow adds the soft halo the live/running dots carry in the mockup.
+@mixin pill($color, $bg, $glow: false) {
+  background: $bg;
+  color: $color;
+
+  .ft-pill__dot {
+    background: $color;
+    @if $glow {
+      box-shadow: 0 0 6px $color;
+    }
+  }
+}
+
+// Accessible focus ring — same teal everywhere, never removed without replacement.
+@mixin focus-ring {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
+}
+
+// Thin dark scrollbar matching the mockup's main-area scrollbar.
+@mixin custom-scrollbar {
+  &::-webkit-scrollbar {
+    width: 10px;
+  }
+  &::-webkit-scrollbar-thumb {
+    background: var(--panel-3);
+    border-radius: 10px;
+    border: 2px solid var(--bg-2);
+  }
+  scrollbar-color: var(--panel-3) transparent;
+}
+
+// Uppercase tracked micro-label (table headers, card keys, nav sections).
+@mixin eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--txt-faint);
+}

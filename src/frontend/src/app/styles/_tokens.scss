@@ -1,2 +1,71 @@
-// Design tokens — CSS variables (palette, spacing, typography)
-// FAD.iT brand: teal #2ec4b6, lime #a8e063
+// Design tokens — the single source of visual truth, mirrored from DESIGN.md /
+// filetracert-mockup.html. CSS custom properties so they're inspectable at runtime
+// and trivially themable later. FAD.iT brand: teal #2ec4b6, lime #a8e063.
+
+:root {
+  // ---- Surfaces (cool dark neutrals) ----
+  --bg: #0c1116;
+  --bg-2: #0f151c;
+  --panel: #141b23;
+  --panel-2: #19222c;
+  --panel-3: #1f2a36;
+  --line: #28333f;
+  --line-soft: #1e2731;
+
+  // ---- Ink ----
+  --txt: #e7eef4;
+  --txt-dim: #8997a6;
+  --txt-faint: #566373;
+
+  // ---- Brand + semantic state ----
+  --teal: #2ec4b6;
+  --teal-bright: #3ad6c7;
+  --teal-dim: rgba(46, 196, 182, 0.13);
+  --lime: #a8e063;
+  --amber: #f0a830;
+  --red: #e2596a;
+  --blue: #5aa2ff;
+
+  // Tinted state backgrounds (pills, tags) — transparency of the state hue.
+  --on-bg: rgba(168, 224, 99, 0.13);
+  --off-bg: rgba(86, 99, 115, 0.16);
+  --run-bg: rgba(90, 162, 255, 0.13);
+  --block-bg: rgba(226, 89, 106, 0.13);
+  --wait-bg: rgba(240, 168, 48, 0.13);
+
+  // ---- Radii ----
+  --r-app: 16px;
+  --r-panel: 11px;
+  --r-ctl: 9px; // nav items, buttons, inputs
+  --r-pill: 20px;
+  --r-tag: 7px;
+
+  // ---- Spacing scale (4px base) ----
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-7: 32px;
+
+  // ---- Typography ----
+  --font-sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Code", monospace;
+
+  // ---- Elevation ----
+  --shadow-app: 0 30px 80px -20px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.02) inset;
+  --shadow-pop: 0 8px 24px -10px rgba(0, 0, 0, 0.6);
+
+  // ---- Motion ----
+  --ease-out: cubic-bezier(0.2, 0.7, 0.3, 1);
+  --t-fast: 120ms;
+  --t-med: 160ms;
+
+  // ---- Z-index scale (semantic, never arbitrary) ----
+  --z-sticky: 100;
+  --z-overlay: 200;
+  --z-modal: 300;
+  --z-toast: 400;
+  --z-tooltip: 500;
+}
