@@ -15,6 +15,7 @@ public static class PlatformServiceCollectionExtensions
         services.AddSingleton<IVolumeProbe, Win32VolumeProbe>();
         services.AddSingleton<IUsnReader, NtfsUsnReader>();
         services.AddSingleton<IDirectoryEnumerator, ManagedDirectoryEnumerator>();
+        services.AddSingleton<IFileMetadataReader, ManagedFileMetadataReader>();
         return services;
     }
 }
