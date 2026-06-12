@@ -29,6 +29,9 @@ public sealed class FileTracertAppFactory : WebApplicationFactory<global::Progra
     public int VolumeSyncIntervalSeconds { get; set; } = 1;
     public int ScanPollIntervalSeconds { get; set; } = 1;
 
+    /// <summary>Hosting environment; flip to "Production" to assert dev-only wiring is absent.</summary>
+    public string EnvironmentName { get; set; } = "Development";
+
     /// <summary>Drop a worker so a focused test isn't disturbed by the other one's DB writes.</summary>
     public bool DisableVolumeSync { get; set; }
     public bool DisableScan { get; set; }
@@ -37,6 +40,7 @@ public sealed class FileTracertAppFactory : WebApplicationFactory<global::Progra
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
+        builder.UseEnvironment(EnvironmentName);
         builder.UseSetting("FileTracert:DatabasePath", _dbPath);
         builder.UseSetting("FileTracert:VolumeSyncIntervalSeconds", VolumeSyncIntervalSeconds.ToString());
         builder.UseSetting("FileTracert:ScanPollIntervalSeconds", ScanPollIntervalSeconds.ToString());
