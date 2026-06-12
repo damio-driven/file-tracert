@@ -48,7 +48,15 @@ var app = builder.Build();
 await app.Services.GetRequiredService<DatabaseInitializer>().InitializeAsync(CancellationToken.None);
 
 app.UseMiddleware<TokenAuthMiddleware>();
+
+// Serve the built Angular SPA (wwwroot) as static assets; client routes fall back
+// to a token-injected index.html. Dev uses ng-serve + proxy instead, fetching the
+// token from the Development-only endpoint below.
+app.UseStaticFiles();
+
 app.MapControllers();
+app.MapDevTokenEndpoint();
+app.MapSpaFallback();
 
 app.Run();
 

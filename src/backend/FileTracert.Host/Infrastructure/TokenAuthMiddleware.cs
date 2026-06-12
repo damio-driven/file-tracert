@@ -25,6 +25,14 @@ public sealed class TokenAuthMiddleware
 
     public async Task InvokeAsync(HttpContext context)
     {
+        if (!RequiresAuth(context.Request.Path))
+        {
+            // Static SPA assets, the injected index.html and the dev-only token
+            // endpoint are served same-origin without the token (the HTML carries it).
+            await _next(context);
+            return;
+        }
+
         var expected = _tokenAccessor.Token;
         if (string.IsNullOrEmpty(expected) || !IsValid(context, expected))
         {
@@ -33,6 +41,22 @@ public sealed class TokenAuthMiddleware
         }
 
         await _next(context);
+    }
+
+    /// <summary>
+    /// The data API (<c>/api/*</c>) and the diagnostic <c>/health</c> require the
+    /// token. The dev token bootstrap endpoint is the one <c>/api</c> exception:
+    /// the SPA must reach it before it has a token.
+    /// </summary>
+    private static bool RequiresAuth(PathString path)
+    {
+        if (path.StartsWithSegments("/api/dev/token", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase)
+            || path.StartsWithSegments("/health", StringComparison.OrdinalIgnoreCase);
     }
 
     private bool IsValid(HttpContext context, string expected)
