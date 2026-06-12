@@ -1,0 +1,53 @@
+:host {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: var(--r-pill);
+  white-space: nowrap;
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+:host(.ft-pill--on) {
+  background: var(--on-bg);
+  color: var(--lime);
+  .dot { background: var(--lime); box-shadow: 0 0 6px var(--lime); }
+}
+:host(.ft-pill--done) {
+  background: var(--on-bg);
+  color: var(--lime);
+  .dot { background: var(--lime); }
+}
+:host(.ft-pill--off) {
+  background: var(--off-bg);
+  color: var(--txt-dim);
+  .dot { background: var(--txt-faint); }
+}
+:host(.ft-pill--run) {
+  background: var(--run-bg);
+  color: var(--blue);
+  .dot { background: var(--blue); box-shadow: 0 0 6px var(--blue); }
+}
+:host(.ft-pill--block) {
+  background: var(--block-bg);
+  color: var(--red);
+  .dot { background: var(--red); }
+}
+:host(.ft-pill--wait) {
+  background: var(--wait-bg);
+  color: var(--amber);
+  .dot { background: var(--amber); }
+}
+:host(.ft-pill--idle) {
+  background: var(--panel-3);
+  color: var(--txt-dim);
+  .dot { background: var(--txt-faint); }
+}

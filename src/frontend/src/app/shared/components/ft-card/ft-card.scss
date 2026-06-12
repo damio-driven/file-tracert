@@ -1,0 +1,52 @@
+@use 'styles/mixins' as *;
+
+:host {
+  @include panel;
+  position: relative;
+  overflow: hidden;
+  padding: var(--sp-4);
+  display: block;
+}
+
+// Soft radial glow in the accent hue, top-right.
+:host::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 60px;
+  height: 60px;
+  background: radial-gradient(circle at top right, var(--accent), transparent 70%);
+  opacity: 0.12;
+}
+
+:host(.ft-card--teal) { --accent: var(--teal); }
+:host(.ft-card--lime) { --accent: var(--lime); }
+:host(.ft-card--blue) { --accent: var(--blue); }
+:host(.ft-card--amber) { --accent: var(--amber); }
+:host(.ft-card--red) { --accent: var(--red); }
+
+.key {
+  @include eyebrow;
+  letter-spacing: 0.7px;
+  margin-bottom: var(--sp-3);
+}
+
+.value {
+  font-size: 27px;
+  font-weight: 600;
+  letter-spacing: -0.5px;
+  line-height: 1.1;
+
+  small {
+    font-size: 13px;
+    color: var(--txt-dim);
+    font-weight: 400;
+  }
+}
+
+.meta {
+  font-size: 11.5px;
+  color: var(--txt-faint);
+  margin-top: var(--sp-2);
+}
