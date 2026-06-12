@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FileTracert — Mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0c1116; --bg-2:#0f151c; --panel:#141b23; --panel-2:#19222c; --panel-3:#1f2a36;
+    --line:#28333f; --line-soft:#1e2731;
+    --txt:#e7eef4; --txt-dim:#8997a6; --txt-faint:#566373;
+    --teal:#2ec4b6; --teal-dim:rgba(46,196,182,.13);
+    --lime:#a8e063; --amber:#f0a830; --red:#e2596a; --blue:#5aa2ff;
+    --radius:11px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    font-family:"IBM Plex Sans",sans-serif;
+    background:
+      radial-gradient(1200px 600px at 80% -10%, rgba(46,196,182,.06), transparent 60%),
+      radial-gradient(900px 500px at -5% 110%, rgba(168,224,99,.05), transparent 55%),
+      var(--bg);
+    color:var(--txt); -webkit-font-smoothing:antialiased;
+    display:flex; align-items:center; justify-content:center; min-height:100vh; padding:26px;
+  }
+  body::before{
+    content:""; position:fixed; inset:0; pointer-events:none; opacity:.025; z-index:9999;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+  .app{
+    width:100%; max-width:1180px; height:760px; background:var(--bg-2);
+    border:1px solid var(--line); border-radius:16px; overflow:hidden;
+    box-shadow:0 30px 80px -20px rgba(0,0,0,.7), 0 0 0 1px rgba(255,255,255,.02) inset;
+    display:flex; flex-direction:column;
+  }
+  /* title bar */
+  .titlebar{display:flex;align-items:center;gap:12px;padding:13px 18px;background:linear-gradient(180deg,var(--panel),var(--bg-2));border-bottom:1px solid var(--line)}
+  .logo{width:26px;height:26px;border-radius:8px;background:linear-gradient(135deg,var(--teal),var(--lime));display:flex;align-items:center;justify-content:center;font-weight:700;color:#0c1116;font-size:15px;box-shadow:0 4px 14px -3px rgba(46,196,182,.6)}
+  .brand{font-weight:600;font-size:14.5px;letter-spacing:-.2px}
+  .brand span{color:var(--txt-faint);font-weight:400;margin-left:7px;font-size:12.5px}
+  .wdots{display:flex;gap:7px;margin-left:auto}
+  .wdot{width:11px;height:11px;border-radius:50%;background:var(--line)}
+  .tray{display:flex;align-items:center;gap:9px;margin-right:16px;font-size:12px;color:var(--txt-dim);font-family:"IBM Plex Mono",monospace}
+  .pulse{width:8px;height:8px;border-radius:50%;background:var(--lime);box-shadow:0 0 0 0 rgba(168,224,99,.6);animation:pulse 2.4s infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(168,224,99,.5)}70%{box-shadow:0 0 0 7px rgba(168,224,99,0)}100%{box-shadow:0 0 0 0 rgba(168,224,99,0)}}
+  /* body */
+  .shell{display:flex;flex:1;min-height:0}
+  .nav{width:204px;background:var(--panel);border-right:1px solid var(--line);padding:13px;display:flex;flex-direction:column;gap:3px}
+  .navsec{font-size:10px;letter-spacing:1.2px;color:var(--txt-faint);font-weight:600;text-transform:uppercase;padding:10px 11px 6px}
+  .navitem{display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:9px;color:var(--txt-dim);font-size:13.5px;cursor:pointer;font-weight:500;transition:background .14s,color .14s;position:relative}
+  .navitem:hover{background:var(--panel-2);color:var(--txt)}
+  .navitem.active{background:var(--teal-dim);color:var(--teal);font-weight:600}
+  .navitem.active::before{content:"";position:absolute;left:-13px;top:50%;transform:translateY(-50%);width:3px;height:18px;background:var(--teal);border-radius:0 3px 3px 0}
+  .navitem .ic{width:18px;text-align:center;font-size:15px;opacity:.9}
+  .navitem.soon{opacity:.4;cursor:default}
+  .navitem.soon:hover{background:none;color:var(--txt-dim)}
+  .qbadge{margin-left:auto;font-size:10.5px;background:var(--amber);color:#0c1116;border-radius:20px;padding:1px 8px;font-weight:700;font-family:"IBM Plex Mono",monospace}
+  .qbadge.mut{background:var(--line);color:var(--txt-dim)}
+  .navfoot{margin-top:auto;font-size:11px;color:var(--txt-faint);padding:11px;border-top:1px solid var(--line-soft);line-height:1.6;font-family:"IBM Plex Mono",monospace}
+  .navfoot b{color:var(--txt-dim);font-weight:500}
+  /* main */
+  .main{flex:1;overflow:auto;padding:24px 26px}
+  .main::-webkit-scrollbar{width:10px}
+  .main::-webkit-scrollbar-thumb{background:var(--panel-3);border-radius:10px;border:2px solid var(--bg-2)}
+  .screen{display:none}
+  .screen.active{display:block}
+  .screen.active>*{animation:rise .42s cubic-bezier(.2,.7,.3,1) backwards}
+  .screen.active>*:nth-child(2){animation-delay:.05s}
+  .screen.active>*:nth-child(3){animation-delay:.1s}
+  .screen.active>*:nth-child(4){animation-delay:.15s}
+  @keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+  .h1{font-size:21px;font-weight:600;letter-spacing:-.4px}
+  .sub{color:var(--txt-dim);font-size:13px;margin:4px 0 22px;max-width:640px;line-height:1.5}
+  /* cards */
+  .cards{display:grid;grid-template-columns:repeat(4,1fr);gap:13px;margin-bottom:20px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px;position:relative;overflow:hidden}
+  .card::after{content:"";position:absolute;top:0;right:0;width:60px;height:60px;background:radial-gradient(circle at top right,var(--accent,var(--teal)),transparent 70%);opacity:.12}
+  .card .k{font-size:10.5px;color:var(--txt-dim);text-transform:uppercase;letter-spacing:.7px;font-weight:600;margin-bottom:10px}
+  .card .v{font-size:27px;font-weight:600;letter-spacing:-.5px;font-family:"IBM Plex Sans"}
+  .card .v small{font-size:13px;color:var(--txt-dim);font-weight:400}
+  .card .meta{font-size:11.5px;color:var(--txt-faint);margin-top:6px}
+  /* panel */
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;margin-bottom:18px}
+  .ph{padding:13px 17px;border-bottom:1px solid var(--line);font-weight:600;font-size:13px;display:flex;align-items:center;gap:9px;background:var(--panel-2)}
+  .ph .right{margin-left:auto;font-size:11px;color:var(--txt-faint);font-weight:400;font-family:"IBM Plex Mono",monospace}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:left;padding:10px 17px;color:var(--txt-faint);font-weight:600;font-size:10.5px;text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--line)}
+  td{padding:12px 17px;border-bottom:1px solid var(--line-soft);vertical-align:middle}
+  tbody tr:last-child td{border-bottom:none}
+  tbody tr{transition:background .12s}
+  tbody tr:hover{background:var(--panel-2)}
+  tr.sel{background:rgba(46,196,182,.06)}
+  tr.sel:hover{background:rgba(46,196,182,.09)}
+  .mono{font-family:"IBM Plex Mono",monospace;font-size:11.5px;color:var(--txt-faint)}
+  .mono.t{color:var(--txt-dim)}
+  /* pills */
+  .pill{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;padding:3px 10px;border-radius:20px;font-weight:600;white-space:nowrap}
+  .pill .pd{width:6px;height:6px;border-radius:50%}
+  .pill.on{background:rgba(168,224,99,.13);color:var(--lime)} .pill.on .pd{background:var(--lime);box-shadow:0 0 6px var(--lime)}
+  .pill.off{background:rgba(86,99,115,.16);color:var(--txt-dim)} .pill.off .pd{background:var(--txt-faint)}
+  .pill.run{background:rgba(90,162,255,.13);color:var(--blue)} .pill.run .pd{background:var(--blue);box-shadow:0 0 6px var(--blue)}
+  .pill.block{background:rgba(226,89,106,.13);color:var(--red)} .pill.block .pd{background:var(--red)}
+  .pill.wait{background:rgba(240,168,48,.13);color:var(--amber)} .pill.wait .pd{background:var(--amber)}
+  .pill.done{background:rgba(168,224,99,.13);color:var(--lime)} .pill.done .pd{background:var(--lime)}
+  .pill.idle{background:var(--panel-3);color:var(--txt-dim)} .pill.idle .pd{background:var(--txt-faint)}
+  /* bars */
+  .bar{height:5px;background:var(--panel-3);border-radius:4px;overflow:hidden;margin-top:7px;width:130px}
+  .bar>i{display:block;height:100%;border-radius:4px}
+  .stale{font-size:10px;color:var(--amber);font-weight:600;margin-left:7px;font-family:"IBM Plex Mono",monospace}
+  /* file rows */
+  .fname{display:flex;align-items:center;gap:11px}
+  .fic{width:28px;height:28px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:9.5px;font-weight:700;flex-shrink:0;font-family:"IBM Plex Mono",monospace;letter-spacing:.3px}
+  .fi-img{background:rgba(90,162,255,.14);color:var(--blue)}
+  .fi-vid{background:rgba(226,89,106,.14);color:var(--red)}
+  .fi-doc{background:rgba(168,224,99,.14);color:var(--lime)}
+  .fi-dir{background:rgba(240,168,48,.14);color:var(--amber)}
+  .ck{width:16px;height:16px;border:1.5px solid var(--line);border-radius:5px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;transition:.12s}
+  .ck.on{background:var(--teal);border-color:var(--teal)}
+  .ck.on::after{content:"✓";font-size:11px;color:#0c1116;font-weight:700}
+  /* search */
+  .searchrow{display:flex;gap:9px;margin-bottom:16px;flex-wrap:wrap;align-items:center}
+  .input{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:10px 14px;color:var(--txt);font-size:13.5px;font-family:inherit;outline:none;transition:border-color .15s}
+  .input:focus{border-color:var(--teal)}
+  .input.grow{flex:1;min-width:240px}
+  .chip{background:var(--panel);border:1px solid var(--line);border-radius:20px;padding:6px 13px;font-size:12.5px;color:var(--txt-dim);cursor:pointer;transition:.14s;user-select:none}
+  .chip:hover{border-color:var(--txt-faint)}
+  .chip.on{border-color:var(--teal);color:var(--teal);background:rgba(46,196,182,.07)}
+  /* breadcrumb */
+  .crumb{font-size:12.5px;color:var(--txt-dim);margin-bottom:12px;display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+  .crumb b{color:var(--txt);font-weight:600}
+  .crumb .sep{color:var(--txt-faint)}
+  /* selection bar */
+  .selbar{margin-top:16px;background:linear-gradient(180deg,var(--panel-2),var(--panel));border:1px solid var(--teal);border-radius:11px;padding:13px 17px;display:flex;align-items:center;gap:14px;font-size:13.5px;box-shadow:0 8px 24px -10px rgba(46,196,182,.4)}
+  .selbar b{font-weight:600}
+  .btn{border:none;border-radius:9px;padding:9px 17px;font-size:12.5px;font-weight:600;cursor:pointer;font-family:inherit;transition:.14s}
+  .btn.primary{background:var(--teal);color:#0c1116} .btn.primary:hover{background:#3ad6c7}
+  .btn.ghost{background:transparent;color:var(--txt-dim);border:1px solid var(--line)} .btn.ghost:hover{border-color:var(--txt-faint);color:var(--txt)}
+  /* feasibility */
+  .feas{font-size:11.5px;display:flex;align-items:center;gap:6px;font-family:"IBM Plex Mono",monospace}
+  .feas.ok{color:var(--lime)} .feas.bad{color:var(--red)} .feas.est{color:var(--amber)}
+  /* detail table */
+  .kv td:first-child{color:var(--txt-dim);width:175px;font-size:12.5px}
+  .actions{display:flex;gap:9px;margin-top:4px}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <div class="titlebar">
+    <div class="logo">F</div>
+    <div class="brand">FileTracert <span>by FAD.iT</span></div>
+    <div class="wdots"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span></div>
+  </div>
+
+  <div class="shell">
+    <nav class="nav">
+      <div class="navsec">Workspace</div>
+      <div class="navitem active" data-s="dash"><span class="ic">◫</span> Dashboard</div>
+      <div class="navitem" data-s="vol"><span class="ic">▤</span> Volumi</div>
+      <div class="navsec">File</div>
+      <div class="navitem" data-s="cat"><span class="ic">▦</span> Catalogo</div>
+      <div class="navitem" data-s="search"><span class="ic">⌕</span> Ricerca</div>
+      <div class="navsec">Operazioni</div>
+      <div class="navitem" data-s="queue"><span class="ic">≣</span> Coda <span class="qbadge">5</span></div>
+      <div class="navitem soon"><span class="ic">✦</span> Regole <span class="qbadge mut">poi</span></div>
+      <div class="navfoot">
+        <span class="pulse" style="display:inline-block;margin-right:6px;vertical-align:middle"></span><b>servizio attivo</b><br>
+        scansione: oggi 09:14<br>
+        <b>1.214.882</b> file · 3,4 TB
+      </div>
+    </nav>
+
+    <div class="main">
+
+      <!-- ============ DASHBOARD ============ -->
+      <section class="screen active" id="s-dash">
+        <h1 class="h1">Dashboard</h1>
+        <p class="sub">Stato dei volumi, dell'indice e della coda operazioni. I dati si aggiornano in tempo reale via SignalR quando un volume viene collegato o un task avanza.</p>
+        <div class="cards">
+          <div class="card" style="--accent:var(--teal)"><div class="k">File catalogati</div><div class="v">1,21 <small>M</small></div><div class="meta">su 4 volumi · 3,4 TB</div></div>
+          <div class="card" style="--accent:var(--lime)"><div class="k">Volumi</div><div class="v">3 <small>/ 4 online</small></div><div class="meta">1 scollegato</div></div>
+          <div class="card" style="--accent:var(--blue)"><div class="k">Coda</div><div class="v">5 <small>task</small></div><div class="meta">1 in corso · 1 bloccato</div></div>
+          <div class="card" style="--accent:var(--amber)"><div class="k">In attesa di spazio/volume</div><div class="v">18,4 <small>GB</small></div><div class="meta">2 task in sospeso</div></div>
+        </div>
+        <div class="panel">
+          <div class="ph">Volumi <span class="right">live · Win32_VolumeChangeEvent → SignalR</span></div>
+          <table>
+            <thead><tr><th>Etichetta</th><th>Lettera</th><th>FS</th><th>Stato</th><th>Spazio libero</th><th>File</th></tr></thead>
+            <tbody>
+              <tr><td>SSD Lavoro</td><td class="mono t">D:</td><td>NTFS</td><td><span class="pill on"><span class="pd"></span>Online</span></td><td>312 GB <span class="mono">/ 1 TB</span><div class="bar"><i style="width:69%;background:var(--teal)"></i></div></td><td class="mono t">402.110</td></tr>
+              <tr><td>Multimedia</td><td class="mono t">E:</td><td>NTFS</td><td><span class="pill on"><span class="pd"></span>Online</span></td><td>88 GB <span class="mono">/ 2 TB</span><div class="bar"><i style="width:96%;background:var(--amber)"></i></div></td><td class="mono t">724.500</td></tr>
+              <tr><td>Backup USB</td><td class="mono t">H:</td><td>exFAT</td><td><span class="pill on"><span class="pd"></span>Online</span></td><td>410 GB <span class="mono">/ 512 GB</span><div class="bar"><i style="width:20%;background:var(--lime)"></i></div></td><td class="mono t">40.218</td></tr>
+              <tr><td>Foto Archivio</td><td class="mono t">—</td><td>NTFS</td><td><span class="pill off"><span class="pd"></span>Scollegato</span></td><td><span class="mono" style="color:var(--txt-faint)">128 GB</span><span class="stale">stima · 2g fa</span></td><td class="mono t">48.054</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ============ VOLUMI ============ -->
+      <section class="screen" id="s-vol">
+        <h1 class="h1">Volumi</h1>
+        <p class="sub">Identità stabile via Volume GUID — la lettera è solo indicativa e può cambiare. Le partizioni senza lettera vengono comunque riconosciute.</p>
+        <div class="panel">
+          <div class="ph">Foto Archivio <span class="pill off" style="margin-left:6px"><span class="pd"></span>Scollegato</span><span class="right">visto 2 giorni fa · in passato montato su H:</span></div>
+          <table class="kv">
+            <tbody>
+              <tr><td>Volume GUID</td><td class="mono t">\\?\Volume{a1f4c0d2-7b3e-44a9-9e21-...e9c2}\</td></tr>
+              <tr><td>Serial / Filesystem</td><td class="mono t">B83A-77F1 · NTFS · rimovibile</td></tr>
+              <tr><td>Disco fisico</td><td class="mono t">\\.\PHYSICALDRIVE2 · partizione 1 di 1 <span style="color:var(--txt-faint)">(metadato descrittivo)</span></td></tr>
+              <tr><td>Cartelle monitorate</td><td><span class="mono t">\Foto</span> , <span class="mono t">\Video</span></td></tr>
+              <tr><td>Filtro tipi file</td><td>Immagini, Video <span style="color:var(--txt-faint)">· esclude System, Hidden, $Recycle.Bin</span></td></tr>
+              <tr><td>Indice</td><td>48.054 file · 119 GB · checkpoint USN <span class="mono t">#44.821.330</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="actions">
+          <button class="btn ghost">↻ Ri-scansiona</button>
+          <button class="btn ghost">Modifica cartelle</button>
+          <button class="btn ghost">Modifica filtri</button>
+          <button class="btn ghost">Esporta indice</button>
+        </div>
+      </section>
+
+      <!-- ============ CATALOGO ============ -->
+      <section class="screen" id="s-cat">
+        <h1 class="h1">Catalogo</h1>
+        <p class="sub">Sfoglia i file dall'indice locale anche a volume scollegato. Selezioni ora gli elementi: lo spostamento parte automaticamente al rimontaggio del volume.</p>
+        <div class="crumb"><b>Foto Archivio</b> <span class="pill off" style="margin:0 2px"><span class="pd"></span>scollegato</span> <span class="sep">/</span> Foto <span class="sep">/</span> 2024 <span class="sep">/</span> <b>Vacanze</b></div>
+        <div class="panel">
+          <div class="ph">14 elementi <span class="right">vista da indice locale · dati al 06/06/2026 · alberatura lazy</span></div>
+          <table>
+            <thead><tr><th style="width:42px"></th><th>Nome</th><th>Dimensione</th><th>Modificato</th><th>Tipo</th></tr></thead>
+            <tbody>
+              <tr class="sel"><td><span class="ck on"></span></td><td><div class="fname"><span class="fic fi-dir">DIR</span> Croazia</div></td><td class="mono t">—</td><td class="mono t">12/08/24</td><td>cartella</td></tr>
+              <tr class="sel"><td><span class="ck on"></span></td><td><div class="fname"><span class="fic fi-img">JPG</span> IMG_4821.jpg</div></td><td class="mono t">8,2 MB</td><td class="mono t">11/08/24</td><td>immagine</td></tr>
+              <tr><td><span class="ck"></span></td><td><div class="fname"><span class="fic fi-img">CR3</span> IMG_4822.CR3</div></td><td class="mono t">41,6 MB</td><td class="mono t">11/08/24</td><td>immagine RAW</td></tr>
+              <tr><td><span class="ck"></span></td><td><div class="fname"><span class="fic fi-vid">MP4</span> clip_spiaggia.mp4</div></td><td class="mono t">1,9 GB</td><td class="mono t">11/08/24</td><td>video</td></tr>
+              <tr class="sel"><td><span class="ck on"></span></td><td><div class="fname"><span class="fic fi-vid">MOV</span> tramonto.mov</div></td><td class="mono t">740 MB</td><td class="mono t">12/08/24</td><td>video</td></tr>
+              <tr><td><span class="ck"></span></td><td><div class="fname"><span class="fic fi-img">JPG</span> IMG_4830.jpg</div></td><td class="mono t">7,9 MB</td><td class="mono t">12/08/24</td><td>immagine</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="selbar">
+          <span><b>3 elementi</b> selezionati · 1,49 GB</span>
+          <button class="btn ghost" style="margin-left:auto">Sposta in… ▾</button>
+          <button class="btn primary">Accoda spostamento</button>
+        </div>
+      </section>
+
+      <!-- ============ RICERCA ============ -->
+      <section class="screen" id="s-search">
+        <h1 class="h1">Ricerca</h1>
+        <p class="sub">Full-text sul nome (SQLite FTS5) con filtri combinabili. La ricerca attraversa anche i volumi scollegati, segnalandone lo stato.</p>
+        <div class="searchrow">
+          <input class="input grow" value="tramonto" spellcheck="false">
+          <span class="chip on">Video</span>
+          <span class="chip on">Immagini</span>
+          <span class="chip">&gt; 100 MB</span>
+          <span class="chip">Ultimo anno</span>
+          <span class="chip">Solo online</span>
+        </div>
+        <div class="panel">
+          <div class="ph">37 risultati <span class="right">ordina: rilevanza ▾ · paging lato server</span></div>
+          <table>
+            <thead><tr><th>Nome</th><th>Volume</th><th>Percorso</th><th>Dimensione</th></tr></thead>
+            <tbody>
+              <tr><td><div class="fname"><span class="fic fi-vid">MOV</span> tramonto.mov</div></td><td><span class="pill off"><span class="pd"></span>Foto Archivio</span></td><td class="mono t">\Foto\2024\Vacanze</td><td class="mono t">740 MB</td></tr>
+              <tr><td><div class="fname"><span class="fic fi-img">JPG</span> tramonto_edit.jpg</div></td><td><span class="pill on"><span class="pd"></span>SSD Lavoro</span></td><td class="mono t">\Editing\export</td><td class="mono t">6,1 MB</td></tr>
+              <tr><td><div class="fname"><span class="fic fi-vid">MP4</span> tramonto_4k.mp4</div></td><td><span class="pill on"><span class="pd"></span>Multimedia</span></td><td class="mono t">\Render\2024</td><td class="mono t">2,3 GB</td></tr>
+              <tr><td><div class="fname"><span class="fic fi-img">JPG</span> tramonto_canale.jpg</div></td><td><span class="pill on"><span class="pd"></span>Backup USB</span></td><td class="mono t">\Foto\estate</td><td class="mono t">5,4 MB</td></tr>
+              <tr><td><div class="fname"><span class="fic fi-vid">MOV</span> tramonto_drone.mov</div></td><td><span class="pill off"><span class="pd"></span>Foto Archivio</span></td><td class="mono t">\Video\droni</td><td class="mono t">3,1 GB</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ============ CODA ============ -->
+      <section class="screen" id="s-queue">
+        <h1 class="h1">Coda operazioni</h1>
+        <p class="sub">Ogni task è una macchina a stati persistente: riprende dopo crash o riavvio dall'ultimo checkpoint. Lo spazio viene validato in coda e ri-verificato hard prima dell'esecuzione reale.</p>
+        <div class="panel">
+          <div class="ph">5 task <span class="right">FIFO · i bloccati vengono rivalutati a ogni evento di spazio/volume</span></div>
+          <table>
+            <thead><tr><th>Operazione</th><th>Da → A</th><th>Dim.</th><th>Stato</th><th>Fattibilità</th></tr></thead>
+            <tbody>
+              <tr>
+                <td><div class="fname"><span class="fic fi-vid">12×</span> Sposta video</div></td>
+                <td class="mono t">SSD Lavoro → Backup USB</td><td class="mono t">4,1 GB</td>
+                <td><span class="pill run"><span class="pd"></span>Copia · 62%</span><div class="bar"><i style="width:62%;background:var(--blue)"></i></div></td>
+                <td><span class="feas ok">✓ spazio riservato</span></td>
+              </tr>
+              <tr>
+                <td><div class="fname"><span class="fic fi-img">340×</span> Sposta RAW</div></td>
+                <td class="mono t">Multimedia → Foto Archivio</td><td class="mono t">11,2 GB</td>
+                <td><span class="pill wait"><span class="pd"></span>Attende volume</span></td>
+                <td><span class="feas est">~ stima su dato 06/06 · verifica al mount</span></td>
+              </tr>
+              <tr>
+                <td><div class="fname"><span class="fic fi-vid">3×</span> Sposta video</div></td>
+                <td class="mono t">SSD Lavoro → Multimedia</td><td class="mono t">6,8 GB</td>
+                <td><span class="pill block"><span class="pd"></span>Bloccato</span></td>
+                <td><span class="feas bad">✗ mancano 3,2 GB su Multimedia</span></td>
+              </tr>
+              <tr>
+                <td><div class="fname"><span class="fic fi-img">88×</span> Sposta foto</div></td>
+                <td class="mono t">Backup USB → SSD Lavoro</td><td class="mono t">1,2 GB</td>
+                <td><span class="pill idle"><span class="pd"></span>In attesa</span></td>
+                <td><span class="feas ok">✓ fattibile</span></td>
+              </tr>
+              <tr>
+                <td><div class="fname"><span class="fic fi-doc">5×</span> Sposta PDF</div></td>
+                <td class="mono t">D: → D: \Documenti\Archivio</td><td class="mono t">40 MB</td>
+                <td><span class="pill done"><span class="pd"></span>Completato</span></td>
+                <td><span class="feas ok">✓ intra-volume · istantaneo</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</div>
+
+<script>
+  document.querySelectorAll('.navitem[data-s]').forEach(function(it){
+    it.addEventListener('click',function(){
+      document.querySelectorAll('.navitem').forEach(function(x){x.classList.remove('active')});
+      it.classList.add('active');
+      document.querySelectorAll('.screen').forEach(function(s){s.classList.remove('active')});
+      var t=document.getElementById('s-'+it.getAttribute('data-s'));
+      if(t){ t.classList.add('active'); document.querySelector('.main').scrollTop=0; }
+    });
+  });
+  document.querySelectorAll('.ck').forEach(function(c){
+    c.addEventListener('click',function(){ c.classList.toggle('on'); c.closest('tr').classList.toggle('sel'); });
+  });
+  document.querySelectorAll('.chip').forEach(function(c){
+    c.addEventListener('click',function(){ c.classList.toggle('on'); });
+  });
+</script>
+</body>
+</html>
