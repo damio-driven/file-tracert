@@ -13,6 +13,8 @@ public static class PlatformServiceCollectionExtensions
     {
         services.AddSingleton<IPhysicalDiskResolver, WmiPhysicalDiskResolver>();
         services.AddSingleton<IVolumeProbe, Win32VolumeProbe>();
+        services.AddSingleton<IUsnReader, NtfsUsnReader>();
+        services.AddSingleton<IDirectoryEnumerator, ManagedDirectoryEnumerator>();
         return services;
     }
 }
