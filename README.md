@@ -41,5 +41,36 @@ npm start
 
 **Tests:**
 ```bash
-dotnet test src/backend/FileTracert.slnx
+dotnet test src/backend/FileTracert.slnx   # backend (xUnit)
+cd src/frontend && npm test                # frontend (Vitest)
 ```
+
+## Running the app (dev)
+
+The UI talks to the token-protected loopback API. In development the two run
+separately and `ng serve` proxies `/api` to the Host (same-origin → no CORS):
+
+1. **Host** — run elevated (admin) so real volume/USN scanning works:
+   ```bash
+   dotnet run --project src/backend/FileTracert.Host   # listens on http://127.0.0.1:5005
+   ```
+2. **Frontend** — `proxy.conf.json` forwards `/api` and `/health` to the Host:
+   ```bash
+   cd src/frontend && npm start                        # http://localhost:4200
+   ```
+   The SPA fetches its API token from the Development-only `GET /api/dev/token`.
+
+## Running the app (production-style)
+
+The Host serves the built SPA as static files and injects the API token into
+`index.html` (no dev-token endpoint exists outside Development):
+
+```bash
+cd src/frontend && npm run build      # outputs to ../backend/FileTracert.Host/wwwroot
+dotnet run --project src/backend/FileTracert.Host
+# open http://127.0.0.1:5005
+```
+
+`ng build` writes directly into the Host's `wwwroot/` (git-ignored). The token is
+read from `<meta name="ft-token">` and attached as `X-FileTracert-Token` by an
+HTTP interceptor.

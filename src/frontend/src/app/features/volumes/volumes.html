@@ -1,0 +1,116 @@
+<section class="ft-rise">
+  <h1 class="ft-h1">Volumi</h1>
+  <p class="ft-sub">
+    Identità stabile via Volume GUID — la lettera è solo indicativa e può cambiare. Le
+    partizioni senza lettera vengono comunque riconosciute.
+  </p>
+
+  @if (error(); as err) {
+    <div class="ft-error">{{ err }}</div>
+  }
+
+  <div class="layout">
+    <!-- List -->
+    <ft-panel heading="Volumi indicizzati" class="list-panel">
+      <ul class="vlist">
+        @for (v of volumes(); track v.id) {
+          <li
+            class="vrow"
+            [class.sel]="selected()?.id === v.id"
+            (click)="select(v.id)"
+            tabindex="0"
+            (keydown.enter)="select(v.id)"
+          >
+            <div class="flex items-center justify-between gap-2">
+              <span class="vlabel">{{ v.label ?? '(senza etichetta)' }}</span>
+              @if (v.isOnline) {
+                <ft-pill variant="on">Online</ft-pill>
+              } @else {
+                <ft-pill variant="off">Scollegato</ft-pill>
+              }
+            </div>
+            <div class="vmeta mono">
+              {{ v.currentLetter | driveLetter }} · {{ v.fileSystem }} ·
+              {{ v.fileCount.toLocaleString('it-IT') }} file
+            </div>
+          </li>
+        } @empty {
+          <li class="empty">
+            @if (loading()) { Caricamento… } @else { Nessun volume. Collega un drive. }
+          </li>
+        }
+      </ul>
+    </ft-panel>
+
+    <!-- Detail -->
+    <div class="detail">
+      @if (selected(); as v) {
+        <ft-panel [heading]="v.label ?? '(senza etichetta)'" [caption]="captionFor(v)">
+          <span panel-header>
+            @if (v.isOnline) {
+              <ft-pill variant="on">Online</ft-pill>
+            } @else {
+              <ft-pill variant="off">Scollegato</ft-pill>
+            }
+          </span>
+
+          <table class="ft-table ft-table--kv">
+            <tbody>
+              <tr><td>Volume GUID</td><td class="mono txt-dim">{{ v.volumeGuid }}</td></tr>
+              <tr>
+                <td>Serial / Filesystem</td>
+                <td class="mono txt-dim">
+                  {{ v.serialNumber ?? '—' }} · {{ v.fileSystem }} ·
+                  {{ v.isRemovable ? 'rimovibile' : 'fisso' }}
+                </td>
+              </tr>
+              <tr>
+                <td>Disco fisico</td>
+                <td class="mono txt-dim">
+                  {{ v.physicalDiskId ?? '—' }}
+                  <span class="txt-faint">(metadato descrittivo)</span>
+                </td>
+              </tr>
+              <tr><td>Cartelle monitorate</td><td class="mono txt-dim">{{ roots(v.watchedRoots) }}</td></tr>
+              <tr><td>Filtro tipi file</td><td>{{ filterSummary(v.watchedRoots) }}</td></tr>
+              <tr>
+                <td>Indice</td>
+                <td>
+                  {{ v.fileCount.toLocaleString('it-IT') }} file · {{ v.directoryCount.toLocaleString('it-IT') }} cartelle ·
+                  {{ v.indexedBytes | bytes }}
+                  @if (v.lastUsn !== null) {
+                    · checkpoint USN <span class="mono txt-dim">#{{ v.lastUsn!.toLocaleString('it-IT') }}</span>
+                  }
+                </td>
+              </tr>
+              <tr>
+                <td>Ultima scansione</td>
+                <td class="mono txt-dim">
+                  {{ v.lastFullScanUtc ? (v.lastFullScanUtc | relativeTime) : 'mai' }}
+                  @if (!v.isOnline) { <span class="ft-stale">dato · {{ v.lastSeenUtc | relativeTime }}</span> }
+                </td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div class="actions">
+            <button
+              class="ft-btn ft-btn--primary"
+              (click)="rescan(v.id)"
+              [disabled]="rescanningId() === v.id"
+            >
+              {{ rescanningId() === v.id ? '↻ Accodata…' : '↻ Ri-scansiona' }}
+            </button>
+            <button class="ft-btn ft-btn--ghost" disabled title="Disponibile a breve">Modifica cartelle</button>
+            <button class="ft-btn ft-btn--ghost" disabled title="Disponibile a breve">Modifica filtri</button>
+            <button class="ft-btn ft-btn--ghost" disabled title="Disponibile a breve">Esporta indice</button>
+          </div>
+        </ft-panel>
+      } @else if (detailLoading()) {
+        <ft-panel heading="Dettaglio volume"><p class="loading-detail">Caricamento dettaglio…</p></ft-panel>
+      } @else {
+        <ft-panel heading="Dettaglio volume"><p class="loading-detail">Seleziona un volume per vederne i dettagli.</p></ft-panel>
+      }
+    </div>
+  </div>
+</section>

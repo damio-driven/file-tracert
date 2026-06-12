@@ -1,0 +1,206 @@
+@use 'styles/mixins' as *;
+
+:host {
+  display: block;
+  height: 100dvh;
+  padding: 26px;
+}
+
+.app {
+  width: 100%;
+  max-width: 1180px;
+  height: 100%;
+  margin: 0 auto;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-app);
+  overflow: hidden;
+  box-shadow: var(--shadow-app);
+  display: flex;
+  flex-direction: column;
+}
+
+// ---- Titlebar ----
+.titlebar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 13px 18px;
+  background: linear-gradient(180deg, var(--panel), var(--bg-2));
+  border-bottom: 1px solid var(--line);
+}
+
+.logo {
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--teal), var(--lime));
+  @include flex-center;
+  font-weight: 700;
+  color: var(--bg);
+  font-size: 15px;
+  box-shadow: 0 4px 14px -3px rgba(46, 196, 182, 0.6);
+}
+
+.brand {
+  font-weight: 600;
+  font-size: 14.5px;
+  letter-spacing: -0.2px;
+
+  span {
+    color: var(--txt-faint);
+    font-weight: 400;
+    margin-left: 7px;
+    font-size: 12.5px;
+  }
+}
+
+.tray {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--txt-dim);
+
+  &.tray--down {
+    color: var(--amber);
+  }
+}
+
+// ---- Service status dot ----
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--lime);
+  flex-shrink: 0;
+
+  .tray--down & {
+    background: var(--amber);
+  }
+}
+.pulse {
+  animation: ft-pulse 2.4s infinite;
+}
+
+// ---- Shell ----
+.shell {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.nav {
+  width: 204px;
+  flex-shrink: 0;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+  padding: 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.navsec {
+  @include eyebrow;
+  letter-spacing: 1.2px;
+  padding: 10px 11px 6px;
+}
+
+.navitem {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 9px 11px;
+  border-radius: var(--r-ctl);
+  color: var(--txt-dim);
+  font-size: 13.5px;
+  font-weight: 500;
+  cursor: pointer;
+  text-decoration: none;
+  transition: background var(--t-fast), color var(--t-fast);
+  position: relative;
+
+  &:hover {
+    background: var(--panel-2);
+    color: var(--txt);
+  }
+
+  &.active {
+    background: var(--teal-dim);
+    color: var(--teal);
+    font-weight: 600;
+
+    &::before {
+      content: '';
+      position: absolute;
+      left: -13px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 3px;
+      height: 18px;
+      background: var(--teal);
+      border-radius: 0 3px 3px 0;
+    }
+  }
+
+  &.soon {
+    opacity: 0.4;
+    cursor: default;
+
+    &:hover {
+      background: none;
+      color: var(--txt-dim);
+    }
+  }
+
+  .ic {
+    width: 18px;
+    text-align: center;
+    font-size: 15px;
+    opacity: 0.9;
+  }
+}
+
+.qbadge {
+  margin-left: auto;
+  font-size: 10.5px;
+  border-radius: 20px;
+  padding: 1px 8px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+
+  &.mut {
+    background: var(--line);
+    color: var(--txt-dim);
+  }
+}
+
+.navfoot {
+  margin-top: auto;
+  font-size: 11px;
+  color: var(--txt-faint);
+  padding: 11px;
+  border-top: 1px solid var(--line-soft);
+  line-height: 1.7;
+
+  b {
+    color: var(--txt-dim);
+    font-weight: 500;
+  }
+
+  .status-dot {
+    display: inline-block;
+    margin-right: 6px;
+    vertical-align: middle;
+  }
+}
+
+.main {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  padding: 24px 26px;
+  @include custom-scrollbar;
+}

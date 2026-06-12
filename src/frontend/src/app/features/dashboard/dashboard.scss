@@ -1,0 +1,39 @@
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 13px;
+  margin-bottom: var(--sp-5);
+}
+
+.card-skeleton {
+  height: 96px;
+  border-radius: var(--r-panel);
+  background: linear-gradient(100deg, var(--panel) 30%, var(--panel-2) 50%, var(--panel) 70%);
+  background-size: 200% 100%;
+  animation: ft-shimmer 1.2s ease-in-out infinite;
+}
+
+@keyframes ft-shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
+.ft-error {
+  background: var(--block-bg);
+  color: var(--red);
+  border: 1px solid var(--red);
+  border-radius: var(--r-ctl);
+  padding: 11px 15px;
+  font-size: 13px;
+  margin-bottom: var(--sp-4);
+}
+
+ft-bar {
+  margin-top: 7px;
+}
+
+.empty {
+  text-align: center;
+  color: var(--txt-faint);
+  padding: var(--sp-6) 17px;
+}

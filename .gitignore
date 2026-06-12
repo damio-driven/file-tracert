@@ -2,6 +2,9 @@
 # Gitignore per .NET 10 + Angular CLI
 # ==========================================
 
+# Angular build output served by the Host (produced by `ng build`)
+src/backend/FileTracert.Host/wwwroot/
+
 # ------------------------------------------
 # Configurazione .NET / C# / Visual Studio
 # ------------------------------------------

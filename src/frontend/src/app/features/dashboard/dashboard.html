@@ -1,0 +1,76 @@
+<section class="ft-rise">
+  <div class="flex items-center justify-between gap-3">
+    <div>
+      <h1 class="ft-h1">Dashboard</h1>
+      <p class="ft-sub">
+        Stato dei volumi, dell'indice e della coda operazioni. I dati si aggiorneranno in
+        tempo reale via SignalR quando un volume viene collegato o un task avanza.
+      </p>
+    </div>
+    <button class="ft-btn ft-btn--ghost" (click)="refresh()" [disabled]="loading()">↻ Aggiorna</button>
+  </div>
+
+  @if (error(); as err) {
+    <div class="ft-error">{{ err }}</div>
+  }
+
+  @if (cards(); as c) {
+    <div class="cards">
+      <ft-card accent="teal" key="File catalogati" [value]="c.files.value" [meta]="c.files.meta" />
+      <ft-card accent="lime" key="Volumi" [value]="c.volumes.value" [unit]="c.volumes.unit" [meta]="c.volumes.meta" />
+      <ft-card accent="blue" key="Coda" [value]="c.queue.value" unit="task" [meta]="c.queue.meta" />
+      <ft-card accent="amber" key="In attesa di spazio/volume" [value]="c.pending.value" [unit]="c.pending.unit" [meta]="c.pending.meta" />
+    </div>
+  } @else if (loading()) {
+    <div class="cards">
+      @for (i of [1, 2, 3, 4]; track i) { <div class="card-skeleton"></div> }
+    </div>
+  }
+
+  <ft-panel heading="Volumi" caption="stato live · aggiornamento real-time allo step 10">
+    <table class="ft-table">
+      <thead>
+        <tr>
+          <th>Etichetta</th>
+          <th>Lettera</th>
+          <th>FS</th>
+          <th>Stato</th>
+          <th>Spazio libero</th>
+          <th>File</th>
+        </tr>
+      </thead>
+      <tbody>
+        @for (v of volumes(); track v.id) {
+          <tr>
+            <td>{{ v.label ?? '(senza etichetta)' }}</td>
+            <td class="mono txt-dim">{{ v.currentLetter | driveLetter }}</td>
+            <td>{{ v.fileSystem }}</td>
+            <td>
+              @if (v.isOnline) {
+                <ft-pill variant="on">Online</ft-pill>
+              } @else {
+                <ft-pill variant="off">Scollegato</ft-pill>
+              }
+            </td>
+            <td>
+              @if (v.isOnline) {
+                {{ v.freeBytes | bytes }} <span class="mono txt-faint">/ {{ v.capacityBytes | bytes }}</span>
+                <ft-bar [value]="usedPercent(v)" [color]="barColor(v)" />
+              } @else {
+                <span class="mono txt-faint">{{ v.freeBytes | bytes }}</span>
+                <span class="ft-stale">stima · {{ v.lastSeenUtc | relativeTime }}</span>
+              }
+            </td>
+            <td class="mono txt-dim">{{ v.fileCount.toLocaleString('it-IT') }}</td>
+          </tr>
+        } @empty {
+          <tr>
+            <td colspan="6" class="empty">
+              @if (volumesLoading()) { Caricamento volumi… } @else { Nessun volume indicizzato. Collega un drive per iniziare. }
+            </td>
+          </tr>
+        }
+      </tbody>
+    </table>
+  </ft-panel>
+</section>
