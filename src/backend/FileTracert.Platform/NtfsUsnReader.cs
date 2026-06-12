@@ -22,17 +22,6 @@ namespace FileTracert.Platform;
 /// </remarks>
 internal sealed class NtfsUsnReader : IUsnReader
 {
-    /// <summary>The NTFS root directory always lives at MFT record index 5.</summary>
-    private const ulong RootMftIndex = 5;
-
-    /// <summary>
-    /// A USN file reference number packs a sequence number in the high 16 bits
-    /// and the MFT record index in the low 48 bits. The root's full FRN therefore
-    /// is <em>not</em> 5 — it carries a sequence number — so we identify it by its
-    /// masked index.
-    /// </summary>
-    private const ulong MftRecordIndexMask = 0x0000_FFFF_FFFF_FFFF;
-
     private const int BufferSize = 1 << 20; // 1 MiB
     private const int CancellationCheckInterval = 4096;
 
@@ -174,18 +163,18 @@ internal sealed class NtfsUsnReader : IUsnReader
     {
         foreach (var (frn, node) in nodes)
         {
-            if ((frn & MftRecordIndexMask) == RootMftIndex)
+            if (FrnUtil.IsRoot(frn))
             {
                 return frn;
             }
 
-            if ((node.ParentFrn & MftRecordIndexMask) == RootMftIndex)
+            if (FrnUtil.IsRoot(node.ParentFrn))
             {
                 return node.ParentFrn;
             }
         }
 
-        return RootMftIndex;
+        return FrnUtil.RootMftIndex;
     }
 
     private unsafe void EnumerateMft(
