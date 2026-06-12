@@ -59,6 +59,16 @@ internal static class VolumePathParsing
     }
 
     /// <summary>
+    /// Reads a single null-terminated string from the start of a fixed-size
+    /// buffer (as written by the Win32 *W APIs into a <c>char[]</c>).
+    /// </summary>
+    public static string ReadNullTerminated(ReadOnlySpan<char> buffer)
+    {
+        var end = buffer.IndexOf('\0');
+        return (end < 0 ? buffer : buffer[..end]).ToString();
+    }
+
+    /// <summary>
     /// Formats a 32-bit volume serial as the conventional <c>XXXX-XXXX</c> form.
     /// </summary>
     public static string FormatSerial(uint serial)

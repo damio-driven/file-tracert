@@ -1,5 +1,4 @@
 using System.Runtime.InteropServices;
-using System.Text;
 using FileTracert.Contracts.Platform;
 using FileTracert.Platform.Internal;
 using FileTracert.Platform.Interop;
@@ -28,8 +27,8 @@ internal sealed class Win32VolumeProbe : IVolumeProbe
         var results = new List<ProbedVolume>();
         var diskMap = _diskResolver.BuildDriveLetterToDiskMap();
 
-        var buffer = new StringBuilder(NativeMethods.MaxPath);
-        var handle = NativeMethods.FindFirstVolume(buffer, (uint)buffer.Capacity);
+        var buffer = new char[NativeMethods.MaxPath];
+        var handle = NativeMethods.FindFirstVolume(buffer, (uint)buffer.Length);
         if (handle == NativeMethods.InvalidHandleValue)
         {
             _logger.LogWarning(
@@ -42,7 +41,7 @@ internal sealed class Win32VolumeProbe : IVolumeProbe
         {
             do
             {
-                var guid = buffer.ToString();
+                var guid = VolumePathParsing.ReadNullTerminated(buffer);
                 // A removable volume can vanish mid-enumeration: never let one
                 // bad volume abort the whole sweep.
                 try
@@ -53,11 +52,8 @@ internal sealed class Win32VolumeProbe : IVolumeProbe
                 {
                     _logger.LogWarning(ex, "Skipping volume {Guid} that failed to probe.", guid);
                 }
-
-                buffer.Clear();
-                buffer.EnsureCapacity(NativeMethods.MaxPath);
             }
-            while (NativeMethods.FindNextVolume(handle, buffer, (uint)buffer.Capacity));
+            while (NativeMethods.FindNextVolume(handle, buffer, (uint)buffer.Length));
         }
         finally
         {
@@ -123,25 +119,28 @@ internal sealed class Win32VolumeProbe : IVolumeProbe
 
     private static (string? Label, string? Serial, string FileSystem) GetVolumeInformation(string volumeGuid)
     {
-        var labelBuffer = new StringBuilder(NativeMethods.MaxPath + 1);
-        var fileSystemBuffer = new StringBuilder(NativeMethods.MaxPath + 1);
+        var labelBuffer = new char[NativeMethods.MaxPath + 1];
+        var fileSystemBuffer = new char[NativeMethods.MaxPath + 1];
 
         if (!NativeMethods.GetVolumeInformation(
                 volumeGuid,
                 labelBuffer,
-                (uint)labelBuffer.Capacity,
+                (uint)labelBuffer.Length,
                 out var serialNumber,
                 out _,
                 out _,
                 fileSystemBuffer,
-                (uint)fileSystemBuffer.Capacity))
+                (uint)fileSystemBuffer.Length))
         {
             // Not ready (e.g. empty card reader): leave metadata blank.
             return (null, null, string.Empty);
         }
 
-        var label = labelBuffer.Length > 0 ? labelBuffer.ToString() : null;
-        return (label, VolumePathParsing.FormatSerial(serialNumber), fileSystemBuffer.ToString());
+        var label = VolumePathParsing.ReadNullTerminated(labelBuffer);
+        return (
+            label.Length > 0 ? label : null,
+            VolumePathParsing.FormatSerial(serialNumber),
+            VolumePathParsing.ReadNullTerminated(fileSystemBuffer));
     }
 
     private static (long Capacity, long Free) GetSpace(string volumeGuid)

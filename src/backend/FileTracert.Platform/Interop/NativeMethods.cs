@@ -1,13 +1,13 @@
 using System.Runtime.InteropServices;
-using System.Text;
 
 namespace FileTracert.Platform.Interop;
 
 /// <summary>
-/// Raw Win32 P/Invoke declarations. Internal to Platform — no native call ever
-/// escapes this assembly (see CLAUDE.md §3).
+/// Raw Win32 P/Invoke declarations (source-generated via LibraryImport).
+/// Internal to Platform — no native call ever escapes this assembly
+/// (see CLAUDE.md §3).
 /// </summary>
-internal static class NativeMethods
+internal static partial class NativeMethods
 {
     internal const int MaxPath = 260;
     internal const int ErrorMoreData = 234;
@@ -17,50 +17,56 @@ internal static class NativeMethods
 
     internal static readonly IntPtr InvalidHandleValue = new(-1);
 
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    internal static extern IntPtr FindFirstVolume(
-        [Out] StringBuilder lpszVolumeName,
+    [LibraryImport("kernel32.dll", EntryPoint = "FindFirstVolumeW", SetLastError = true,
+        StringMarshalling = StringMarshalling.Utf16)]
+    internal static partial IntPtr FindFirstVolume(
+        [Out] char[] lpszVolumeName,
         uint cchBufferLength);
 
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [LibraryImport("kernel32.dll", EntryPoint = "FindNextVolumeW", SetLastError = true,
+        StringMarshalling = StringMarshalling.Utf16)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    internal static extern bool FindNextVolume(
+    internal static partial bool FindNextVolume(
         IntPtr hFindVolume,
-        [Out] StringBuilder lpszVolumeName,
+        [Out] char[] lpszVolumeName,
         uint cchBufferLength);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
+    [LibraryImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    internal static extern bool FindVolumeClose(IntPtr hFindVolume);
+    internal static partial bool FindVolumeClose(IntPtr hFindVolume);
 
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [LibraryImport("kernel32.dll", EntryPoint = "GetVolumePathNamesForVolumeNameW", SetLastError = true,
+        StringMarshalling = StringMarshalling.Utf16)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    internal static extern bool GetVolumePathNamesForVolumeName(
+    internal static partial bool GetVolumePathNamesForVolumeName(
         string lpszVolumeName,
-        [Out] char[]? lpszVolumePathNames,
+        [Out] char[] lpszVolumePathNames,
         uint cchBufferLength,
         out uint lpcchReturnLength);
 
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [LibraryImport("kernel32.dll", EntryPoint = "GetVolumeInformationW", SetLastError = true,
+        StringMarshalling = StringMarshalling.Utf16)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    internal static extern bool GetVolumeInformation(
+    internal static partial bool GetVolumeInformation(
         string lpRootPathName,
-        [Out] StringBuilder lpVolumeNameBuffer,
+        [Out] char[] lpVolumeNameBuffer,
         uint nVolumeNameSize,
         out uint lpVolumeSerialNumber,
         out uint lpMaximumComponentLength,
         out uint lpFileSystemFlags,
-        [Out] StringBuilder lpFileSystemNameBuffer,
+        [Out] char[] lpFileSystemNameBuffer,
         uint nFileSystemNameSize);
 
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [LibraryImport("kernel32.dll", EntryPoint = "GetDiskFreeSpaceExW", SetLastError = true,
+        StringMarshalling = StringMarshalling.Utf16)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    internal static extern bool GetDiskFreeSpaceEx(
+    internal static partial bool GetDiskFreeSpaceEx(
         string lpDirectoryName,
         out ulong lpFreeBytesAvailableToCaller,
         out ulong lpTotalNumberOfBytes,
         out ulong lpTotalNumberOfFreeBytes);
 
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    internal static extern uint GetDriveType(string lpRootPathName);
+    [LibraryImport("kernel32.dll", EntryPoint = "GetDriveTypeW", SetLastError = true,
+        StringMarshalling = StringMarshalling.Utf16)]
+    internal static partial uint GetDriveType(string lpRootPathName);
 }
