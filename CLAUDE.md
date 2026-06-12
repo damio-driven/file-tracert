@@ -437,6 +437,15 @@ src/app/
 - **Path UNC / di rete** (modello di identità diverso).
 - Eventuale **upgrade ad Angular 22** quando assestata.
 
+### Debiti tecnici noti e datati
+- **Re-scan idempotente vs proiezione** *(introdotto allo step 4)* — lo
+  `ScanService` usa **truncate-per-volume** in transazione per la re-scan
+  completa. È corretto finché la proiezione non esiste, MA cancella anche i
+  campi `Pending*`/overlay di quel volume a ogni re-scan. **Allo step 9
+  (proiezione) va sostituito con un merge** che preserva l'overlay (matching per
+  `UsnFileRef`/path, update invece di delete+insert dei record con stato pendente).
+  Da affrontare obbligatoriamente prima di considerare la proiezione completa.
+
 ---
 
 ## 12. Riferimenti
