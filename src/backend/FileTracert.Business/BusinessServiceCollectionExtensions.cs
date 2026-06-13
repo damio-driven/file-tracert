@@ -1,4 +1,5 @@
 using FileTracert.Business.Scanning;
+using FileTracert.Business.Setup;
 using FileTracert.Business.Volumes;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -11,6 +12,10 @@ public static class BusinessServiceCollectionExtensions
     {
         services.AddScoped<VolumeSyncService>();
         services.AddScoped<ScanService>();
+        services.AddScoped<FilterReconciler>();
+        services.AddScoped<FolderBrowseService>();
+        services.AddScoped<FilterSettingsService>();
+        services.AddScoped<WatchedRootsService>();
         return services;
     }
 }
