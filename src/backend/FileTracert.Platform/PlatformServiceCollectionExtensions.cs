@@ -16,6 +16,7 @@ public static class PlatformServiceCollectionExtensions
         services.AddSingleton<IUsnReader, NtfsUsnReader>();
         services.AddSingleton<IDirectoryEnumerator, ManagedDirectoryEnumerator>();
         services.AddSingleton<IFileMetadataReader, ManagedFileMetadataReader>();
+        services.AddSingleton<IFileSystemBrowser, ManagedFileSystemBrowser>();
         return services;
     }
 }
