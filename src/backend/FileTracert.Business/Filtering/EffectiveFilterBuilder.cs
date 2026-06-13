@@ -48,4 +48,12 @@ public static class EffectiveFilterBuilder
 
     private static string NormalizeExtension(string extension) =>
         extension.TrimStart('.').ToLowerInvariant();
+
+    /// <summary>Normalizes raw extensions: trim leading dot, lower-case, drop empties, de-duplicate.</summary>
+    public static List<string> NormalizeExtensions(IEnumerable<string> extensions) =>
+        extensions
+            .Select(NormalizeExtension)
+            .Where(e => e.Length > 0)
+            .Distinct()
+            .ToList();
 }

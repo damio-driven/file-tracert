@@ -114,11 +114,7 @@ public sealed class WatchedRootsService
             return null;
         }
 
-        var extensions = dto.Extensions
-            .Select(e => e.TrimStart('.').ToLowerInvariant())
-            .Where(e => e.Length > 0)
-            .Distinct()
-            .ToList();
+        var extensions = EffectiveFilterBuilder.NormalizeExtensions(dto.Extensions);
         return JsonSerializer.Serialize(new FilterOverride { Extensions = extensions }, JsonOptions);
     }
 

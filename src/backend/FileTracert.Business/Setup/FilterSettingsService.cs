@@ -35,11 +35,7 @@ public sealed class FilterSettingsService
         var settings = await _db.AppSettings.FirstAsync(ct);
         var oldFilter = EffectiveFilterBuilder.Build(settings, filterOverrideJson: null);
 
-        settings.DefaultExtensionFilter = request.AllowedExtensions
-            .Select(e => e.TrimStart('.').ToLowerInvariant())
-            .Where(e => e.Length > 0)
-            .Distinct()
-            .ToList();
+        settings.DefaultExtensionFilter = EffectiveFilterBuilder.NormalizeExtensions(request.AllowedExtensions);
         settings.ExcludedPaths = request.ExcludedPaths.ToList();
         await _db.SaveChangesAsync(ct);
 
