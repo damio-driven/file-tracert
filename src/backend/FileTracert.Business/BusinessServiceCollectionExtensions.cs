@@ -1,6 +1,8 @@
+using FileTracert.Business.Notifications;
 using FileTracert.Business.Scanning;
 using FileTracert.Business.Setup;
 using FileTracert.Business.Volumes;
+using FileTracert.Contracts.Notifications;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace FileTracert.Business;
@@ -16,6 +18,7 @@ public static class BusinessServiceCollectionExtensions
         services.AddScoped<FolderBrowseService>();
         services.AddScoped<FilterSettingsService>();
         services.AddScoped<WatchedRootsService>();
+        services.AddScoped<INotificationPublisher, NotificationService>();
         return services;
     }
 }

@@ -1,4 +1,6 @@
 using FileTracert.Business.Scanning;
+using FileTracert.Contracts.Enums;
+using FileTracert.Contracts.Notifications;
 using FileTracert.Data;
 using FileTracert.Host.Configuration;
 using Microsoft.EntityFrameworkCore;
@@ -110,8 +112,36 @@ public sealed class ScanWorker : BackgroundService
         }
         catch (Exception ex)
         {
-            // One bad volume (offline mid-scan, no mount point…) must not kill the worker.
+            // One bad volume (offline mid-scan, no mount point…) must not kill the worker,
+            // but the failure must be visible: full log + a user-facing notification.
             _logger.LogError(ex, "Full scan of volume {VolumeId} failed.", volumeId);
+            await PublishScanFailureAsync(volumeId, ex, ct);
+        }
+    }
+
+    /// <summary>Records a user-visible notification for a failed volume scan. Best-effort.</summary>
+    private async Task PublishScanFailureAsync(int volumeId, Exception ex, CancellationToken ct)
+    {
+        try
+        {
+            using var scope = _services.CreateScope();
+            var label = await scope.ServiceProvider.GetRequiredService<FileTracertDbContext>()
+                .Volumes.Where(v => v.Id == volumeId)
+                .Select(v => v.Label ?? v.VolumeGuid)
+                .FirstOrDefaultAsync(ct) ?? $"#{volumeId}";
+
+            await scope.ServiceProvider.GetRequiredService<INotificationPublisher>().PublishAsync(
+                NotificationSeverity.Error,
+                "Scan",
+                $"Scansione fallita per «{label}»",
+                ex.ToString(),
+                volumeId,
+                ct);
+        }
+        catch (Exception notifyEx)
+        {
+            // Notifying about a failure must not itself crash the worker.
+            _logger.LogError(notifyEx, "Failed to record scan-failure notification for volume {VolumeId}.", volumeId);
         }
     }
 

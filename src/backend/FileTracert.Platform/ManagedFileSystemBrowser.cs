@@ -48,14 +48,14 @@ internal sealed class ManagedFileSystemBrowser : IFileSystemBrowser
         {
             return Directory.GetDirectories(directory);
         }
-        catch (UnauthorizedAccessException)
+        catch (UnauthorizedAccessException ex)
         {
-            _logger.LogDebug("Cannot list directories under {Directory}; returning none.", directory);
+            _logger.LogDebug(ex, "Cannot list directories under {Directory}; returning none.", directory);
             return [];
         }
-        catch (DirectoryNotFoundException)
+        catch (DirectoryNotFoundException ex)
         {
-            _logger.LogDebug("Cannot list directories under {Directory}; returning none.", directory);
+            _logger.LogDebug(ex, "Cannot list directories under {Directory}; returning none.", directory);
             return [];
         }
         catch (IOException ex)
@@ -65,7 +65,7 @@ internal sealed class ManagedFileSystemBrowser : IFileSystemBrowser
         }
     }
 
-    private static bool HasSubDirectory(string directory)
+    private bool HasSubDirectory(string directory)
     {
         try
         {
@@ -74,6 +74,7 @@ internal sealed class ManagedFileSystemBrowser : IFileSystemBrowser
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or DirectoryNotFoundException or IOException)
         {
+            _logger.LogDebug(ex, "Cannot probe sub-folders of {Directory}; assuming none.", directory);
             return false;
         }
     }

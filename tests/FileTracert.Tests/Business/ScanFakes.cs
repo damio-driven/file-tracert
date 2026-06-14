@@ -1,7 +1,27 @@
 using System.ComponentModel;
+using FileTracert.Contracts.Enums;
+using FileTracert.Contracts.Notifications;
 using FileTracert.Contracts.Platform;
 
 namespace FileTracert.Tests.Business;
+
+/// <summary>Captures notifications published during a scan for assertions.</summary>
+internal sealed class FakeNotificationPublisher : INotificationPublisher
+{
+    public List<(NotificationSeverity Severity, string Source, string Title, string Message, int? VolumeId)> Published { get; } = [];
+
+    public Task PublishAsync(
+        NotificationSeverity severity,
+        string source,
+        string title,
+        string message,
+        int? volumeId,
+        CancellationToken ct)
+    {
+        Published.Add((severity, source, title, message, volumeId));
+        return Task.CompletedTask;
+    }
+}
 
 /// <summary>Hand-written port fakes for ScanService integration tests.</summary>
 internal sealed class FakeVolumeProbe(ProbedVolume volume) : IVolumeProbe

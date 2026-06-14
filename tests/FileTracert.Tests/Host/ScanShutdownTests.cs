@@ -72,6 +72,7 @@ public sealed class ScanShutdownTests
                     [@"Docs\r.pdf"] = new FileMetadata(1234, T, T),
                 }),
                 new BulkIndexWriter(ctx),
+                new FakeNotificationPublisher(),
                 NullLogger<ScanService>.Instance);
 
             var act = async () => await sut.ScanVolumeAsync(volumeId, cts.Token);

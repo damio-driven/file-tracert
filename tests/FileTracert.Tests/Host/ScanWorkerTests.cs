@@ -78,4 +78,49 @@ public sealed class ScanWorkerTests
             (await db.Files.CountAsync()).Should().Be(2);
         }
     }
+
+    [Fact]
+    public async Task Failed_scan_raises_a_notification_and_the_worker_keeps_running()
+    {
+        // The volume is marked online and never scanned, but the probe doesn't know it
+        // → ScanService throws "offline". The worker must record an Error notification
+        // and survive (not crash the loop).
+        using var factory = new FileTracertAppFactory
+        {
+            DisableVolumeSync = true,
+            Probe = new FakeVolumesProbe([]),
+            Seed = async (db, ct) =>
+            {
+                var volume = new Volume
+                {
+                    VolumeGuid = Guid,
+                    Label = "Broken",
+                    FileSystem = "exFAT",
+                    ScanEngine = VolumeScanEngine.Enumeration,
+                    IsOnline = true,
+                };
+                db.Volumes.Add(volume);
+                await db.SaveChangesAsync(ct);
+
+                db.WatchedRoots.Add(new WatchedRoot { VolumeId = volume.Id, RelativePath = "", IsActive = true });
+                await db.SaveChangesAsync(ct);
+            },
+        };
+
+        using var _ = factory.CreateClient();
+
+        await TestPolling.WaitUntilAsync(async () =>
+        {
+            using var scope = factory.Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<FileTracertDbContext>();
+            return await db.Notifications.AnyAsync(n => n.Source == "Scan");
+        });
+
+        using var verifyScope = factory.Services.CreateScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<FileTracertDbContext>();
+        var notification = await verifyDb.Notifications.SingleAsync(n => n.Source == "Scan");
+        notification.Severity.Should().Be(NotificationSeverity.Error);
+        notification.VolumeId.Should().NotBeNull();
+        notification.Message.Should().NotBeNullOrWhiteSpace();
+    }
 }

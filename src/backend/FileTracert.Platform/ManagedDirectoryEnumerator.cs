@@ -57,13 +57,13 @@ internal sealed class ManagedDirectoryEnumerator : IDirectoryEnumerator
         {
             return Directory.GetFileSystemEntries(directory);
         }
-        catch (UnauthorizedAccessException)
+        catch (UnauthorizedAccessException ex)
         {
-            _logger.LogDebug("Access denied, skipping {Directory}.", directory);
+            _logger.LogDebug(ex, "Access denied, skipping {Directory}.", directory);
         }
-        catch (DirectoryNotFoundException)
+        catch (DirectoryNotFoundException ex)
         {
-            _logger.LogDebug("Directory vanished mid-scan, skipping {Directory}.", directory);
+            _logger.LogDebug(ex, "Directory vanished mid-scan, skipping {Directory}.", directory);
         }
         catch (IOException ex)
         {

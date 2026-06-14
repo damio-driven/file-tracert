@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using FileTracert.Business.Filtering;
 using FileTracert.Contracts.Enums;
+using FileTracert.Contracts.Notifications;
 using FileTracert.Contracts.Platform;
 using FileTracert.Data;
 using FileTracert.Data.Entities;
@@ -25,6 +26,7 @@ public sealed class ScanService
     private readonly IDirectoryEnumerator _enumerator;
     private readonly IFileMetadataReader _metadataReader;
     private readonly IBulkIndexWriter _bulkWriter;
+    private readonly INotificationPublisher _notifications;
     private readonly ILogger<ScanService> _logger;
 
     public ScanService(
@@ -34,6 +36,7 @@ public sealed class ScanService
         IDirectoryEnumerator enumerator,
         IFileMetadataReader metadataReader,
         IBulkIndexWriter bulkWriter,
+        INotificationPublisher notifications,
         ILogger<ScanService> logger)
     {
         _db = db;
@@ -42,6 +45,7 @@ public sealed class ScanService
         _enumerator = enumerator;
         _metadataReader = metadataReader;
         _bulkWriter = bulkWriter;
+        _notifications = notifications;
         _logger = logger;
     }
 
@@ -89,6 +93,17 @@ public sealed class ScanService
                     "USN journal unavailable for volume {VolumeId} ({Guid}); falling back to enumeration.",
                     volumeId, volume.VolumeGuid);
                 volume.ScanEngine = VolumeScanEngine.Enumeration;
+
+                // Resilience, not silence: the scan continues via enumeration, but the
+                // user should know their NTFS volume isn't using the fast incremental path.
+                await _notifications.PublishAsync(
+                    NotificationSeverity.Warning,
+                    "Scan",
+                    $"USN journal non disponibile per «{volume.Label ?? volume.VolumeGuid}»",
+                    $"Indicizzazione tramite enumerazione (più lenta). Dettaglio: {ex.Message} (codice {ex.NativeErrorCode}). " +
+                    "Eseguire il servizio come amministratore abilita il giornale USN.",
+                    volume.Id,
+                    ct);
             }
         }
 

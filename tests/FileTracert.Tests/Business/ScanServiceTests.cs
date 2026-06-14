@@ -1,5 +1,6 @@
 using FileTracert.Business.Scanning;
 using FileTracert.Contracts.Enums;
+using FileTracert.Contracts.Notifications;
 using FileTracert.Contracts.Platform;
 using FileTracert.Data;
 using FileTracert.Data.Entities;
@@ -48,8 +49,10 @@ public sealed class ScanServiceTests
     }
 
     private static ScanService Build(SqliteInMemoryContext harness, FileTracertDbContext ctx,
-        IVolumeProbe probe, IUsnReader usn, IDirectoryEnumerator enumerator, IFileMetadataReader meta) =>
-        new(ctx, probe, usn, enumerator, meta, new BulkIndexWriter(ctx), NullLogger<ScanService>.Instance);
+        IVolumeProbe probe, IUsnReader usn, IDirectoryEnumerator enumerator, IFileMetadataReader meta,
+        INotificationPublisher? notifications = null) =>
+        new(ctx, probe, usn, enumerator, meta, new BulkIndexWriter(ctx),
+            notifications ?? new FakeNotificationPublisher(), NullLogger<ScanService>.Instance);
 
     [Fact]
     public async Task Full_scan_via_enumeration_builds_tree_applies_filters_and_sizes()
@@ -148,13 +151,15 @@ public sealed class ScanServiceTests
             new(@"Pics\x.jpg", "x.jpg", false, 5, T, T, FileAttributes.Normal),
         };
 
+        var notifications = new FakeNotificationPublisher();
         await using (var ctx = harness.CreateContext())
         {
             var sut = Build(harness, ctx,
                 new FakeVolumeProbe(ProbedFor("NTFS")),
                 new ThrowingUsnReader(), // EnsureJournal throws Win32 1179
                 new FakeDirectoryEnumerator(entries),
-                new FakeFileMetadataReader(new Dictionary<string, FileMetadata>()));
+                new FakeFileMetadataReader(new Dictionary<string, FileMetadata>()),
+                notifications);
             await sut.ScanVolumeAsync(volumeId, CancellationToken.None);
         }
 
@@ -168,6 +173,10 @@ public sealed class ScanServiceTests
 
         // The volume still got indexed via the enumeration fallback.
         (await read.Files.Select(f => f.Name).ToListAsync()).Should().Equal("x.jpg");
+
+        // Resilience, not silence: the degraded path raised a user-visible notification.
+        notifications.Published.Should().ContainSingle()
+            .Which.Severity.Should().Be(NotificationSeverity.Warning);
     }
 
     [Fact]
