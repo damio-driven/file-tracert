@@ -92,6 +92,39 @@ public sealed class SqliteLogStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Writes_are_visible_to_a_separate_store_instance_on_the_same_file()
+    {
+        // Mirrors production: the logger processor writes through one path while the
+        // API reads through another — separate connections must see committed rows.
+        var t0 = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        await _store.WriteBatchAsync([Record(2, "shared", t0)], CancellationToken.None);
+
+        var reader = new SqliteLogStore($"Data Source={_dbPath}");
+        var page = await reader.QueryAsync(new LogQuery(0, 50), CancellationToken.None);
+
+        page.Items.Should().ContainSingle(e => e.Message == "shared");
+    }
+
+    [Fact]
+    public async Task Query_filters_by_category()
+    {
+        var t0 = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        await _store.WriteBatchAsync(
+            [
+                Record(2, "a", t0, category: "Cat.A"),
+                Record(3, "b", t0.AddSeconds(1), category: "Cat.B"),
+            ],
+            CancellationToken.None);
+
+        var page = await _store.QueryAsync(
+            new LogQuery(Skip: 0, Take: 50, Category: "Cat.B"),
+            CancellationToken.None);
+
+        page.TotalCount.Should().Be(1);
+        page.Items[0].Message.Should().Be("b");
+    }
+
+    [Fact]
     public async Task Query_pages()
     {
         var t0 = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);

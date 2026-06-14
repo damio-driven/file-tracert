@@ -1,6 +1,8 @@
 using System.Security.Cryptography;
+using FileTracert.Contracts.Logging;
 using FileTracert.Data;
 using FileTracert.Data.Entities;
+using FileTracert.Host.Logging;
 using Microsoft.EntityFrameworkCore;
 
 namespace FileTracert.Host.Infrastructure;
@@ -17,15 +19,18 @@ public sealed class DatabaseInitializer
     private readonly IServiceProvider _services;
     private readonly IApiTokenAccessor _tokenAccessor;
     private readonly ILogger<DatabaseInitializer> _logger;
+    private readonly LogLevelSwitch? _logLevelSwitch;
 
     public DatabaseInitializer(
         IServiceProvider services,
         IApiTokenAccessor tokenAccessor,
-        ILogger<DatabaseInitializer> logger)
+        ILogger<DatabaseInitializer> logger,
+        LogLevelSwitch? logLevelSwitch = null)
     {
         _services = services;
         _tokenAccessor = tokenAccessor;
         _logger = logger;
+        _logLevelSwitch = logLevelSwitch;
     }
 
     public async Task InitializeAsync(CancellationToken ct)
@@ -49,6 +54,10 @@ public sealed class DatabaseInitializer
             {
                 await seeder.SeedAsync(db, ct);
             }
+
+            // Apply the persisted minimum log level to the runtime switch (read after
+            // the seeder so a seeded override is honored).
+            await ApplyLogLevelAsync(db, ct);
 
             _logger.LogInformation("Database initialized (migrated, WAL on).");
         }
@@ -80,6 +89,24 @@ public sealed class DatabaseInitializer
 
         await db.SaveChangesAsync(ct);
         return settings.ApiToken;
+    }
+
+    private async Task ApplyLogLevelAsync(FileTracertDbContext db, CancellationToken ct)
+    {
+        if (_logLevelSwitch is null)
+        {
+            return;
+        }
+
+        var name = await db.AppSettings.AsNoTracking()
+            .Select(s => s.MinimumLogLevel)
+            .FirstOrDefaultAsync(ct);
+
+        if (LogLevelNames.TryParse(name) is { } level)
+        {
+            _logLevelSwitch.Current = (Microsoft.Extensions.Logging.LogLevel)level;
+            _logger.LogInformation("Minimum log level set to {Level}.", name);
+        }
     }
 
     private static string GenerateToken() => Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
