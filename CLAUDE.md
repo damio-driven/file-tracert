@@ -306,7 +306,18 @@ dietro `IFileSearchIndex`.
 `Extension` (PK) · `Category`. Seed con le estensioni comuni.
 
 **AppSettings** — singleton tipizzato: filtro default, esclusioni path, token API
-loopback, margine % spazio.
+loopback, margine % spazio, `MinimumLogLevel`, retention log.
+
+### Diagnostica
+
+**LogEntries** — su **DB log dedicato** (`filetracert-logs.db`, non il DB
+principale): `Id` · `TimestampUtc` · `Level` · `Category` · `Message` ·
+`Exception?` (full) · `EventId?` · `Scope?`. Scritta da un `ILoggerProvider`
+custom con coda non bloccante; retention/trim periodico.
+
+**Notifications** — DB principale (basso volume, errori di background visibili in
+UI): `Id` · `TimestampUtc` · `Severity` (Info|Warning|Error) · `Source` ·
+`Title` · `Message` (eccezione reale) · `VolumeId?` · `IsRead` · `IsDismissed` + audit.
 
 ### Enum
 - `VolumeScanEngine` { UsnJournal, Enumeration }
@@ -397,6 +408,12 @@ src/app/
 - Async/await end-to-end con CancellationToken propagato.
 - Naming chiaro, niente abbreviazioni criptiche.
 - Commenti dove la logica non è ovvia (USN, ledger, proiezione).
+- **No silent catch**: mai sopprimere un'eccezione in silenzio. La cattura per
+  resilienza è consentita (es. `ScanWorker` che prosegue sugli altri volumi se
+  uno fallisce), ma ogni `catch` deve (1) loggare l'eccezione completa
+  (messaggio + stack + inner) e (2) se l'errore riguarda un'azione/aspettativa
+  dell'utente, farlo risalire a video (risposta API o riga in `Notifications`).
+  Resilienza sì, silenzio no.
 
 ---
 
