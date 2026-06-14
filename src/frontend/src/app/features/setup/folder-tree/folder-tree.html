@@ -1,0 +1,40 @@
+<ul class="tree" [class.tree--nested]="depth() > 0">
+  @for (folder of store.foldersAt(path()); track folder.relativePath) {
+    <li class="node">
+      <div class="row flex items-center gap-2">
+        @if (folder.hasChildren) {
+          <button
+            class="exp"
+            type="button"
+            (click)="toggle(folder.relativePath)"
+            [attr.aria-expanded]="isExpanded(folder.relativePath)"
+            [attr.aria-label]="(isExpanded(folder.relativePath) ? 'Comprimi ' : 'Espandi ') + folder.name"
+          >
+            {{ isExpanded(folder.relativePath) ? '▾' : '▸' }}
+          </button>
+        } @else {
+          <span class="exp exp--leaf" aria-hidden="true">·</span>
+        }
+        <span class="fname mono truncate">{{ folder.name }}</span>
+        <button
+          class="ft-btn ft-btn--ghost add"
+          type="button"
+          (click)="pick.emit(folder.relativePath)"
+          [attr.aria-label]="'Monitora la cartella ' + folder.name"
+        >
+          + Monitora
+        </button>
+      </div>
+
+      @if (isExpanded(folder.relativePath)) {
+        <ft-folder-tree [path]="folder.relativePath" [depth]="depth() + 1" (pick)="pick.emit($event)" />
+      }
+    </li>
+  } @empty {
+    @if (store.loading()) {
+      <li class="muted">Caricamento…</li>
+    } @else {
+      <li class="muted">Nessuna sottocartella.</li>
+    }
+  }
+</ul>

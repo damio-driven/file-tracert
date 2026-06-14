@@ -73,3 +73,44 @@ export interface PagedResult<T> {
   skip: number;
   take: number;
 }
+
+/** One immediate sub-folder from the real-filesystem browse endpoint. */
+export interface FolderNodeDto {
+  name: string;
+  relativePath: string;
+  hasChildren: boolean;
+}
+
+/** Per-root filter override. useDefault=true clears the override. */
+export interface FilterOverrideDto {
+  useDefault: boolean;
+  extensions: string[];
+}
+
+export interface CreateWatchedRootRequest {
+  relativePath: string;
+  filterOverride: FilterOverrideDto | null;
+}
+
+export interface UpdateWatchedRootRequest {
+  isActive: boolean | null;
+  filterOverride: FilterOverrideDto | null;
+}
+
+/** Global default filter (AppSettings). Empty allowedExtensions = all types. */
+export interface FilterSettingsDto {
+  allowedExtensions: string[];
+  excludedPaths: string[];
+}
+
+/** Reconcile outcome after a filter change (no rescan). */
+export interface ReconcileResultDto {
+  includedCount: number;
+  excludedCount: number;
+  needsScan: boolean;
+}
+
+export interface WatchedRootUpdateResponse {
+  root: WatchedRootDto;
+  reconcile: ReconcileResultDto | null;
+}

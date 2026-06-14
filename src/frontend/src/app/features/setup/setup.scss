@@ -1,0 +1,90 @@
+.layout {
+  display: flex;
+  gap: var(--sp-4);
+  align-items: flex-start;
+}
+
+.layout > ft-panel {
+  flex: 1;
+  min-width: 0;
+}
+
+.side {
+  width: 420px;
+  flex: 0 0 420px;
+}
+
+// Stack the picker over the configuration column on narrow viewports so the
+// fixed-width sidebar never forces horizontal overflow.
+@media (max-width: 900px) {
+  .layout {
+    flex-direction: column;
+  }
+  .layout > ft-panel {
+    width: 100%;
+  }
+  .side {
+    width: 100%;
+    flex: 1 1 auto;
+  }
+}
+
+.roots {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.root {
+  padding: 8px 6px;
+  border-bottom: 1px solid var(--line-soft);
+
+  &:last-child {
+    border-bottom: 0;
+  }
+}
+
+.rp {
+  flex: 1;
+  min-width: 0;
+  color: var(--txt);
+  font-size: 12px;
+}
+
+.actions {
+  margin-top: var(--sp-3);
+}
+
+.muted {
+  margin: 0;
+  color: var(--txt-dim);
+  font-size: 12px;
+}
+
+// Reconcile feedback banner. The warn variant carries a full amber-tinted border
+// + background wash (no side-stripe), so the state reads without relying on a
+// single colored edge.
+.ft-note {
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-panel);
+  background: var(--panel-2);
+  color: var(--txt-dim);
+  font-size: 12.5px;
+  line-height: 1.5;
+  margin-bottom: var(--sp-4);
+
+  b {
+    color: var(--txt);
+    font-weight: 600;
+  }
+
+  &.warn {
+    border-color: rgba(240, 168, 48, 0.45);
+    background: var(--wait-bg);
+
+    b {
+      color: var(--amber);
+    }
+  }
+}

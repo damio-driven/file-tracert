@@ -1,0 +1,97 @@
+// Single-step indent per level: the recursive <ft-folder-tree> renders inside the
+// parent <li>, so nested trees only add ONE fixed inset — never a compounding
+// depth multiplier (which would over-indent deep branches).
+.tree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.tree--nested {
+  padding-left: 18px;
+  border-left: 1px solid var(--line-soft);
+  margin-left: 8px;
+}
+
+.node {
+  padding: 0;
+}
+
+.row {
+  padding: 4px 6px;
+  border-radius: var(--r-ctl);
+  transition: background var(--t-fast) var(--ease-out);
+
+  &:hover,
+  &:focus-within {
+    background: var(--panel-2);
+  }
+}
+
+.exp {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 0;
+  border-radius: 5px;
+  color: var(--txt-dim);
+  font-size: 11px;
+  cursor: pointer;
+  transition: color var(--t-fast) var(--ease-out);
+
+  &:hover {
+    color: var(--txt);
+  }
+  &:focus-visible {
+    outline: 2px solid var(--teal);
+    outline-offset: 1px;
+  }
+
+  &--leaf {
+    cursor: default;
+    color: var(--txt-faint);
+  }
+}
+
+.fname {
+  flex: 1;
+  min-width: 0;
+  color: var(--txt);
+  font-size: 12px;
+}
+
+.add {
+  flex-shrink: 0;
+  padding: 2px 9px;
+  font-size: 11px;
+  opacity: 0;
+  transition: opacity var(--t-med) var(--ease-out);
+}
+
+// Reveal the action on row interaction; keep it permanently visible when focused
+// for keyboard users.
+.row:hover .add,
+.add:focus-visible {
+  opacity: 1;
+}
+
+.muted {
+  padding: 4px 6px;
+  color: var(--txt-faint);
+  font-size: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .row,
+  .exp,
+  .add {
+    transition: none;
+  }
+  // Keyboard users still need the action reachable; mouse-only reveal is fine.
+  .add {
+    opacity: 1;
+  }
+}

@@ -1,0 +1,27 @@
+<div class="editor flex-col gap-3">
+  <div class="chips flex flex-wrap gap-2" role="group" aria-label="Categorie di tipi file da indicizzare">
+    @for (cat of categories; track cat.key) {
+      <button
+        type="button"
+        class="chip"
+        [class.on]="isOn(cat.key)"
+        [attr.aria-pressed]="isOn(cat.key)"
+        (click)="toggle(cat.key)"
+      >
+        {{ cat.label }}
+      </button>
+    }
+  </div>
+
+  <p class="hint">
+    @if (allTypes()) {
+      Nessuna categoria selezionata = <b>tutti i tipi</b> di file vengono indicizzati.
+    } @else {
+      Solo le categorie evidenziate verranno indicizzate.
+    }
+  </p>
+
+  <div>
+    <button type="button" class="ft-btn ft-btn--primary" (click)="emitSave()">Salva filtro</button>
+  </div>
+</div>

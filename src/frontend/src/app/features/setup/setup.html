@@ -1,0 +1,84 @@
+<section class="ft-rise">
+  <h1 class="ft-h1">Setup</h1>
+  <p class="ft-sub">
+    Scegli quali cartelle indicizzare e con quali tipi di file. Si configurano solo i volumi online.
+  </p>
+
+  @if (store.error(); as err) {
+    <div class="ft-error">{{ err }}</div>
+  }
+
+  @if (volume(); as v) {
+    @if (store.lastReconcile(); as r) {
+      <div class="ft-note" [class.warn]="r.needsScan" role="status">
+        Filtro applicato all'indice: {{ r.includedCount.toLocaleString('it-IT') }} inclusi ·
+        {{ r.excludedCount.toLocaleString('it-IT') }} esclusi.
+        @if (r.needsScan) {
+          <b>Servono nuovi tipi: avvia una scansione per acquisirli.</b>
+        }
+      </div>
+    }
+
+    <div class="layout">
+      <ft-panel
+        [heading]="'Cartelle di ' + (v.label ?? '(senza etichetta)')"
+        caption="filesystem reale · lazy"
+      >
+        <ft-folder-tree (pick)="addRoot($event)" />
+      </ft-panel>
+
+      <div class="side flex-col gap-4">
+        <ft-panel heading="Cartelle monitorate">
+          <ul class="roots">
+            @for (r of store.roots(); track r.id) {
+              <li class="root flex items-center justify-between gap-2">
+                <span class="rp mono truncate">{{ r.relativePath }}</span>
+                <span class="flex items-center gap-2 shrink-0">
+                  @if (r.isActive) {
+                    <ft-pill variant="on">Attiva</ft-pill>
+                  } @else {
+                    <ft-pill variant="off">Sospesa</ft-pill>
+                  }
+                  <button
+                    class="ft-btn ft-btn--ghost"
+                    [disabled]="store.busy()"
+                    (click)="store.toggleRoot(r.id, !r.isActive)"
+                  >
+                    {{ r.isActive ? 'Sospendi' : 'Attiva' }}
+                  </button>
+                  <button class="ft-btn ft-btn--ghost" [disabled]="store.busy()" (click)="store.removeRoot(r.id)">
+                    Rimuovi
+                  </button>
+                </span>
+              </li>
+            } @empty {
+              <li class="muted">Nessuna cartella monitorata. Aggiungine una dall'albero a sinistra.</li>
+            }
+          </ul>
+
+          <div class="actions">
+            <button
+              class="ft-btn ft-btn--primary"
+              [disabled]="store.busy() || store.roots().length === 0"
+              (click)="store.triggerScan()"
+            >
+              ↻ Avvia scansione
+            </button>
+          </div>
+        </ft-panel>
+
+        <ft-panel heading="Filtro tipi file (default globale)">
+          @if (store.filter(); as f) {
+            <ft-filter-editor [value]="f" (save)="store.saveFilter($event)" />
+          } @else {
+            <p class="muted">Caricamento filtro…</p>
+          }
+        </ft-panel>
+      </div>
+    </div>
+  } @else {
+    <ft-panel heading="Nessun volume online">
+      <p class="muted">Collega un drive per configurarne le cartelle.</p>
+    </ft-panel>
+  }
+</section>
