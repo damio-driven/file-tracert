@@ -29,4 +29,7 @@ public sealed class FileTracertOptions
 
     /// <summary>Graceful shutdown budget for in-flight workers.</summary>
     public int ShutdownTimeoutSeconds { get; set; } = 30;
+
+    /// <summary>How often <see cref="Workers.LogRetentionWorker"/> trims the log database.</summary>
+    public int LogRetentionIntervalSeconds { get; set; } = 3600;
 }

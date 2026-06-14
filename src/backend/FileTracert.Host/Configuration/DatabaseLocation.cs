@@ -26,6 +26,19 @@ public static class DatabaseLocation
         return path;
     }
 
+    /// <summary>
+    /// Dedicated log database path, derived from the (resolved) main database path:
+    /// same directory, <c>&lt;name&gt;-logs.db</c>. Kept separate from the main DB so
+    /// logging is independent of its lifecycle and write contention.
+    /// </summary>
+    public static string ResolveLogs(string mainDatabasePath)
+    {
+        var full = Path.GetFullPath(mainDatabasePath);
+        var dir = Path.GetDirectoryName(full) ?? ".";
+        var name = Path.GetFileNameWithoutExtension(full);
+        return Path.Combine(dir, $"{name}-logs.db");
+    }
+
     /// <summary>Builds the SQLite connection string for a resolved file path.</summary>
     public static string ConnectionString(string databasePath) => $"Data Source={databasePath}";
 }

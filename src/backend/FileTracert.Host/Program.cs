@@ -1,9 +1,13 @@
 using FileTracert.Business;
+using FileTracert.Contracts.Logging;
 using FileTracert.Data;
+using FileTracert.Data.Logging;
 using FileTracert.Host.Configuration;
 using FileTracert.Host.Infrastructure;
+using FileTracert.Host.Logging;
 using FileTracert.Host.Workers;
 using FileTracert.Platform;
+using Microsoft.Extensions.Logging;
 
 // Required for the SQLite native provider used by EF Core and BulkExtensions.
 SQLitePCL.Batteries.Init();
@@ -23,6 +27,21 @@ var options = builder.Configuration
 var databasePath = DatabaseLocation.Resolve(options);
 var connectionString = DatabaseLocation.ConnectionString(databasePath);
 
+// Dedicated log database + queued, non-blocking SQLite logging provider. The store
+// is bootstrapped before anything writes; the console sink (added by the default
+// builder) stays active so early-startup logs are never lost. A runtime level
+// switch gates every provider so changing the level takes effect without a restart.
+var logStore = new SqliteLogStore(DatabaseLocation.ConnectionString(DatabaseLocation.ResolveLogs(databasePath)));
+logStore.EnsureSchema();
+var logLevelSwitch = new LogLevelSwitch();
+var logProcessor = new SqliteLogProcessor(logStore);
+builder.Services.AddSingleton<ILogStore>(logStore);
+builder.Services.AddSingleton(logLevelSwitch);
+builder.Services.AddSingleton(logProcessor);
+builder.Logging.SetMinimumLevel(LogLevel.Trace);
+builder.Logging.AddFilter((_, level) => level >= logLevelSwitch.Current);
+builder.Logging.AddProvider(new SqliteLoggerProvider(logProcessor, logLevelSwitch));
+
 builder.Services.AddDataServices(connectionString);
 builder.Services.AddPlatformServices();
 builder.Services.AddBusinessServices();
@@ -32,6 +51,7 @@ builder.Services.AddSingleton<DatabaseInitializer>();
 builder.Services.AddSingleton<IScanScheduler, ScanScheduler>();
 builder.Services.AddHostedService<VolumeSyncWorker>();
 builder.Services.AddHostedService<ScanWorker>();
+builder.Services.AddHostedService<LogRetentionWorker>();
 
 builder.Services.AddControllers();
 

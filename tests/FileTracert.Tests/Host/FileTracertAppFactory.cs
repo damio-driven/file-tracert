@@ -101,15 +101,24 @@ public sealed class FileTracertAppFactory : WebApplicationFactory<global::Progra
         base.Dispose(disposing);
         if (disposing)
         {
-            foreach (var suffix in new[] { "", "-wal", "-shm" })
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+
+            var logsPath = Path.Combine(
+                Path.GetDirectoryName(_dbPath)!,
+                Path.GetFileNameWithoutExtension(_dbPath) + "-logs.db");
+
+            foreach (var basePath in new[] { _dbPath, logsPath })
             {
-                try
+                foreach (var suffix in new[] { "", "-wal", "-shm" })
                 {
-                    File.Delete(_dbPath + suffix);
-                }
-                catch
-                {
-                    // best-effort temp cleanup
+                    try
+                    {
+                        File.Delete(basePath + suffix);
+                    }
+                    catch
+                    {
+                        // best-effort temp cleanup
+                    }
                 }
             }
         }
