@@ -1,4 +1,5 @@
 import { ChangeDetectionStrategy, Component, effect, inject, OnInit, untracked } from '@angular/core';
+import { Router } from '@angular/router';
 
 import { VolumeDetailDto } from '../../core/models/catalog.models';
 import { FtPanel } from '../../shared/components/ft-panel/ft-panel';
@@ -18,6 +19,7 @@ import { VolumesStore } from './volumes.store';
 })
 export class Volumes implements OnInit {
   private readonly store = inject(VolumesStore);
+  private readonly router = inject(Router);
 
   protected readonly volumes = this.store.volumes;
   protected readonly selected = this.store.selected;
@@ -49,6 +51,10 @@ export class Volumes implements OnInit {
 
   protected rescan(id: number): void {
     void this.store.rescan(id);
+  }
+
+  protected openSetup(volumeId: number): void {
+    void this.router.navigate(['/setup'], { queryParams: { volume: volumeId } });
   }
 
   protected roots(paths: { relativePath: string }[]): string {

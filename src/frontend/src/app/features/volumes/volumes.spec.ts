@@ -1,5 +1,6 @@
 import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
+import { provideRouter } from '@angular/router';
 import { of } from 'rxjs';
 
 import { VolumesApi } from '../../core/api/volumes-api.service';
@@ -40,6 +41,7 @@ describe('Volumes screen', () => {
       imports: [Volumes],
       providers: [
         provideZonelessChangeDetection(),
+        provideRouter([]),
         {
           provide: VolumesApi,
           useValue: { list: () => of([volume]), detail: () => of(detail), rescan: () => of(undefined) },

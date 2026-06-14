@@ -101,10 +101,23 @@
             >
               {{ rescanningId() === v.id ? '↻ Accodata…' : '↻ Ri-scansiona' }}
             </button>
-            <button class="ft-btn ft-btn--ghost" disabled title="Disponibile a breve">Modifica cartelle</button>
-            <button class="ft-btn ft-btn--ghost" disabled title="Disponibile a breve">Modifica filtri</button>
+            <button class="ft-btn ft-btn--ghost" (click)="openSetup(v.id)"
+                    [disabled]="!v.isOnline" [title]="v.isOnline ? '' : 'Collega il volume per configurarlo'">
+              Modifica cartelle
+            </button>
+            <button class="ft-btn ft-btn--ghost" (click)="openSetup(v.id)"
+                    [disabled]="!v.isOnline" [title]="v.isOnline ? '' : 'Collega il volume per configurarlo'">
+              Modifica filtri
+            </button>
             <button class="ft-btn ft-btn--ghost" disabled title="Disponibile a breve">Esporta indice</button>
           </div>
+
+          @if (v.isOnline && v.watchedRoots.length === 0) {
+            <p class="onboard">
+              Nessuna cartella monitorata su questo volume.
+              <a class="ft-link" (click)="openSetup(v.id)">Configura il setup →</a>
+            </p>
+          }
         </ft-panel>
       } @else if (detailLoading()) {
         <ft-panel heading="Dettaglio volume"><p class="loading-detail">Caricamento dettaglio…</p></ft-panel>
