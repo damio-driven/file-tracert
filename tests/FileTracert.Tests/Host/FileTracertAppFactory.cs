@@ -24,6 +24,8 @@ public sealed class FileTracertAppFactory : WebApplicationFactory<global::Progra
     public IUsnReader UsnReader { get; set; } = new FakeUsnReader([], 0);
     public IDirectoryEnumerator DirectoryEnumerator { get; set; } = new FakeDirectoryEnumerator([]);
     public IFileMetadataReader MetadataReader { get; set; } = new FakeFileMetadataReader(new Dictionary<string, FileMetadata>());
+    public IFileSystemBrowser FileSystemBrowser { get; set; } =
+        new FakeFileSystemBrowser(new Dictionary<string, IReadOnlyList<FolderNode>>());
     public Func<FileTracertDbContext, CancellationToken, Task>? Seed { get; set; }
 
     public int VolumeSyncIntervalSeconds { get; set; } = 1;
@@ -51,6 +53,7 @@ public sealed class FileTracertAppFactory : WebApplicationFactory<global::Progra
             Replace<IUsnReader>(services, UsnReader);
             Replace<IDirectoryEnumerator>(services, DirectoryEnumerator);
             Replace<IFileMetadataReader>(services, MetadataReader);
+            Replace<IFileSystemBrowser>(services, FileSystemBrowser);
 
             if (Seed is not null)
             {

@@ -47,3 +47,10 @@ internal sealed class FakeFileMetadataReader(IReadOnlyDictionary<string, FileMet
         IReadOnlyCollection<string> relativePaths,
         CancellationToken ct) => Task.FromResult(map);
 }
+
+internal sealed class FakeFileSystemBrowser(
+    IReadOnlyDictionary<string, IReadOnlyList<FolderNode>> byPath) : IFileSystemBrowser
+{
+    public IReadOnlyList<FolderNode> ListFolders(string volumeGuid, string relativePath) =>
+        byPath.TryGetValue(relativePath, out var folders) ? folders : [];
+}
