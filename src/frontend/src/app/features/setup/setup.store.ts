@@ -113,6 +113,16 @@ export const SetupStore = signalStore(
         }
       },
 
+      async loadRoots(): Promise<void> {
+        patchState(store, { loading: true, error: null });
+        try {
+          const detail = await firstValueFrom(volumesApi.detail(store.volumeId()!));
+          patchState(store, { roots: detail.watchedRoots, loading: false });
+        } catch (e) {
+          fail(e);
+        }
+      },
+
       async loadFilter(): Promise<void> {
         try {
           const filter = await firstValueFrom(api.getFilter());

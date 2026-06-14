@@ -34,8 +34,7 @@ export class Setup implements OnInit {
     this.volume.set(target);
     if (target) {
       this.store.init(target.id);
-      await this.store.loadFolders('');
-      await this.store.loadFilter();
+      await Promise.all([this.store.loadFolders(''), this.store.loadFilter(), this.store.loadRoots()]);
     }
   }
 

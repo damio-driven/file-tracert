@@ -5,7 +5,7 @@ import { vi } from 'vitest';
 
 import { SetupApi } from '../../core/api/setup-api.service';
 import { VolumesApi } from '../../core/api/volumes-api.service';
-import { FolderNodeDto, WatchedRootDto } from '../../core/models/catalog.models';
+import { FolderNodeDto, VolumeDetailDto, WatchedRootDto } from '../../core/models/catalog.models';
 import { SetupStore } from './setup.store';
 
 const fotoRoot: WatchedRootDto = { id: 7, relativePath: 'Foto', isActive: true, effectiveFilter: 'Immagini' };
@@ -42,6 +42,19 @@ describe('SetupStore', () => {
     await store.addRoot('Foto');
 
     expect(store.roots()).toContainEqual(fotoRoot);
+  });
+
+  it('loads existing roots from the volume detail', async () => {
+    const detail = {
+      id: 1, watchedRoots: [{ id: 7, relativePath: 'Foto', isActive: true, effectiveFilter: 'Immagini' }],
+    } as never as VolumeDetailDto;
+    const store = configure({}, { detail: () => of(detail) });
+    store.init(1);
+
+    await store.loadRoots();
+
+    expect(store.roots()).toHaveLength(1);
+    expect(store.roots()[0].relativePath).toBe('Foto');
   });
 
   it('surfaces the reconcile flag when saving the filter', async () => {
