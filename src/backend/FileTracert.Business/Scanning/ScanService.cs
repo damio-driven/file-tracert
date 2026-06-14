@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using FileTracert.Business.Filtering;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Platform;
@@ -67,11 +68,29 @@ public sealed class ScanService
         var settings = await _db.AppSettings.FirstOrDefaultAsync(ct);
         var categoryMap = await _db.ExtensionCategories.ToDictionaryAsync(e => e.Extension, e => e.Category, ct);
 
-        // For NTFS, checkpoint the journal position BEFORE reading the snapshot so
-        // the future incremental catches everything that changed during the scan.
-        long? checkpointUsn = volume.ScanEngine == VolumeScanEngine.UsnJournal
-            ? _usnReader.GetJournalState(volume.VolumeGuid).NextUsn
-            : null;
+        // For NTFS, ensure the journal exists then checkpoint its position BEFORE
+        // reading the snapshot, so the future incremental catches everything that
+        // changed during the scan. A volume can be NTFS yet have no active journal:
+        // EnsureJournal creates it (needs admin). If the journal cannot be created
+        // or queried, fall back to plain enumeration and persist the engine switch
+        // so we don't keep retrying USN on every cycle.
+        long? checkpointUsn = null;
+        if (volume.ScanEngine == VolumeScanEngine.UsnJournal)
+        {
+            try
+            {
+                _usnReader.EnsureJournal(volume.VolumeGuid);
+                checkpointUsn = _usnReader.GetJournalState(volume.VolumeGuid).NextUsn;
+            }
+            catch (Win32Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "USN journal unavailable for volume {VolumeId} ({Guid}); falling back to enumeration.",
+                    volumeId, volume.VolumeGuid);
+                volume.ScanEngine = VolumeScanEngine.Enumeration;
+            }
+        }
 
         var (dirItems, fileItems) = GatherAndFilter(volume, mountRoot, roots, settings);
         var resolvedFiles = await ResolveFilesAsync(volume, mountRoot, fileItems, categoryMap, ct);

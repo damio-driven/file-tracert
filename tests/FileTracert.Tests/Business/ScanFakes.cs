@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using FileTracert.Contracts.Platform;
 
 namespace FileTracert.Tests.Business;
@@ -35,6 +36,23 @@ internal sealed class FakeUsnReader(IReadOnlyList<UsnEntry> entries, long nextUs
     public void EnsureJournal(string volumeGuid) { }
 
     public IEnumerable<UsnEntry> ReadFullSnapshot(string volumeGuid, CancellationToken ct) => entries;
+
+    public UsnChangeResult ReadChanges(string volumeGuid, long sinceUsn, ulong journalId, CancellationToken ct) =>
+        throw new NotSupportedException();
+}
+
+/// <summary>NTFS volume whose journal cannot be created/queried (e.g. not active, no elevation).</summary>
+internal sealed class ThrowingUsnReader : IUsnReader
+{
+    public bool SupportsUsn(string volumeGuid) => true;
+
+    public UsnJournalState GetJournalState(string volumeGuid) =>
+        throw new Win32Exception(1179, "FSCTL_QUERY_USN_JOURNAL failed.");
+
+    public void EnsureJournal(string volumeGuid) =>
+        throw new Win32Exception(1179, "FSCTL_CREATE_USN_JOURNAL failed (requires elevation).");
+
+    public IEnumerable<UsnEntry> ReadFullSnapshot(string volumeGuid, CancellationToken ct) => [];
 
     public UsnChangeResult ReadChanges(string volumeGuid, long sinceUsn, ulong journalId, CancellationToken ct) =>
         throw new NotSupportedException();

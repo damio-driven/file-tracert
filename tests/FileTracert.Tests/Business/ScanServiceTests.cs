@@ -137,6 +137,40 @@ public sealed class ScanServiceTests
     }
 
     [Fact]
+    public async Task Ntfs_without_journal_falls_back_to_enumeration_and_persists_engine()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, VolumeScanEngine.UsnJournal, "NTFS", ["jpg"]);
+
+        var entries = new List<ScanEntry>
+        {
+            new(@"Pics", "Pics", true, 0, T, T, FileAttributes.Directory),
+            new(@"Pics\x.jpg", "x.jpg", false, 5, T, T, FileAttributes.Normal),
+        };
+
+        await using (var ctx = harness.CreateContext())
+        {
+            var sut = Build(harness, ctx,
+                new FakeVolumeProbe(ProbedFor("NTFS")),
+                new ThrowingUsnReader(), // EnsureJournal throws Win32 1179
+                new FakeDirectoryEnumerator(entries),
+                new FakeFileMetadataReader(new Dictionary<string, FileMetadata>()));
+            await sut.ScanVolumeAsync(volumeId, CancellationToken.None);
+        }
+
+        await using var read = harness.CreateContext();
+        var volume = await read.Volumes.SingleAsync();
+
+        // Engine flipped to Enumeration and persisted, so future cycles don't retry USN.
+        volume.ScanEngine.Should().Be(VolumeScanEngine.Enumeration);
+        volume.LastFullScanUtc.Should().NotBeNull();
+        volume.LastUsn.Should().BeNull();
+
+        // The volume still got indexed via the enumeration fallback.
+        (await read.Files.Select(f => f.Name).ToListAsync()).Should().Equal("x.jpg");
+    }
+
+    [Fact]
     public async Task Re_scan_is_idempotent()
     {
         using var harness = new SqliteInMemoryContext();
