@@ -20,6 +20,11 @@ public sealed class AppSettingsConfiguration : IEntityTypeConfiguration<AppSetti
 
         builder.Property(x => x.ApiToken).IsRequired();
 
+        // Defaults so the columns backfill cleanly on an existing singleton row.
+        builder.Property(x => x.MinimumLogLevel).IsRequired().HasDefaultValue("Information");
+        builder.Property(x => x.LogRetentionDays).HasDefaultValue(14);
+        builder.Property(x => x.LogMaxRows).HasDefaultValue(500_000);
+
         ConfigureStringList(builder, x => x.DefaultExtensionFilter, nameof(AppSettings.DefaultExtensionFilter));
         ConfigureStringList(builder, x => x.ExcludedPaths, nameof(AppSettings.ExcludedPaths));
     }

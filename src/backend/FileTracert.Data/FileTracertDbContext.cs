@@ -19,6 +19,7 @@ public class FileTracertDbContext : DbContext
     public DbSet<SpaceLedgerEntry> SpaceLedgerEntries => Set<SpaceLedgerEntry>();
     public DbSet<ExtensionCategory> ExtensionCategories => Set<ExtensionCategory>();
     public DbSet<AppSettings> AppSettings => Set<AppSettings>();
+    public DbSet<Notification> Notifications => Set<Notification>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

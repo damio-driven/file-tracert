@@ -17,6 +17,15 @@ public class AppSettings : IAuditable
     /// <summary>Hard-check space margin percentage before execution.</summary>
     public int SpaceMarginPercent { get; set; }
 
+    /// <summary>Minimum log level name (Trace…None); applied to the runtime switch at startup.</summary>
+    public string MinimumLogLevel { get; set; } = "Information";
+
+    /// <summary>Log retention horizon in days; entries older than this are trimmed.</summary>
+    public int LogRetentionDays { get; set; } = 14;
+
+    /// <summary>Hard cap on log rows kept; the oldest beyond this are trimmed.</summary>
+    public int LogMaxRows { get; set; } = 500_000;
+
     public DateTime CreatedUtc { get; set; }
     public DateTime UpdatedUtc { get; set; }
 }
