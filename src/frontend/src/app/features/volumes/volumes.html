@@ -2,7 +2,8 @@
   <h1 class="ft-h1">Volumi</h1>
   <p class="ft-sub">
     Identità stabile via Volume GUID — la lettera è solo indicativa e può cambiare. Le
-    partizioni senza lettera vengono comunque riconosciute.
+    partizioni senza lettera vengono comunque riconosciute. Unità cloud e di sistema
+    sono escluse dalla catalogazione per impostazione predefinita.
   </p>
 
   @if (error(); as err) {
@@ -13,7 +14,7 @@
     <!-- List -->
     <ft-panel heading="Volumi indicizzati" class="list-panel">
       <ul class="vlist">
-        @for (v of volumes(); track v.id) {
+        @for (v of catalogable(); track v.id) {
           <li
             class="vrow"
             [class.sel]="selected()?.id === v.id"
@@ -29,17 +30,57 @@
                 <ft-pill variant="off">Scollegato</ft-pill>
               }
             </div>
-            <div class="vmeta mono">
-              {{ v.currentLetter | driveLetter }} · {{ v.fileSystem }} ·
-              {{ v.fileCount.toLocaleString('it-IT') }} file
-            </div>
+            @if (scanByVolume().get(v.id); as scan) {
+              <ft-scan-progress class="vrow-scan" [status]="scan" />
+            } @else {
+              <div class="vmeta mono">
+                {{ v.currentLetter | driveLetter }} · {{ v.fileSystem }} ·
+                {{ v.fileCount.toLocaleString('it-IT') }} file
+                @if (kindLabel(v.kind); as k) {
+                  · <span class="ktag ktag--{{ v.kind | lowercase }}">{{ k }}</span>
+                }
+              </div>
+            }
           </li>
         } @empty {
           <li class="empty">
-            @if (loading()) { Caricamento… } @else { Nessun volume. Collega un drive. }
+            @if (loading()) { Caricamento… } @else { Nessun volume catalogabile. Collega un drive. }
           </li>
         }
       </ul>
+
+      @if (excluded().length > 0) {
+        <div class="excluded">
+          <button class="excluded-toggle" (click)="toggleExcluded()" [attr.aria-expanded]="showExcluded()">
+            <span class="chev" [class.open]="showExcluded()">›</span>
+            Sistema / esclusi
+            <span class="excluded-count mono">{{ excluded().length }}</span>
+          </button>
+
+          @if (showExcluded()) {
+            <ul class="vlist vlist--excluded">
+              @for (v of excluded(); track v.id) {
+                <li class="vrow vrow--muted">
+                  <div class="flex items-center justify-between gap-2">
+                    <span class="vlabel">{{ v.label ?? '(senza etichetta)' }}</span>
+                    @if (kindLabel(v.kind); as k) {
+                      <span class="ktag ktag--{{ v.kind | lowercase }}">{{ k }}</span>
+                    }
+                  </div>
+                  <div class="vmeta mono">{{ excludedReason(v.kind) }}</div>
+                  <button
+                    class="ft-btn ft-btn--ghost ft-btn--sm"
+                    (click)="reenable(v.id)"
+                    [disabled]="togglingId() === v.id"
+                  >
+                    {{ togglingId() === v.id ? 'Riabilito…' : 'Riabilita' }}
+                  </button>
+                </li>
+              }
+            </ul>
+          }
+        </div>
+      }
     </ft-panel>
 
     <!-- Detail -->
@@ -54,9 +95,26 @@
             }
           </span>
 
+          @if (scanByVolume().get(v.id); as scan) {
+            <ft-scan-progress class="detail-scan" [status]="scan" />
+          }
+
           <table class="ft-table ft-table--kv">
             <tbody>
               <tr><td>Volume GUID</td><td class="mono txt-dim">{{ v.volumeGuid }}</td></tr>
+              <tr>
+                <td>Tipo</td>
+                <td>
+                  @if (kindLabel(v.kind); as k) {
+                    <span class="ktag ktag--{{ v.kind | lowercase }}">{{ k }}</span>
+                  } @else {
+                    <span class="txt-dim">Disco fisso</span>
+                  }
+                  @if (!v.isCatalogable) {
+                    <span class="txt-faint">· non catalogabile</span>
+                  }
+                </td>
+              </tr>
               <tr>
                 <td>Serial / Filesystem</td>
                 <td class="mono txt-dim">
@@ -94,25 +152,34 @@
           </table>
 
           <div class="actions">
-            <button
-              class="ft-btn ft-btn--primary"
-              (click)="rescan(v.id)"
-              [disabled]="rescanningId() === v.id"
-            >
-              {{ rescanningId() === v.id ? '↻ Accodata…' : '↻ Ri-scansiona' }}
-            </button>
-            <button class="ft-btn ft-btn--ghost" (click)="openSetup(v.id)"
-                    [disabled]="!v.isOnline" [title]="v.isOnline ? '' : 'Collega il volume per configurarlo'">
-              Modifica cartelle
-            </button>
-            <button class="ft-btn ft-btn--ghost" (click)="openSetup(v.id)"
-                    [disabled]="!v.isOnline" [title]="v.isOnline ? '' : 'Collega il volume per configurarlo'">
-              Modifica filtri
-            </button>
-            <button class="ft-btn ft-btn--ghost" disabled title="Disponibile a breve">Esporta indice</button>
+            @if (v.isCatalogable) {
+              <button
+                class="ft-btn ft-btn--primary"
+                (click)="rescan(v.id)"
+                [disabled]="rescanningId() === v.id"
+              >
+                {{ rescanningId() === v.id ? '↻ Accodata…' : '↻ Ri-scansiona' }}
+              </button>
+              <button class="ft-btn ft-btn--ghost" (click)="openSetup(v.id)"
+                      [disabled]="!v.isOnline" [title]="v.isOnline ? '' : 'Collega il volume per configurarlo'">
+                Modifica cartelle
+              </button>
+              <button class="ft-btn ft-btn--ghost" (click)="openSetup(v.id)"
+                      [disabled]="!v.isOnline" [title]="v.isOnline ? '' : 'Collega il volume per configurarlo'">
+                Modifica filtri
+              </button>
+            } @else {
+              <button
+                class="ft-btn ft-btn--primary"
+                (click)="reenable(v.id)"
+                [disabled]="togglingId() === v.id"
+              >
+                {{ togglingId() === v.id ? 'Riabilito…' : 'Riabilita per catalogare' }}
+              </button>
+            }
           </div>
 
-          @if (v.isOnline && v.watchedRoots.length === 0) {
+          @if (v.isCatalogable && v.isOnline && v.watchedRoots.length === 0) {
             <p class="onboard">
               Nessuna cartella monitorata su questo volume.
               <a class="ft-link" (click)="openSetup(v.id)">Configura il setup →</a>

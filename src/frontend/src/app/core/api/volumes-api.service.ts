@@ -21,4 +21,9 @@ export class VolumesApi {
   rescan(id: number): Observable<void> {
     return this.http.post<void>(`/api/volumes/${id}/rescan`, null);
   }
+
+  /** Manually override the catalogable flag (re-enable a false positive or exclude). */
+  setCatalogable(id: number, isCatalogable: boolean): Observable<void> {
+    return this.http.post<void>(`/api/volumes/${id}/catalogable`, { isCatalogable });
+  }
 }

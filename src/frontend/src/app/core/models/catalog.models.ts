@@ -1,6 +1,9 @@
 // TypeScript mirrors of the FileTracert.Contracts DTOs (camelCase, as serialized
 // by ASP.NET). Kept in sync by hand — the contract is small and stable.
 
+/** Volume classification: cloud/system are excluded from cataloguing by default. */
+export type VolumeKind = 'Unknown' | 'Fixed' | 'Removable' | 'Cloud' | 'System';
+
 /** Volume row for the list / dashboard, with freshness flags. */
 export interface VolumeDto {
   id: number;
@@ -19,6 +22,9 @@ export interface VolumeDto {
   dataIsLive: boolean;
   /** = !isOnline. Free/existence are a last-known snapshot. */
   isStale: boolean;
+  kind: VolumeKind;
+  /** Eligible for cataloguing (cloud/system default false; user can override). */
+  isCatalogable: boolean;
 }
 
 /** A monitored root folder with its resolved filter summary. */
@@ -44,6 +50,8 @@ export interface VolumeDetailDto {
   lastFullScanUtc: string | null;
   dataIsLive: boolean;
   isStale: boolean;
+  kind: VolumeKind;
+  isCatalogable: boolean;
   serialNumber: string | null;
   physicalDiskId: string | null;
   lastUsn: number | null;
@@ -52,6 +60,21 @@ export interface VolumeDetailDto {
   directoryCount: number;
   fileCount: number;
   indexedBytes: number;
+}
+
+/** Coarse phase of an in-flight scan (mirrors the backend ScanPhase enum). */
+export type ScanPhase = 'Enumerating' | 'ResolvingPaths' | 'ReadingMetadata' | 'Writing' | 'Done' | 'Failed';
+
+/** Live progress of one volume being scanned, polled from /api/scans/status. */
+export interface ScanStatusDto {
+  volumeId: number;
+  label: string | null;
+  phase: ScanPhase;
+  itemsSeen: number;
+  itemsWritten: number;
+  currentRoot: string | null;
+  startedUtc: string;
+  updatedUtc: string;
 }
 
 /** Dashboard aggregates. Queue fields are placeholders (0) until step 8. */

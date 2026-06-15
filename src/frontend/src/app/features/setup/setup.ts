@@ -27,9 +27,10 @@ export class Setup implements OnInit {
 
   async ngOnInit(): Promise<void> {
     const volumes = await firstValueFrom(this.volumesApi.list());
+    // Setup only operates on catalogable, online volumes (cloud/system are excluded).
+    const selectable = volumes.filter((v) => v.isOnline && v.isCatalogable);
     const requested = Number(this.route.snapshot.queryParamMap.get('volume'));
-    const target =
-      volumes.find((v) => v.id === requested && v.isOnline) ?? volumes.find((v) => v.isOnline) ?? null;
+    const target = selectable.find((v) => v.id === requested) ?? selectable[0] ?? null;
 
     this.volume.set(target);
     if (target) {

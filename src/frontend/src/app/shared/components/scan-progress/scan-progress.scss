@@ -1,0 +1,60 @@
+:host {
+  display: block;
+}
+
+.sp {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sp-label {
+  font-size: 11px;
+  color: var(--blue);
+  letter-spacing: 0.2px;
+}
+
+.sp-count {
+  color: var(--txt-dim);
+}
+
+.sp-track {
+  position: relative;
+  display: block;
+  height: 4px;
+  border-radius: 4px;
+  background: var(--panel-3);
+  overflow: hidden;
+}
+
+.sp-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: 38%;
+  border-radius: 4px;
+  background: linear-gradient(90deg, transparent, var(--blue), transparent);
+  animation: sp-slide 1.25s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+
+@keyframes sp-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(360%);
+  }
+}
+
+// Honest static fallback: a steady partial fill, no motion.
+@media (prefers-reduced-motion: reduce) {
+  .sp-fill {
+    position: static;
+    width: 100%;
+    background: var(--blue);
+    opacity: 0.5;
+    animation: none;
+    transform: none;
+  }
+}

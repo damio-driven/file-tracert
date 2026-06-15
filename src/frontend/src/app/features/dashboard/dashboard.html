@@ -46,7 +46,9 @@
             <td class="mono txt-dim">{{ v.currentLetter | driveLetter }}</td>
             <td>{{ v.fileSystem }}</td>
             <td>
-              @if (v.isOnline) {
+              @if (scanByVolume().get(v.id); as scan) {
+                <ft-scan-progress [status]="scan" />
+              } @else if (v.isOnline) {
                 <ft-pill variant="on">Online</ft-pill>
               } @else {
                 <ft-pill variant="off">Scollegato</ft-pill>

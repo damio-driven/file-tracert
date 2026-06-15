@@ -3,6 +3,7 @@ import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { of } from 'rxjs';
 
+import { ScansApi } from '../../core/api/scans-api.service';
 import { VolumesApi } from '../../core/api/volumes-api.service';
 import { VolumeDetailDto, VolumeDto } from '../../core/models/catalog.models';
 import { Volumes } from './volumes';
@@ -22,6 +23,16 @@ const volume: VolumeDto = {
   lastFullScanUtc: null,
   dataIsLive: true,
   isStale: false,
+  kind: 'Fixed',
+  isCatalogable: true,
+};
+
+const cloud: VolumeDto = {
+  ...volume,
+  id: 2,
+  label: 'Google Drive',
+  isCatalogable: false,
+  kind: 'Cloud',
 };
 
 const detail: VolumeDetailDto = {
@@ -44,13 +55,19 @@ describe('Volumes screen', () => {
         provideRouter([]),
         {
           provide: VolumesApi,
-          useValue: { list: () => of([volume]), detail: () => of(detail), rescan: () => of(undefined) },
+          useValue: {
+            list: () => of([volume, cloud]),
+            detail: () => of(detail),
+            rescan: () => of(undefined),
+            setCatalogable: () => of(undefined),
+          },
         },
+        { provide: ScansApi, useValue: { status: () => of([]) } },
       ],
     }).compileComponents();
   });
 
-  it('lists volumes and auto-selects the first detail', async () => {
+  it('lists catalogable volumes and auto-selects the first detail', async () => {
     const fixture = TestBed.createComponent(Volumes);
     await fixture.whenStable();
     const el = fixture.nativeElement as HTMLElement;
@@ -60,5 +77,24 @@ describe('Volumes screen', () => {
     // Auto-selected detail shows the GUID and USN checkpoint.
     expect(el.textContent).toContain('B83A-77F1');
     expect(el.textContent).toContain('44.821.330');
+  });
+
+  it('keeps an excluded cloud volume out of the main list, behind the toggle', async () => {
+    const fixture = TestBed.createComponent(Volumes);
+    await fixture.whenStable();
+    const el = fixture.nativeElement as HTMLElement;
+
+    // The cloud volume is not in the catalogable rows...
+    const mainRows = el.querySelectorAll('.vlist:not(.vlist--excluded) .vrow');
+    expect([...mainRows].some((r) => r.textContent?.includes('Google Drive'))).toBe(false);
+
+    // ...but the "Sistema / esclusi" section counts it and can reveal it.
+    const toggle = el.querySelector('.excluded-toggle') as HTMLButtonElement;
+    expect(toggle).toBeTruthy();
+    expect(toggle.textContent).toContain('1');
+
+    toggle.click();
+    await fixture.whenStable();
+    expect(el.querySelector('.vlist--excluded')?.textContent).toContain('Google Drive');
   });
 });

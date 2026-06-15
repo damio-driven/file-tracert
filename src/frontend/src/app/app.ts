@@ -10,6 +10,7 @@ import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 
 import { DashboardStore } from './features/dashboard/dashboard.store';
 import { NotificationsStore } from './features/notifications/notifications.store';
+import { ScanStatusStore } from './features/scans/scan-status.store';
 import { NotificationsBell } from './shared/components/notifications-bell/notifications-bell';
 import { ToastHost } from './shared/components/toast-host/toast-host';
 import { BytesPipe } from './shared/pipes/bytes.pipe';
@@ -30,6 +31,7 @@ const NOTIFICATION_POLL_MS = 30_000;
 export class App implements OnInit, OnDestroy {
   private readonly dashboard = inject(DashboardStore);
   private readonly notifications = inject(NotificationsStore);
+  private readonly scans = inject(ScanStatusStore);
 
   protected readonly stats = this.dashboard.stats;
   protected readonly serviceDown = computed(() => this.dashboard.error() !== null);
@@ -37,6 +39,9 @@ export class App implements OnInit, OnDestroy {
     const n = this.stats()?.totalFiles;
     return n == null ? '—' : countFormatter.format(n);
   });
+
+  protected readonly scanning = this.scans.isScanning;
+  protected readonly scanCount = this.scans.activeCount;
 
   private pollHandle: ReturnType<typeof setInterval> | null = null;
 
@@ -47,11 +52,15 @@ export class App implements OnInit, OnDestroy {
     // Seed the bell badge, then refresh it on a light interval until SignalR (step 10).
     void this.notifications.refreshCount();
     this.pollHandle = setInterval(() => void this.notifications.refreshCount(), NOTIFICATION_POLL_MS);
+
+    // Scan-progress polling (adaptive cadence); the global indicator reads its signals.
+    this.scans.start();
   }
 
   ngOnDestroy(): void {
     if (this.pollHandle !== null) {
       clearInterval(this.pollHandle);
     }
+    this.scans.stop();
   }
 }

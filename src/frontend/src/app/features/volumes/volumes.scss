@@ -94,3 +94,104 @@
 
 .onboard { margin-top: 12px; color: var(--txt-dim); }
 .ft-link { color: var(--teal); cursor: pointer; }
+
+// Per-row scan progress replaces the meta line while a scan runs.
+.vrow-scan { margin-top: 7px; }
+.detail-scan { margin: 13px 17px 0; }
+
+// Kind chip: a tinted mono tag (not a status pill — kind isn't a live state).
+.ktag {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  padding: 1px 7px;
+  border-radius: 6px;
+  background: var(--panel-3);
+  color: var(--txt-dim);
+
+  &--cloud {
+    background: var(--run-bg);
+    color: var(--blue);
+  }
+  &--system {
+    background: var(--off-bg);
+    color: var(--txt-dim);
+  }
+  &--removable {
+    background: var(--wait-bg);
+    color: var(--amber);
+  }
+  &--unknown {
+    background: var(--wait-bg);
+    color: var(--amber);
+  }
+}
+
+// Collapsible "Sistema / esclusi" section under the catalogable list.
+.excluded {
+  border-top: 1px solid var(--line);
+}
+
+.excluded-toggle {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 11px 17px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--txt-dim);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.7px;
+  text-transform: uppercase;
+  transition: color var(--t-fast);
+
+  &:hover {
+    color: var(--txt);
+  }
+
+  .chev {
+    display: inline-block;
+    transition: transform var(--t-fast);
+    font-size: 14px;
+
+    &.open {
+      transform: rotate(90deg);
+    }
+  }
+}
+
+.excluded-count {
+  margin-left: auto;
+  font-size: 10.5px;
+  padding: 1px 8px;
+  border-radius: var(--r-pill);
+  background: var(--line);
+  color: var(--txt-dim);
+  letter-spacing: 0;
+}
+
+.vrow--muted {
+  cursor: default;
+  opacity: 0.85;
+
+  &:hover {
+    background: none;
+  }
+}
+
+.ft-btn--sm {
+  margin-top: 9px;
+  padding: 5px 12px;
+  font-size: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .excluded-toggle .chev {
+    transition: none;
+  }
+}

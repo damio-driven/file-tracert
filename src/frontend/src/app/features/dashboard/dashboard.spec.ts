@@ -3,6 +3,7 @@ import { TestBed } from '@angular/core/testing';
 import { of } from 'rxjs';
 
 import { DashboardApi } from '../../core/api/dashboard-api.service';
+import { ScansApi } from '../../core/api/scans-api.service';
 import { VolumesApi } from '../../core/api/volumes-api.service';
 import { DashboardStatsDto, VolumeDto } from '../../core/models/catalog.models';
 import { Dashboard } from './dashboard';
@@ -33,6 +34,8 @@ const offline: VolumeDto = {
   lastFullScanUtc: null,
   dataIsLive: false,
   isStale: true,
+  kind: 'Removable',
+  isCatalogable: true,
 };
 
 describe('Dashboard screen', () => {
@@ -43,6 +46,7 @@ describe('Dashboard screen', () => {
         provideZonelessChangeDetection(),
         { provide: DashboardApi, useValue: { getStats: () => of(stats) } },
         { provide: VolumesApi, useValue: { list: () => of([offline]) } },
+        { provide: ScansApi, useValue: { status: () => of([]) } },
       ],
     }).compileComponents();
   });

@@ -22,6 +22,8 @@ const volume: VolumeDto = {
   lastFullScanUtc: null,
   dataIsLive: true,
   isStale: false,
+  kind: 'Fixed',
+  isCatalogable: true,
 };
 
 const detail: VolumeDetailDto = {
@@ -69,5 +71,26 @@ describe('VolumesStore', () => {
     expect(rescan).toHaveBeenCalledWith(1);
     expect(list).toHaveBeenCalled();
     expect(store.rescanningId()).toBeNull();
+  });
+
+  it('splits the list into catalogable and excluded volumes', async () => {
+    const cloud: VolumeDto = { ...volume, id: 2, label: 'GoogleDrive', isCatalogable: false, kind: 'Cloud' };
+    const store = configure({ list: () => of([volume, cloud]) });
+    await store.loadList();
+
+    expect(store.catalogable().map((v) => v.id)).toEqual([1]);
+    expect(store.excluded().map((v) => v.id)).toEqual([2]);
+  });
+
+  it('setCatalogable calls the API then refreshes the list', async () => {
+    const setCatalogable = vi.fn(() => of(undefined));
+    const list = vi.fn(() => of([volume]));
+    const store = configure({ setCatalogable, list });
+
+    await store.setCatalogable(2, true);
+
+    expect(setCatalogable).toHaveBeenCalledWith(2, true);
+    expect(list).toHaveBeenCalled();
+    expect(store.togglingId()).toBeNull();
   });
 });

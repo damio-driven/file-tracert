@@ -3,6 +3,17 @@
     <div class="logo">F</div>
     <div class="brand">FileTracert <span>by FAD.iT</span></div>
 
+    @if (scanning()) {
+      <div class="scan-flag mono" role="status">
+        <span class="scan-flag__spin"></span>
+        @if (scanCount() > 1) {
+          scansione · {{ scanCount() }} volumi
+        } @else {
+          scansione in corso
+        }
+      </div>
+    }
+
     <div class="tray mono" [class.tray--down]="serviceDown()">
       <span class="status-dot" [class.pulse]="!serviceDown()"></span>
       {{ serviceDown() ? 'servizio non raggiungibile' : 'servizio attivo' }}

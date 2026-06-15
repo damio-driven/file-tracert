@@ -1,41 +1,83 @@
-import { ChangeDetectionStrategy, Component, effect, inject, OnInit, untracked } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  effect,
+  inject,
+  OnInit,
+  signal,
+  untracked,
+} from '@angular/core';
+import { LowerCasePipe } from '@angular/common';
 import { Router } from '@angular/router';
 
-import { VolumeDetailDto } from '../../core/models/catalog.models';
+import { ScanStatusStore } from '../scans/scan-status.store';
+import { VolumeDetailDto, VolumeKind } from '../../core/models/catalog.models';
 import { FtPanel } from '../../shared/components/ft-panel/ft-panel';
 import { FtPill } from '../../shared/components/ft-pill/ft-pill';
+import { ScanProgress } from '../../shared/components/scan-progress/scan-progress';
 import { BytesPipe } from '../../shared/pipes/bytes.pipe';
 import { DriveLetterPipe } from '../../shared/pipes/drive-letter.pipe';
 import { RelativeTimePipe } from '../../shared/pipes/relative-time.pipe';
 import { VolumesStore } from './volumes.store';
 
+/** Italian label for a volume kind chip; null when the kind needs no badge (plain fixed disk). */
+const KIND_LABELS: Record<VolumeKind, string | null> = {
+  Fixed: null,
+  Removable: 'Rimovibile',
+  Cloud: 'Cloud',
+  System: 'Sistema',
+  Unknown: 'Sconosciuto',
+};
+
+/** Why a volume is excluded by default, by kind. */
+const EXCLUDED_REASON: Partial<Record<VolumeKind, string>> = {
+  Cloud: 'Unità cloud/virtuale, esclusa dalla catalogazione',
+  System: 'Partizione di sistema, esclusa dalla catalogazione',
+};
+
 /** Volumi: a selectable list on the left, the technical detail panel on the right. */
 @Component({
   selector: 'ft-volumes',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [FtPanel, FtPill, BytesPipe, DriveLetterPipe, RelativeTimePipe],
+  imports: [FtPanel, FtPill, ScanProgress, LowerCasePipe, BytesPipe, DriveLetterPipe, RelativeTimePipe],
   templateUrl: './volumes.html',
   styleUrl: './volumes.scss',
 })
 export class Volumes implements OnInit {
   private readonly store = inject(VolumesStore);
+  private readonly scans = inject(ScanStatusStore);
   private readonly router = inject(Router);
 
-  protected readonly volumes = this.store.volumes;
+  protected readonly catalogable = this.store.catalogable;
+  protected readonly excluded = this.store.excluded;
   protected readonly selected = this.store.selected;
   protected readonly loading = this.store.loading;
   protected readonly detailLoading = this.store.detailLoading;
   protected readonly rescanningId = this.store.rescanningId;
+  protected readonly togglingId = this.store.togglingId;
   protected readonly error = this.store.error;
+  protected readonly scanByVolume = this.scans.byVolume;
+
+  protected readonly showExcluded = signal(false);
 
   constructor() {
-    // Auto-select the first volume once the list arrives and nothing is selected.
+    // Auto-select the first catalogable volume once the list arrives and nothing is selected.
     effect(() => {
-      const list = this.volumes();
+      const list = this.catalogable();
       const current = untracked(() => this.selected());
       if (list.length > 0 && current === null) {
         void this.store.select(list[0].id);
       }
+    });
+
+    // When the active scans drain (a scan just finished), refresh so counts catch up.
+    let previousScanning = false;
+    effect(() => {
+      const scanning = this.scans.isScanning();
+      if (previousScanning && !scanning) {
+        void this.store.loadList();
+      }
+      previousScanning = scanning;
     });
   }
 
@@ -51,10 +93,27 @@ export class Volumes implements OnInit {
 
   protected rescan(id: number): void {
     void this.store.rescan(id);
+    this.scans.start();
+  }
+
+  protected reenable(id: number): void {
+    void this.store.setCatalogable(id, true);
+  }
+
+  protected toggleExcluded(): void {
+    this.showExcluded.update((v) => !v);
   }
 
   protected openSetup(volumeId: number): void {
     void this.router.navigate(['/setup'], { queryParams: { volume: volumeId } });
+  }
+
+  protected kindLabel(kind: VolumeKind): string | null {
+    return KIND_LABELS[kind];
+  }
+
+  protected excludedReason(kind: VolumeKind): string {
+    return EXCLUDED_REASON[kind] ?? 'Escluso manualmente dalla catalogazione';
   }
 
   protected roots(paths: { relativePath: string }[]): string {
