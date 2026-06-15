@@ -180,6 +180,48 @@ public sealed class ScanServiceTests
     }
 
     [Fact]
+    public async Task Malformed_filter_override_notifies_and_falls_back_to_default()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, VolumeScanEngine.Enumeration, "exFAT", []); // empty default = all types
+
+        // Corrupt the root's override JSON.
+        using (var ctx = harness.CreateContext())
+        {
+            var root = ctx.WatchedRoots.Single();
+            root.FilterOverrideJson = "{ not valid json";
+            ctx.SaveChanges();
+        }
+
+        var entries = new List<ScanEntry>
+        {
+            new(@"Docs", "Docs", true, 0, T, T, FileAttributes.Directory),
+            new(@"Docs\a.txt", "a.txt", false, 4, T, T, FileAttributes.Normal),
+        };
+
+        var notifications = new FakeNotificationPublisher();
+        await using (var ctx = harness.CreateContext())
+        {
+            var sut = Build(harness, ctx,
+                new FakeVolumeProbe(ProbedFor("exFAT")),
+                new FakeUsnReader([], 0),
+                new FakeDirectoryEnumerator(entries),
+                new FakeFileMetadataReader(new Dictionary<string, FileMetadata>()),
+                notifications);
+            await sut.ScanVolumeAsync(volumeId, CancellationToken.None);
+        }
+
+        await using var read = harness.CreateContext();
+        // Scan proceeded with the default (empty = all) filter.
+        (await read.Files.Select(f => f.Name).ToListAsync()).Should().Equal("a.txt");
+        (await read.Volumes.SingleAsync()).LastFullScanUtc.Should().NotBeNull();
+
+        // Not silent: the malformed override raised a user-visible warning.
+        notifications.Published.Should().ContainSingle()
+            .Which.Severity.Should().Be(NotificationSeverity.Warning);
+    }
+
+    [Fact]
     public async Task Re_scan_is_idempotent()
     {
         using var harness = new SqliteInMemoryContext();

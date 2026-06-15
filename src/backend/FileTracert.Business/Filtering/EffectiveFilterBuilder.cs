@@ -17,6 +17,11 @@ public static class EffectiveFilterBuilder
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
 
+    /// <summary>
+    /// Resolves the effective filter. Throws <see cref="JsonException"/> when the
+    /// per-root override JSON is malformed — the caller decides how to recover
+    /// (log + notify + fall back to defaults); it is never swallowed silently here.
+    /// </summary>
     public static EffectiveFilter Build(AppSettings settings, string? filterOverrideJson)
     {
         var extensions = ParseOverride(filterOverrideJson)?.Extensions ?? settings.DefaultExtensionFilter;
@@ -36,14 +41,8 @@ public static class EffectiveFilterBuilder
             return null;
         }
 
-        try
-        {
-            return JsonSerializer.Deserialize<FilterOverride>(json, JsonOptions);
-        }
-        catch (JsonException)
-        {
-            return null; // malformed override → fall back to defaults
-        }
+        // A malformed override propagates as JsonException — handled by the caller.
+        return JsonSerializer.Deserialize<FilterOverride>(json, JsonOptions);
     }
 
     private static string NormalizeExtension(string extension) =>

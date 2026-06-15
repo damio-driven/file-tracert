@@ -105,12 +105,14 @@ public class FileFilterTests
     }
 
     [Fact]
-    public void Builder_ignores_malformed_override()
+    public void Builder_throws_on_malformed_override_for_the_caller_to_handle()
     {
         var settings = new AppSettings { DefaultExtensionFilter = ["jpg"] };
 
-        var filter = EffectiveFilterBuilder.Build(settings, "{ not valid json");
+        // No silent swallow: a malformed override surfaces so the caller can log,
+        // notify and fall back to defaults.
+        var act = () => EffectiveFilterBuilder.Build(settings, "{ not valid json");
 
-        filter.AllowedExtensions.Should().BeEquivalentTo("jpg");
+        act.Should().Throw<System.Text.Json.JsonException>();
     }
 }
