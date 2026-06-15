@@ -1,5 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using FileTracert.Contracts.Dtos;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Paging;
@@ -15,6 +17,15 @@ public sealed class NotificationsApiTests
     private const string Header = "X-FileTracert-Token";
 
     private static readonly DateTime T = new(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc);
+
+    // The API serializes enums as names; the client must read them the same way.
+    private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web)
+    {
+        Converters = { new JsonStringEnumConverter() },
+    };
+
+    private static Task<PagedResult<NotificationDto>?> ListAsync(HttpClient client, string url) =>
+        client.GetFromJsonAsync<PagedResult<NotificationDto>>(url, JsonOpts);
 
     private static FileTracertAppFactory NewFactory() => new()
     {
@@ -46,7 +57,7 @@ public sealed class NotificationsApiTests
         using var factory = NewFactory();
         using var client = Authed(factory);
 
-        var page = await client.GetFromJsonAsync<PagedResult<NotificationDto>>("/api/notifications");
+        var page = await ListAsync(client, "/api/notifications");
 
         page!.TotalCount.Should().Be(3);   // dismissed excluded
         page.Items.Select(n => n.Title).Should().ContainInOrder("new", "mid", "old");
@@ -58,7 +69,7 @@ public sealed class NotificationsApiTests
         using var factory = NewFactory();
         using var client = Authed(factory);
 
-        var page = await client.GetFromJsonAsync<PagedResult<NotificationDto>>("/api/notifications?unread=true");
+        var page = await ListAsync(client, "/api/notifications?unread=true");
 
         page!.Items.Select(n => n.Title).Should().BeEquivalentTo(["mid", "new"]);
     }
@@ -80,7 +91,7 @@ public sealed class NotificationsApiTests
         using var factory = NewFactory();
         using var client = Authed(factory);
 
-        var unread = await client.GetFromJsonAsync<PagedResult<NotificationDto>>("/api/notifications?unread=true");
+        var unread = await ListAsync(client, "/api/notifications?unread=true");
         var target = unread!.Items.Single(n => n.Title == "new");
 
         var response = await client.PostAsync($"/api/notifications/{target.Id}/read", content: null);
@@ -96,13 +107,13 @@ public sealed class NotificationsApiTests
         using var factory = NewFactory();
         using var client = Authed(factory);
 
-        var list = await client.GetFromJsonAsync<PagedResult<NotificationDto>>("/api/notifications");
+        var list = await ListAsync(client, "/api/notifications");
         var target = list!.Items.Single(n => n.Title == "mid");
 
         var response = await client.PostAsync($"/api/notifications/{target.Id}/dismiss", content: null);
         response.StatusCode.Should().Be(HttpStatusCode.NoContent);
 
-        var after = await client.GetFromJsonAsync<PagedResult<NotificationDto>>("/api/notifications");
+        var after = await ListAsync(client, "/api/notifications");
         after!.Items.Select(n => n.Title).Should().NotContain("mid");
         after.TotalCount.Should().Be(2);
     }
