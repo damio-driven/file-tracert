@@ -260,6 +260,7 @@ stato fisico (ultima scansione) **+ overlay delle operazioni in coda**.
 `Id` · `VolumeGuid` (unique) · `SerialNumber?` · `Label?` · `FileSystem` ·
 `IsRemovable` · `PhysicalDiskId?` · `LastDriveLetter?` · `CapacityBytes` ·
 `FreeBytesLastKnown` · `LastSeenUtc` · `IsOnline` · `ScanEngine` ·
+`Kind` (VolumeKind) · `IsCatalogable` (default da Kind; override utente preservato) ·
 `LastUsn?` · `LastFullScanUtc?` + audit.
 
 **WatchedRoots**
@@ -321,6 +322,7 @@ UI): `Id` · `TimestampUtc` · `Severity` (Info|Warning|Error) · `Source` ·
 
 ### Enum
 - `VolumeScanEngine` { UsnJournal, Enumeration }
+- `VolumeKind` { Fixed, Removable, Cloud, System, Unknown }
 - `FileCategory` { Image, Video, Audio, Document, Archive, Other }
 - `JobType` { CreateFolder, RenameFile, RenameFolder, MoveFile, MoveFolder } *(Copy → fase 2)*
 - `JobState` { Pending, SpaceReserved, Copying, Verifying, DeletingSource, Completed, Blocked, Failed, Cancelled }
@@ -451,6 +453,8 @@ src/app/
 - **FavoriteTargets** — destinazioni recenti/preferite per "Sposta in…".
 - **Operazione Copy** (oltre a Move).
 - **Volumi riformattati / merge** e identità via serial come segnale secondario.
+  *(Nota: per i drive cloud/virtuali si è scelta l'**esclusione** di default — step
+  6.7; il riaggancio-per-firma di un volume con GUID cambiato resta qui in fase 2.)*
 - **Path UNC / di rete** (modello di identità diverso).
 - Eventuale **upgrade ad Angular 22** quando assestata.
 
