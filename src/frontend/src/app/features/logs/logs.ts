@@ -22,6 +22,11 @@ export class Logs implements OnInit {
   protected readonly loading = this.store.loading;
   protected readonly error = this.store.error;
   protected readonly currentLevel = this.store.currentLevel;
+  // Persisted filter state — bound to the controls so they stay in sync with the
+  // results when navigating away and back (the store is an app-level singleton).
+  protected readonly level = this.store.level;
+  protected readonly category = this.store.category;
+  protected readonly search = this.store.search;
   protected readonly page = this.store.page;
   protected readonly pageCount = this.store.pageCount;
   protected readonly hasPrev = this.store.hasPrev;

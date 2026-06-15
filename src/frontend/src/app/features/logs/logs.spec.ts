@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { LogsApi } from '../../core/api/logs-api.service';
 import { LogEntryDto } from '../../core/models/catalog.models';
+import { LogsStore } from './logs.store';
 import { Logs } from './logs';
 
 const entries: LogEntryDto[] = [
@@ -61,6 +62,24 @@ describe('Logs screen', () => {
     await fixture.whenStable();
 
     expect(el.querySelector('.logs-exception')?.textContent).toContain('boom');
+  });
+
+  it('reflects persisted filters in the controls on re-entry', async () => {
+    TestBed.configureTestingModule({
+      imports: [Logs],
+      providers: [provideZonelessChangeDetection(), { provide: LogsApi, useValue: api() }],
+    });
+
+    // Simulate filters set before leaving the screen (the store is a root singleton).
+    await TestBed.inject(LogsStore).applyFilters({ level: 'Error', category: 'FileTracert', search: 'boom' });
+
+    const fixture = TestBed.createComponent(Logs);
+    await fixture.whenStable();
+    const el = fixture.nativeElement as HTMLElement;
+
+    expect(el.querySelector<HTMLSelectElement>('.logs-filters .logs-select')!.value).toBe('Error');
+    expect(el.querySelector<HTMLInputElement>('input.logs-input.mono')!.value).toBe('FileTracert');
+    expect(el.querySelector<HTMLInputElement>('input[type="search"]')!.value).toBe('boom');
   });
 
   it('changes the runtime logging level via the control', async () => {

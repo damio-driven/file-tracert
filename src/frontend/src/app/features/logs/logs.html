@@ -9,9 +9,9 @@
     <label class="logs-field">
       <span class="logs-field__label">Livello minimo</span>
       <select class="logs-select" (change)="onMinLevel($any($event.target).value)">
-        <option value="">Tutti</option>
+        <option value="" [selected]="!level()">Tutti</option>
         @for (lvl of levels; track lvl) {
-          <option [value]="lvl">{{ lvl }}</option>
+          <option [value]="lvl" [selected]="lvl === level()">{{ lvl }}</option>
         }
       </select>
     </label>
@@ -22,6 +22,7 @@
         class="logs-input mono"
         type="text"
         placeholder="es. FileTracert.Host…"
+        [value]="category()"
         (change)="onCategory($any($event.target).value)"
       />
     </label>
@@ -32,6 +33,7 @@
         class="logs-input"
         type="search"
         placeholder="messaggio o eccezione…"
+        [value]="search()"
         (input)="onSearch($any($event.target).value)"
       />
     </label>
@@ -39,9 +41,9 @@
 
   <label class="logs-field logs-level">
     <span class="logs-field__label">Livello di logging</span>
-    <select class="logs-select" [value]="currentLevel()" (change)="onLevelChange($any($event.target).value)">
+    <select class="logs-select" (change)="onLevelChange($any($event.target).value)">
       @for (lvl of levels; track lvl) {
-        <option [value]="lvl">{{ lvl }}</option>
+        <option [value]="lvl" [selected]="lvl === currentLevel()">{{ lvl }}</option>
       }
     </select>
   </label>
