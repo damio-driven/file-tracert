@@ -10,12 +10,13 @@ public sealed class VolumeClassifierTests
 {
     private static ProbedVolume Probed(
         DriveType driveType = DriveType.Fixed,
-        bool hasPhysicalExtents = true,
+        bool? hasPhysicalExtents = true,
         string? partitionTypeGuid = null,
         string? label = null,
         IReadOnlyList<string>? mountPoints = null,
         string fileSystem = "NTFS",
-        long capacityBytes = 500L * 1024 * 1024 * 1024) => new(
+        long capacityBytes = 500L * 1024 * 1024 * 1024,
+        string? physicalDiskId = null) => new(
         VolumeGuid: @"\\?\Volume{11111111-1111-1111-1111-111111111111}\",
         SerialNumber: "SER",
         Label: label,
@@ -24,7 +25,7 @@ public sealed class VolumeClassifierTests
         MountPoints: mountPoints ?? [@"E:\"],
         CapacityBytes: capacityBytes,
         FreeBytes: 0,
-        PhysicalDiskId: null,
+        PhysicalDiskId: physicalDiskId,
         DriveType: driveType,
         HasPhysicalExtents: hasPhysicalExtents,
         PartitionTypeGuid: partitionTypeGuid);
@@ -36,6 +37,34 @@ public sealed class VolumeClassifierTests
         var probed = Probed(driveType: DriveType.Fixed, hasPhysicalExtents: false, mountPoints: [@"G:\"]);
 
         VolumeClassifier.Classify(probed).Should().Be(VolumeKind.Cloud);
+    }
+
+    [Fact]
+    public void Handle_failure_without_physical_disk_is_cloud()
+    {
+        // Google Drive File Stream: CreateFile on \\?\Volume{GUID} fails (volume is not a kernel
+        // device) → HasPhysicalExtents=null.  WMI finds no physical disk for the mount letter →
+        // PhysicalDiskId=null.  Together these are a reliable "cloud / virtual" signal.
+        var probed = Probed(
+            driveType: DriveType.Network,
+            hasPhysicalExtents: null,
+            mountPoints: [@"G:\"],
+            physicalDiskId: null);
+
+        VolumeClassifier.Classify(probed).Should().Be(VolumeKind.Cloud);
+    }
+
+    [Fact]
+    public void Handle_failure_with_physical_disk_falls_through_to_drive_type()
+    {
+        // A real disk whose IOCTL transiently failed but is still present in the WMI topology:
+        // PhysicalDiskId is set, so we must not treat it as cloud.
+        var probed = Probed(
+            driveType: DriveType.Fixed,
+            hasPhysicalExtents: null,
+            physicalDiskId: @"\\.\PHYSICALDRIVE0");
+
+        VolumeClassifier.Classify(probed).Should().Be(VolumeKind.Fixed);
     }
 
     [Theory]

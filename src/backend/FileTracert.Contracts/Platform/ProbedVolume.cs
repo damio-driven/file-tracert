@@ -19,9 +19,13 @@ namespace FileTracert.Contracts.Platform;
 /// <param name="PhysicalDiskId">Descriptive physical disk id; null when topology resolution failed.</param>
 /// <param name="DriveType">GetDriveType result (Fixed/Removable/…); best-effort, Unknown when undetermined.</param>
 /// <param name="HasPhysicalExtents">
-/// True when the volume maps onto real disk extents (IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS).
-/// A cloud/virtual mount has no extents — a strong "not a real disk" signal. Defaults to
-/// true so callers that don't probe it (tests, legacy paths) are treated as real disks.
+/// <c>true</c>  — IOCTL confirmed ≥1 real disk extent (definitely a physical volume).<br/>
+/// <c>false</c> — IOCTL ran but returned zero extents or the device couldn't be reached
+///               after a successful handle open (virtual / cloud mount).<br/>
+/// <c>null</c>  — the volume device handle could not be opened at all; the volume is not
+///               exposed as a kernel device object (strong signal: cloud / network filesystem).
+/// Defaults to <c>true</c> so callers that skip the probe (tests, legacy paths) are treated
+/// as real disks and are never silently hidden.
 /// </param>
 /// <param name="PartitionTypeGuid">
 /// GPT partition type GUID (lower-case, no braces) when resolvable; null otherwise. Used to
@@ -38,5 +42,5 @@ public sealed record ProbedVolume(
     long FreeBytes,
     string? PhysicalDiskId,
     DriveType DriveType = DriveType.Unknown,
-    bool HasPhysicalExtents = true,
+    bool? HasPhysicalExtents = true,
     string? PartitionTypeGuid = null);

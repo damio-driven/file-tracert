@@ -15,7 +15,7 @@ public class VolumeMapperTests
         long capacity = 1000,
         long free = 400,
         DriveType driveType = DriveType.Fixed,
-        bool hasPhysicalExtents = true) =>
+        bool? hasPhysicalExtents = true) =>
         new(
             VolumeGuid: @"\\?\Volume{11111111-1111-1111-1111-111111111111}\",
             SerialNumber: "ABCD-1234",

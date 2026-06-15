@@ -18,7 +18,8 @@ internal static class VolumeDiskInfo
     /// <summary>PARTITION_STYLE.GPT.</summary>
     private const uint PartitionStyleGpt = 1;
 
-    internal readonly record struct Signals(bool HasPhysicalExtents, string? PartitionTypeGuid);
+    /// <inheritdoc cref="ProbedVolume.HasPhysicalExtents"/>
+    internal readonly record struct Signals(bool? HasPhysicalExtents, string? PartitionTypeGuid);
 
     /// <summary>
     /// Reads the disk signals for a volume GUID path. When the handle cannot be
@@ -43,7 +44,11 @@ internal static class VolumeDiskInfo
 
         if (handle.IsInvalid)
         {
-            return new Signals(HasPhysicalExtents: true, PartitionTypeGuid: null);
+            // The volume is not exposed as a kernel device object (no \\?\Volume{GUID} handle).
+            // Cloud/network filesystems (Google Drive File Stream, WinFSP-based mounts) hit this
+            // path consistently.  null signals "indeterminate" to the classifier, which treats it
+            // as Cloud when no physical-disk topology evidence exists either.
+            return new Signals(HasPhysicalExtents: null, PartitionTypeGuid: null);
         }
 
         return new Signals(QueryHasExtents(handle), QueryPartitionTypeGuid(handle));

@@ -32,8 +32,17 @@ public static class VolumeClassifier
 
     public static VolumeKind Classify(ProbedVolume probed)
     {
-        // 1. No real disk extents → a virtual/cloud mount (Google Drive File Stream, OneDrive).
-        if (!probed.HasPhysicalExtents)
+        // 1a. The IOCTL confirmed zero extents → virtual/cloud mount.
+        if (probed.HasPhysicalExtents == false)
+        {
+            return VolumeKind.Cloud;
+        }
+
+        // 1b. The volume device handle could not be opened at all (HasPhysicalExtents == null)
+        //     AND the volume is absent from the WMI physical-disk topology → cloud / network FS.
+        //     Guard: if PhysicalDiskId is set the disk was seen by WMI; don't hide it on a
+        //     transient IOCTL failure.
+        if (probed.HasPhysicalExtents == null && probed.PhysicalDiskId == null)
         {
             return VolumeKind.Cloud;
         }
