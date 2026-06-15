@@ -2,8 +2,9 @@ namespace FileTracert.Contracts.Dtos;
 
 /// <summary>
 /// Filter + paging shape for querying the log store. <paramref name="MinLevel"/> is
-/// the integer level floor (rows at or above it are returned); the string filters
-/// are substring/equality matches resolved by the store.
+/// the integer level floor (rows at or above it are returned); <paramref name="Category"/>
+/// is a prefix match (StartsWith) and <paramref name="Search"/> a substring match,
+/// both resolved by the store.
 /// </summary>
 public sealed record LogQuery(
     int Skip,

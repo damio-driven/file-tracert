@@ -174,8 +174,10 @@ public sealed class SqliteLogStore : ILogStore
 
         if (!string.IsNullOrWhiteSpace(query.Category))
         {
-            clauses.Add("Category = $category");
-            parameters.Add(("$category", query.Category));
+            // Prefix match (StartsWith): "FileTracert" matches "FileTracert.Host" etc.
+            // Escape LIKE wildcards so the value is treated literally.
+            clauses.Add(@"Category LIKE $category ESCAPE '\'");
+            parameters.Add(("$category", EscapeLike(query.Category) + "%"));
         }
 
         if (!string.IsNullOrWhiteSpace(query.Search))
@@ -205,6 +207,10 @@ public sealed class SqliteLogStore : ILogStore
         sb.AppendJoin(" AND ", clauses);
         return (sb.ToString(), parameters);
     }
+
+    /// <summary>Escapes LIKE wildcards (% _ and the escape char) so a value matches literally.</summary>
+    private static string EscapeLike(string value) =>
+        value.Replace(@"\", @"\\").Replace("%", @"\%").Replace("_", @"\_");
 
     private static void AddParameters(SqliteCommand cmd, List<(string Name, object Value)> parameters)
     {

@@ -106,22 +106,29 @@ public sealed class SqliteLogStoreTests : IDisposable
     }
 
     [Fact]
-    public async Task Query_filters_by_category()
+    public async Task Query_filters_by_category_prefix()
     {
         var t0 = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
         await _store.WriteBatchAsync(
             [
-                Record(2, "a", t0, category: "Cat.A"),
-                Record(3, "b", t0.AddSeconds(1), category: "Cat.B"),
+                Record(2, "a", t0, category: "FileTracert.Host"),
+                Record(3, "b", t0.AddSeconds(1), category: "FileTracert.Business"),
+                Record(2, "c", t0.AddSeconds(2), category: "Microsoft.Hosting"),
             ],
             CancellationToken.None);
 
-        var page = await _store.QueryAsync(
-            new LogQuery(Skip: 0, Take: 50, Category: "Cat.B"),
+        // Prefix match: "FileTracert" matches both FileTracert.* categories.
+        var prefix = await _store.QueryAsync(
+            new LogQuery(Skip: 0, Take: 50, Category: "FileTracert"),
             CancellationToken.None);
+        prefix.TotalCount.Should().Be(2);
+        prefix.Items.Select(e => e.Message).Should().BeEquivalentTo(["a", "b"]);
 
-        page.TotalCount.Should().Be(1);
-        page.Items[0].Message.Should().Be("b");
+        // A deeper prefix narrows further.
+        var narrow = await _store.QueryAsync(
+            new LogQuery(Skip: 0, Take: 50, Category: "FileTracert.Host"),
+            CancellationToken.None);
+        narrow.Items.Should().ContainSingle(e => e.Message == "a");
     }
 
     [Fact]
