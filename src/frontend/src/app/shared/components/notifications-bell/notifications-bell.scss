@@ -1,0 +1,227 @@
+// Encapsulation is OFF (the overlay panel is portaled to <body>), so every class
+// here is ft-notif-namespaced to avoid leaking into the rest of the app.
+@use '../../../styles/mixins' as *;
+
+.ft-notif-bell {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-ctl);
+  background: transparent;
+  color: var(--txt-dim);
+  cursor: pointer;
+  transition: color var(--t-fast), border-color var(--t-fast), background var(--t-fast);
+
+  &:hover {
+    color: var(--txt);
+    border-color: var(--txt-faint);
+  }
+  &:focus-visible {
+    @include focus-ring;
+  }
+  &.is-open {
+    color: var(--teal);
+    border-color: var(--teal);
+    background: var(--teal-dim);
+  }
+}
+
+.ft-notif-badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: var(--r-pill);
+  background: var(--red);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  border: 2px solid var(--bg-2);
+}
+
+// ---- Overlay panel ----
+.ft-notif-panel {
+  width: min(380px, calc(100vw - 32px));
+  max-height: min(520px, calc(100vh - 96px));
+  display: flex;
+  flex-direction: column;
+  @include panel;
+  background: var(--panel);
+  box-shadow: var(--shadow-pop);
+  overflow: hidden;
+  animation: ft-notif-in 0.16s var(--ease-out);
+}
+
+.ft-notif-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: 12px 15px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--line);
+}
+
+.ft-notif-headtitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--txt);
+}
+
+.ft-notif-link {
+  border: none;
+  background: transparent;
+  color: var(--teal);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 4px;
+  border-radius: var(--r-tag);
+  transition: color var(--t-fast), background var(--t-fast);
+
+  &:hover {
+    background: var(--teal-dim);
+  }
+  &:focus-visible {
+    @include focus-ring;
+  }
+  &--mut {
+    color: var(--txt-dim);
+    &:hover {
+      color: var(--txt);
+      background: var(--panel-3);
+    }
+  }
+}
+
+.ft-notif-body {
+  overflow-y: auto;
+  @include custom-scrollbar;
+}
+
+.ft-notif-item {
+  padding: 13px 15px;
+  border-bottom: 1px solid var(--line-soft);
+
+  &:last-child {
+    border-bottom: none;
+  }
+  &.is-unread {
+    background: rgba(46, 196, 182, 0.04);
+  }
+}
+
+.ft-notif-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: 7px;
+}
+
+.ft-notif-source {
+  font-size: 11px;
+  color: var(--txt-dim);
+}
+
+.ft-notif-time {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--txt-faint);
+}
+
+.ft-notif-itemtitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--txt);
+  margin: 0 0 4px;
+  line-height: 1.35;
+}
+
+.ft-notif-msg {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--txt-dim);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 96px;
+  overflow-y: auto;
+  margin: 0;
+  @include custom-scrollbar;
+}
+
+.ft-notif-actions {
+  display: flex;
+  gap: var(--sp-2);
+  margin-top: 9px;
+}
+
+// ---- Empty + loading ----
+.ft-notif-empty {
+  padding: 36px 20px;
+  text-align: center;
+}
+
+.ft-notif-empty-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: var(--on-bg);
+  color: var(--lime);
+  font-size: 17px;
+  margin-bottom: 11px;
+}
+
+.ft-notif-empty-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--txt);
+  margin: 0 0 3px;
+}
+
+.ft-notif-empty-sub {
+  font-size: 12px;
+  color: var(--txt-dim);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.ft-notif-skel {
+  height: 56px;
+  margin: 11px 15px;
+  border-radius: var(--r-ctl);
+  background: linear-gradient(90deg, var(--panel-2), var(--panel-3), var(--panel-2));
+  background-size: 200% 100%;
+  animation: ft-notif-shimmer 1.3s linear infinite;
+}
+
+@keyframes ft-notif-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes ft-notif-shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ft-notif-panel { animation: none; }
+  .ft-notif-skel { animation: none; }
+}

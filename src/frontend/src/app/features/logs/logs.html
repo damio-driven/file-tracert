@@ -1,0 +1,115 @@
+<h1 class="ft-h1">Log</h1>
+<p class="ft-sub">
+  Diagnostica del servizio. Ogni eccezione è registrata per intero; filtra per livello,
+  categoria o testo. Il livello di logging si applica subito e viene ricordato.
+</p>
+
+<div class="logs-toolbar">
+  <div class="logs-filters">
+    <label class="logs-field">
+      <span class="logs-field__label">Livello minimo</span>
+      <select class="logs-select" (change)="onMinLevel($any($event.target).value)">
+        <option value="">Tutti</option>
+        @for (lvl of levels; track lvl) {
+          <option [value]="lvl">{{ lvl }}</option>
+        }
+      </select>
+    </label>
+
+    <label class="logs-field">
+      <span class="logs-field__label">Categoria</span>
+      <input
+        class="logs-input mono"
+        type="text"
+        placeholder="es. FileTracert.Host…"
+        (change)="onCategory($any($event.target).value)"
+      />
+    </label>
+
+    <label class="logs-field logs-field--grow">
+      <span class="logs-field__label">Cerca</span>
+      <input
+        class="logs-input"
+        type="search"
+        placeholder="messaggio o eccezione…"
+        (input)="onSearch($any($event.target).value)"
+      />
+    </label>
+  </div>
+
+  <label class="logs-field logs-level">
+    <span class="logs-field__label">Livello di logging</span>
+    <select class="logs-select" [value]="currentLevel()" (change)="onLevelChange($any($event.target).value)">
+      @for (lvl of levels; track lvl) {
+        <option [value]="lvl">{{ lvl }}</option>
+      }
+    </select>
+  </label>
+</div>
+
+<ft-panel heading="Voci di log" [caption]="totalCount() + ' totali · pag. ' + page() + '/' + pageCount()">
+  <table class="ft-table logs-table">
+    <thead>
+      <tr>
+        <th class="logs-col-time">Ora</th>
+        <th class="logs-col-level">Livello</th>
+        <th class="logs-col-cat">Categoria</th>
+        <th>Messaggio</th>
+      </tr>
+    </thead>
+    <tbody>
+      @if (loading()) {
+        @for (s of [1, 2, 3, 4, 5, 6]; track s) {
+          <tr class="logs-skel-row">
+            <td colspan="4"><div class="logs-skel"></div></td>
+          </tr>
+        }
+      } @else if (entries().length === 0) {
+        <tr>
+          <td colspan="4">
+            <div class="logs-empty">
+              <p class="logs-empty__title">Nessuna voce</p>
+              <p class="logs-empty__sub">Nessun log corrisponde ai filtri attuali.</p>
+            </div>
+          </td>
+        </tr>
+      } @else {
+        @for (e of entries(); track e.id) {
+          <tr
+            class="logs-row"
+            [class.has-exception]="e.exception"
+            [class.is-open]="isExpanded(e.id)"
+            (click)="e.exception ? toggle(e.id) : null"
+          >
+            <td class="logs-col-time mono">{{ formatTime(e.timestampUtc) }}</td>
+            <td class="logs-col-level">
+              <ft-pill [variant]="variant(e.level)">{{ e.level }}</ft-pill>
+            </td>
+            <td class="logs-col-cat mono" [title]="e.category">{{ e.category }}</td>
+            <td class="logs-msg-cell">
+              <span class="logs-msg">{{ e.message }}</span>
+              @if (e.exception) {
+                <span class="logs-chevron" aria-hidden="true">{{ isExpanded(e.id) ? '▾' : '▸' }}</span>
+              }
+            </td>
+          </tr>
+          @if (e.exception && isExpanded(e.id)) {
+            <tr class="logs-exrow">
+              <td colspan="4"><pre class="logs-exception mono">{{ e.exception }}</pre></td>
+            </tr>
+          }
+        }
+      }
+    </tbody>
+  </table>
+
+  <div class="logs-pager">
+    <button class="ft-btn ft-btn--ghost" type="button" [disabled]="!hasPrev() || loading()" (click)="prev()">
+      ← Precedente
+    </button>
+    <span class="logs-pager__info mono">pag. {{ page() }} / {{ pageCount() }}</span>
+    <button class="ft-btn ft-btn--ghost" type="button" [disabled]="!hasNext() || loading()" (click)="next()">
+      Successiva →
+    </button>
+  </div>
+</ft-panel>

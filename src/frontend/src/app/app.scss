@@ -68,6 +68,11 @@
   }
 }
 
+.bell-slot {
+  display: inline-flex;
+  align-items: center;
+}
+
 // ---- Service status dot ----
 .status-dot {
   width: 8px;

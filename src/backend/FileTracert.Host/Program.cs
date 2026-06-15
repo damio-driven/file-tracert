@@ -53,7 +53,12 @@ builder.Services.AddHostedService<VolumeSyncWorker>();
 builder.Services.AddHostedService<ScanWorker>();
 builder.Services.AddHostedService<LogRetentionWorker>();
 
-builder.Services.AddControllers();
+builder.Services
+    .AddControllers()
+    .AddJsonOptions(o =>
+        // Serialize enums (e.g. NotificationSeverity) as their names, not integers,
+        // so the API contract stays readable on the client.
+        o.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter()));
 
 builder.Services.Configure<HostOptions>(o =>
     o.ShutdownTimeout = TimeSpan.FromSeconds(options.ShutdownTimeoutSeconds));

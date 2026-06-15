@@ -114,3 +114,43 @@ export interface WatchedRootUpdateResponse {
   root: WatchedRootDto;
   reconcile: ReconcileResultDto | null;
 }
+
+// ---- Diagnostics: notifications + logs (step 6.6) ----
+
+export type NotificationSeverity = 'Info' | 'Warning' | 'Error';
+
+/** A background event surfaced to the user (the bell / notifications panel). */
+export interface NotificationDto {
+  id: number;
+  timestampUtc: string;
+  severity: NotificationSeverity;
+  source: string;
+  title: string;
+  message: string;
+  volumeId: number | null;
+  isRead: boolean;
+  isDismissed: boolean;
+}
+
+export interface NotificationCountDto {
+  unread: number;
+}
+
+/** Canonical log level names (match Microsoft.Extensions.Logging.LogLevel). */
+export type LogLevelName = 'Trace' | 'Debug' | 'Information' | 'Warning' | 'Error' | 'Critical';
+
+/** One persisted log line for the Log section. */
+export interface LogEntryDto {
+  id: number;
+  timestampUtc: string;
+  level: string;
+  category: string;
+  message: string;
+  exception: string | null;
+  eventId: number | null;
+  scope: string | null;
+}
+
+export interface LogLevelDto {
+  level: string;
+}

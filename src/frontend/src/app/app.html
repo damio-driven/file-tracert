@@ -7,6 +7,8 @@
       <span class="status-dot" [class.pulse]="!serviceDown()"></span>
       {{ serviceDown() ? 'servizio non raggiungibile' : 'servizio attivo' }}
     </div>
+
+    <ft-notifications-bell class="bell-slot" />
   </header>
 
   <div class="shell">
@@ -30,6 +32,11 @@
       <div class="navitem soon"><span class="ic">≣</span> Coda <span class="qbadge mut">presto</span></div>
       <div class="navitem soon"><span class="ic">✦</span> Regole <span class="qbadge mut">poi</span></div>
 
+      <div class="navsec">Sistema</div>
+      <a class="navitem" routerLink="/logs" routerLinkActive="active">
+        <span class="ic">▦</span> Log
+      </a>
+
       <div class="navfoot mono">
         <span class="status-dot" [class.pulse]="!serviceDown()"></span>
         <b>{{ serviceDown() ? 'servizio offline' : 'servizio attivo' }}</b><br />
@@ -45,4 +52,6 @@
       <router-outlet />
     </main>
   </div>
+
+  <ft-toast-host />
 </div>

@@ -1,0 +1,76 @@
+<button
+  type="button"
+  class="ft-notif-bell"
+  cdkOverlayOrigin
+  #origin="cdkOverlayOrigin"
+  [class.is-open]="open()"
+  [attr.aria-expanded]="open()"
+  aria-haspopup="dialog"
+  [attr.aria-label]="unread() ? 'Notifiche, ' + unread() + ' non lette' : 'Notifiche'"
+  (click)="store.toggle()"
+>
+  <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7"
+       stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
+    <path d="M13.7 21a2 2 0 0 1-3.4 0" />
+  </svg>
+  @if (unread()) {
+    <span class="ft-notif-badge mono">{{ unread() > 99 ? '99+' : unread() }}</span>
+  }
+</button>
+
+<ng-template
+  cdkConnectedOverlay
+  [cdkConnectedOverlayOrigin]="origin"
+  [cdkConnectedOverlayOpen]="open()"
+  [cdkConnectedOverlayPositions]="positions"
+  (overlayOutsideClick)="store.close()"
+  (detach)="store.close()"
+>
+  <section class="ft-notif-panel" role="dialog" aria-label="Notifiche">
+    <header class="ft-notif-head">
+      <span class="ft-notif-headtitle">Notifiche</span>
+      @if (hasUnread()) {
+        <button type="button" class="ft-notif-link" (click)="store.markAllRead()">
+          Segna tutte lette
+        </button>
+      }
+    </header>
+
+    <div class="ft-notif-body">
+      @if (loading()) {
+        @for (s of [1, 2, 3]; track s) {
+          <div class="ft-notif-skel"></div>
+        }
+      } @else if (items().length === 0) {
+        <div class="ft-notif-empty">
+          <span class="ft-notif-empty-glyph" aria-hidden="true">✓</span>
+          <p class="ft-notif-empty-title">Nessuna notifica</p>
+          <p class="ft-notif-empty-sub">Gli errori di scansione e gli avvisi compaiono qui.</p>
+        </div>
+      } @else {
+        @for (n of items(); track n.id) {
+          <article class="ft-notif-item" [class.is-unread]="!n.isRead">
+            <div class="ft-notif-meta">
+              <ft-pill [variant]="variant(n.severity)">{{ severityLabel(n.severity) }}</ft-pill>
+              <span class="ft-notif-source mono">{{ n.source }}</span>
+              <time class="ft-notif-time mono">{{ n.timestampUtc | relativeTime }}</time>
+            </div>
+            <h4 class="ft-notif-itemtitle">{{ n.title }}</h4>
+            <p class="ft-notif-msg mono">{{ n.message }}</p>
+            <div class="ft-notif-actions">
+              @if (!n.isRead) {
+                <button type="button" class="ft-notif-link" (click)="store.markRead(n.id)">
+                  Segna letta
+                </button>
+              }
+              <button type="button" class="ft-notif-link ft-notif-link--mut" (click)="store.dismiss(n.id)">
+                Ignora
+              </button>
+            </div>
+          </article>
+        }
+      }
+    </div>
+  </section>
+</ng-template>

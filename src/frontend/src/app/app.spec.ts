@@ -5,6 +5,7 @@ import { of } from 'rxjs';
 
 import { App } from './app';
 import { DashboardApi } from './core/api/dashboard-api.service';
+import { NotificationsApi } from './core/api/notifications-api.service';
 import { DashboardStatsDto } from './core/models/catalog.models';
 
 const stats: DashboardStatsDto = {
@@ -26,6 +27,13 @@ describe('App shell', () => {
         provideZonelessChangeDetection(),
         provideRouter([]),
         { provide: DashboardApi, useValue: { getStats: () => of(stats) } },
+        {
+          provide: NotificationsApi,
+          useValue: {
+            unreadCount: () => of({ unread: 0 }),
+            list: () => of({ items: [], totalCount: 0, skip: 0, take: 50 }),
+          },
+        },
       ],
     }).compileComponents();
   });
