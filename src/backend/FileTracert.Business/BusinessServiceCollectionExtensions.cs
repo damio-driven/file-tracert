@@ -3,6 +3,7 @@ using FileTracert.Business.Scanning;
 using FileTracert.Business.Setup;
 using FileTracert.Business.Volumes;
 using FileTracert.Contracts.Notifications;
+using FileTracert.Contracts.Scanning;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace FileTracert.Business;
@@ -14,6 +15,10 @@ public static class BusinessServiceCollectionExtensions
     {
         services.AddScoped<VolumeSyncService>();
         services.AddScoped<ScanService>();
+
+        // The scan-progress tracker is volatile in-memory state shared across scopes:
+        // the worker's ScanService writes it, the API reads it → singleton.
+        services.AddSingleton<IScanStatusTracker, ScanStatusTracker>();
         services.AddScoped<FilterReconciler>();
         services.AddScoped<FolderBrowseService>();
         services.AddScoped<FilterSettingsService>();

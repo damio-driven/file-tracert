@@ -14,8 +14,11 @@ public sealed class VolumeConfiguration : IEntityTypeConfiguration<Volume>
         builder.Property(x => x.VolumeGuid).IsRequired();
         builder.Property(x => x.FileSystem).IsRequired();
         builder.Property(x => x.ScanEngine).HasConversion<string>();
+        builder.Property(x => x.Kind).HasConversion<string>();
+        builder.Property(x => x.IsCatalogable).HasDefaultValue(true);
 
         builder.HasIndex(x => x.VolumeGuid).IsUnique();
+        builder.HasIndex(x => x.IsCatalogable);
 
         builder.HasMany(x => x.WatchedRoots)
             .WithOne(x => x.Volume)

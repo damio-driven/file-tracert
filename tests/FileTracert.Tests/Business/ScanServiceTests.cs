@@ -2,6 +2,7 @@ using FileTracert.Business.Scanning;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Notifications;
 using FileTracert.Contracts.Platform;
+using FileTracert.Contracts.Scanning;
 using FileTracert.Data;
 using FileTracert.Data.Entities;
 using FileTracert.Data.Indexing;
@@ -50,9 +51,10 @@ public sealed class ScanServiceTests
 
     private static ScanService Build(SqliteInMemoryContext harness, FileTracertDbContext ctx,
         IVolumeProbe probe, IUsnReader usn, IDirectoryEnumerator enumerator, IFileMetadataReader meta,
-        INotificationPublisher? notifications = null) =>
+        INotificationPublisher? notifications = null, IScanStatusTracker? tracker = null) =>
         new(ctx, probe, usn, enumerator, meta, new BulkIndexWriter(ctx),
-            notifications ?? new FakeNotificationPublisher(), NullLogger<ScanService>.Instance);
+            notifications ?? new FakeNotificationPublisher(),
+            tracker ?? new ScanStatusTracker(), NullLogger<ScanService>.Instance);
 
     [Fact]
     public async Task Full_scan_via_enumeration_builds_tree_applies_filters_and_sizes()
@@ -219,6 +221,60 @@ public sealed class ScanServiceTests
         // Not silent: the malformed override raised a user-visible warning.
         notifications.Published.Should().ContainSingle()
             .Which.Severity.Should().Be(NotificationSeverity.Warning);
+    }
+
+    [Fact]
+    public async Task Scan_drives_the_status_tracker_through_phases_then_completes()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, VolumeScanEngine.Enumeration, "exFAT", []);
+
+        var entries = new List<ScanEntry>
+        {
+            new(@"A", "A", true, 0, T, T, FileAttributes.Directory),
+            new(@"A\f.dat", "f.dat", false, 1, T, T, FileAttributes.Normal),
+        };
+
+        var tracker = new RecordingScanStatusTracker();
+        await using (var ctx = harness.CreateContext())
+        {
+            var sut = Build(harness, ctx,
+                new FakeVolumeProbe(ProbedFor("exFAT")),
+                new FakeUsnReader([], 0),
+                new FakeDirectoryEnumerator(entries),
+                new FakeFileMetadataReader(new Dictionary<string, FileMetadata>()),
+                tracker: tracker);
+            await sut.ScanVolumeAsync(volumeId, CancellationToken.None);
+        }
+
+        tracker.Begun.Should().Equal(volumeId);
+        tracker.Phases.Should().ContainInOrder(ScanPhase.ReadingMetadata, ScanPhase.Writing);
+        tracker.LastWritten.Should().Be(1);
+        tracker.Completed.Should().Equal(volumeId);
+        tracker.Failed.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Scan_failure_marks_the_tracker_failed_and_rethrows()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, VolumeScanEngine.Enumeration, "exFAT", []);
+
+        var tracker = new RecordingScanStatusTracker();
+        await using var ctx = harness.CreateContext();
+        var sut = Build(harness, ctx,
+            new FakeVolumeProbe(ProbedFor("exFAT")),
+            new FakeUsnReader([], 0),
+            new ThrowingDirectoryEnumerator(),
+            new FakeFileMetadataReader(new Dictionary<string, FileMetadata>()),
+            tracker: tracker);
+
+        var act = async () => await sut.ScanVolumeAsync(volumeId, CancellationToken.None);
+
+        await act.Should().ThrowAsync<Exception>();
+        tracker.Begun.Should().Equal(volumeId);
+        tracker.Failed.Should().Equal(volumeId);
+        tracker.Completed.Should().BeEmpty();
     }
 
     [Fact]

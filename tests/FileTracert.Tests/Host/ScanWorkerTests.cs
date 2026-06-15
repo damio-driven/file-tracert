@@ -80,6 +80,55 @@ public sealed class ScanWorkerTests
     }
 
     [Fact]
+    public async Task Worker_ignores_a_non_catalogable_volume()
+    {
+        var entries = new List<ScanEntry>
+        {
+            new(@"Media", "Media", true, 0, T, T, FileAttributes.Directory),
+            new(@"Media\a.jpg", "a.jpg", false, 11, T, T, FileAttributes.Normal),
+        };
+
+        using var factory = new FileTracertAppFactory
+        {
+            DisableVolumeSync = true,
+            Probe = new FakeVolumesProbe(
+            [
+                new ProbedVolume(Guid, "SER", "GoogleDrive", "NTFS", IsRemovable: false,
+                    MountPoints: [@"X:\"], CapacityBytes: 1000, FreeBytes: 500, PhysicalDiskId: null),
+            ]),
+            DirectoryEnumerator = new FakeDirectoryEnumerator(entries),
+            Seed = async (db, ct) =>
+            {
+                // Online, with an active root, but excluded from cataloguing (e.g. a cloud mount).
+                var volume = new Volume
+                {
+                    VolumeGuid = Guid,
+                    FileSystem = "NTFS",
+                    ScanEngine = VolumeScanEngine.Enumeration,
+                    Kind = VolumeKind.Cloud,
+                    IsCatalogable = false,
+                    IsOnline = true,
+                };
+                db.Volumes.Add(volume);
+                await db.SaveChangesAsync(ct);
+
+                db.WatchedRoots.Add(new WatchedRoot { VolumeId = volume.Id, RelativePath = "", IsActive = true });
+                await db.SaveChangesAsync(ct);
+            },
+        };
+
+        using var _ = factory.CreateClient();
+
+        // Give the scan poll several cycles; a non-catalogable volume must never be scanned.
+        await Task.Delay(2500);
+
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<FileTracertDbContext>();
+        (await db.Volumes.SingleAsync()).LastFullScanUtc.Should().BeNull();
+        (await db.Files.CountAsync()).Should().Be(0);
+    }
+
+    [Fact]
     public async Task Failed_scan_raises_a_notification_and_the_worker_keeps_running()
     {
         // The volume is marked online and never scanned, but the probe doesn't know it

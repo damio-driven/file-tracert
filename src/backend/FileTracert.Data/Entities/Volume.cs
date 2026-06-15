@@ -13,6 +13,17 @@ public class Volume : IAuditable
     public string? Label { get; set; }
     public string FileSystem { get; set; } = null!;
     public bool IsRemovable { get; set; }
+
+    /// <summary>How the volume was classified (cloud/system/fixed/removable/unknown).</summary>
+    public VolumeKind Kind { get; set; }
+
+    /// <summary>
+    /// Whether the volume is eligible for cataloguing. Defaults from <see cref="Kind"/>
+    /// (cloud/system → false) but the user can override it; the sync preserves a manual
+    /// override (see <c>VolumeSyncService</c>).
+    /// </summary>
+    public bool IsCatalogable { get; set; } = true;
+
     public string? PhysicalDiskId { get; set; }
     public string? LastDriveLetter { get; set; }
     public long CapacityBytes { get; set; }

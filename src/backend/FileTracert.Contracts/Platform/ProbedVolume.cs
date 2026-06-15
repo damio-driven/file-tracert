@@ -1,3 +1,5 @@
+using System.IO;
+
 namespace FileTracert.Contracts.Platform;
 
 /// <summary>
@@ -15,6 +17,16 @@ namespace FileTracert.Contracts.Platform;
 /// <param name="CapacityBytes">Total capacity in bytes; 0 when not available.</param>
 /// <param name="FreeBytes">Free bytes; 0 when not available.</param>
 /// <param name="PhysicalDiskId">Descriptive physical disk id; null when topology resolution failed.</param>
+/// <param name="DriveType">GetDriveType result (Fixed/Removable/…); best-effort, Unknown when undetermined.</param>
+/// <param name="HasPhysicalExtents">
+/// True when the volume maps onto real disk extents (IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS).
+/// A cloud/virtual mount has no extents — a strong "not a real disk" signal. Defaults to
+/// true so callers that don't probe it (tests, legacy paths) are treated as real disks.
+/// </param>
+/// <param name="PartitionTypeGuid">
+/// GPT partition type GUID (lower-case, no braces) when resolvable; null otherwise. Used to
+/// recognise ESP/MSR/WinRE system partitions. Best-effort — never required.
+/// </param>
 public sealed record ProbedVolume(
     string VolumeGuid,
     string? SerialNumber,
@@ -24,4 +36,7 @@ public sealed record ProbedVolume(
     IReadOnlyList<string> MountPoints,
     long CapacityBytes,
     long FreeBytes,
-    string? PhysicalDiskId);
+    string? PhysicalDiskId,
+    DriveType DriveType = DriveType.Unknown,
+    bool HasPhysicalExtents = true,
+    string? PartitionTypeGuid = null);

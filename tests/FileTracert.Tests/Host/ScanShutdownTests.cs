@@ -73,6 +73,7 @@ public sealed class ScanShutdownTests
                 }),
                 new BulkIndexWriter(ctx),
                 new FakeNotificationPublisher(),
+                new ScanStatusTracker(),
                 NullLogger<ScanService>.Instance);
 
             var act = async () => await sut.ScanVolumeAsync(volumeId, cts.Token);

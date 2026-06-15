@@ -2,8 +2,27 @@ using System.ComponentModel;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Notifications;
 using FileTracert.Contracts.Platform;
+using FileTracert.Contracts.Scanning;
 
 namespace FileTracert.Tests.Business;
+
+/// <summary>Records every tracker call so scan-progress hooks can be asserted.</summary>
+internal sealed class RecordingScanStatusTracker : IScanStatusTracker
+{
+    public List<int> Begun { get; } = [];
+    public List<ScanPhase> Phases { get; } = [];
+    public List<int> Completed { get; } = [];
+    public List<int> Failed { get; } = [];
+    public long LastWritten { get; private set; } = -1;
+
+    public void Begin(int volumeId, string? label) => Begun.Add(volumeId);
+    public void SetPhase(int volumeId, ScanPhase phase) => Phases.Add(phase);
+    public void ReportSeen(int volumeId, long itemsSeen, string? currentRoot = null) { }
+    public void ReportWritten(int volumeId, long itemsWritten) => LastWritten = itemsWritten;
+    public void Complete(int volumeId) => Completed.Add(volumeId);
+    public void Fail(int volumeId) => Failed.Add(volumeId);
+    public IReadOnlyList<ScanStatusDto> Snapshot() => [];
+}
 
 /// <summary>Captures notifications published during a scan for assertions.</summary>
 internal sealed class FakeNotificationPublisher : INotificationPublisher
@@ -43,6 +62,13 @@ internal sealed class FakeVolumesProbe(IReadOnlyList<ProbedVolume> volumes) : IV
 internal sealed class FakeDirectoryEnumerator(IReadOnlyList<ScanEntry> entries) : IDirectoryEnumerator
 {
     public IEnumerable<ScanEntry> Enumerate(string mountRoot, string relativeRoot, CancellationToken ct) => entries;
+}
+
+/// <summary>Enumerator that blows up, to exercise the scan failure path.</summary>
+internal sealed class ThrowingDirectoryEnumerator : IDirectoryEnumerator
+{
+    public IEnumerable<ScanEntry> Enumerate(string mountRoot, string relativeRoot, CancellationToken ct) =>
+        throw new IOException("Enumeration failed.");
 }
 
 internal sealed class FakeUsnReader(IReadOnlyList<UsnEntry> entries, long nextUsn, ulong journalId = 1)

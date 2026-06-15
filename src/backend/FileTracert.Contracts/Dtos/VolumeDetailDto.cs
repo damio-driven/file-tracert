@@ -19,6 +19,8 @@ public sealed record VolumeDetailDto(
     DateTime? LastFullScanUtc,
     bool DataIsLive,
     bool IsStale,
+    string Kind,
+    bool IsCatalogable,
     // --- technical identity ---
     string? SerialNumber,
     string? PhysicalDiskId,

@@ -21,4 +21,6 @@ public sealed record VolumeDto(
     int FileCount,
     DateTime? LastFullScanUtc,
     bool DataIsLive,
-    bool IsStale);
+    bool IsStale,
+    string Kind,
+    bool IsCatalogable);

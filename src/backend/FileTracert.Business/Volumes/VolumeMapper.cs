@@ -30,26 +30,35 @@ public static class VolumeMapper
     }
 
     /// <summary>Creates a brand-new <see cref="Volume"/> from a probe result.</summary>
-    public static Volume MapNew(ProbedVolume probed, DateTime nowUtc) => new()
+    public static Volume MapNew(ProbedVolume probed, DateTime nowUtc)
     {
-        VolumeGuid = probed.VolumeGuid,
-        SerialNumber = probed.SerialNumber,
-        Label = probed.Label,
-        FileSystem = probed.FileSystem,
-        IsRemovable = probed.IsRemovable,
-        PhysicalDiskId = probed.PhysicalDiskId,
-        LastDriveLetter = DriveLetterOf(probed),
-        CapacityBytes = probed.CapacityBytes,
-        FreeBytesLastKnown = probed.FreeBytes,
-        ScanEngine = EngineFor(probed.FileSystem),
-        IsOnline = true,
-        LastSeenUtc = nowUtc,
-    };
+        var kind = VolumeClassifier.Classify(probed);
+        return new Volume
+        {
+            VolumeGuid = probed.VolumeGuid,
+            SerialNumber = probed.SerialNumber,
+            Label = probed.Label,
+            FileSystem = probed.FileSystem,
+            IsRemovable = probed.IsRemovable,
+            Kind = kind,
+            IsCatalogable = VolumeClassifier.DefaultCatalogable(kind),
+            PhysicalDiskId = probed.PhysicalDiskId,
+            LastDriveLetter = DriveLetterOf(probed),
+            CapacityBytes = probed.CapacityBytes,
+            FreeBytesLastKnown = probed.FreeBytes,
+            ScanEngine = EngineFor(probed.FileSystem),
+            IsOnline = true,
+            LastSeenUtc = nowUtc,
+        };
+    }
 
     /// <summary>
     /// Refreshes only the live state of an existing volume. Deliberately leaves
     /// scan checkpoints (<see cref="Volume.LastUsn"/>, <see cref="Volume.LastFullScanUtc"/>)
-    /// and the chosen <see cref="Volume.ScanEngine"/> untouched.
+    /// and the chosen <see cref="Volume.ScanEngine"/> untouched. The classification
+    /// (<see cref="Volume.Kind"/>) is recomputed, but a manual <see cref="Volume.IsCatalogable"/>
+    /// override is preserved: it is only re-derived when it still matches the default of the
+    /// previously stored kind (i.e. the user never changed it).
     /// </summary>
     public static void ApplyLiveState(Volume volume, ProbedVolume probed, DateTime nowUtc)
     {
@@ -63,5 +72,13 @@ public static class VolumeMapper
         volume.FreeBytesLastKnown = probed.FreeBytes;
         volume.IsOnline = true;
         volume.LastSeenUtc = nowUtc;
+
+        var newKind = VolumeClassifier.Classify(probed);
+        if (volume.IsCatalogable == VolumeClassifier.DefaultCatalogable(volume.Kind))
+        {
+            volume.IsCatalogable = VolumeClassifier.DefaultCatalogable(newKind);
+        }
+
+        volume.Kind = newKind;
     }
 }

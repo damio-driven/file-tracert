@@ -1,3 +1,4 @@
+using System.IO;
 using FileTracert.Business.Volumes;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Platform;
@@ -12,17 +13,21 @@ public class VolumeMapperTests
         string fileSystem = "NTFS",
         IReadOnlyList<string>? mountPoints = null,
         long capacity = 1000,
-        long free = 400) =>
+        long free = 400,
+        DriveType driveType = DriveType.Fixed,
+        bool hasPhysicalExtents = true) =>
         new(
             VolumeGuid: @"\\?\Volume{11111111-1111-1111-1111-111111111111}\",
             SerialNumber: "ABCD-1234",
             Label: "Data",
             FileSystem: fileSystem,
-            IsRemovable: false,
+            IsRemovable: driveType == DriveType.Removable,
             MountPoints: mountPoints ?? [@"E:\"],
             CapacityBytes: capacity,
             FreeBytes: free,
-            PhysicalDiskId: @"\\.\PHYSICALDRIVE1");
+            PhysicalDiskId: @"\\.\PHYSICALDRIVE1",
+            DriveType: driveType,
+            HasPhysicalExtents: hasPhysicalExtents);
 
     [Theory]
     [InlineData("NTFS", VolumeScanEngine.UsnJournal)]
@@ -86,5 +91,58 @@ public class VolumeMapperTests
         existing.LastUsn.Should().Be(9999);
         existing.LastFullScanUtc.Should().Be(new DateTime(2025, 5, 5, 0, 0, 0, DateTimeKind.Utc));
         existing.ScanEngine.Should().Be(VolumeScanEngine.UsnJournal);
+    }
+
+    [Fact]
+    public void MapNew_classifies_and_sets_default_catalogable()
+    {
+        var now = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        var fixedVol = VolumeMapper.MapNew(Probed(driveType: DriveType.Fixed), now);
+        fixedVol.Kind.Should().Be(VolumeKind.Fixed);
+        fixedVol.IsCatalogable.Should().BeTrue();
+
+        var cloud = VolumeMapper.MapNew(Probed(driveType: DriveType.Fixed, hasPhysicalExtents: false), now);
+        cloud.Kind.Should().Be(VolumeKind.Cloud);
+        cloud.IsCatalogable.Should().BeFalse();
+    }
+
+    [Fact]
+    public void ApplyLiveState_reconciles_kind_and_derives_catalogable_when_not_overridden()
+    {
+        // Existing row from before classification existed: Unknown + the migration default (catalogable).
+        var existing = new Volume
+        {
+            VolumeGuid = "g", FileSystem = "NTFS", ScanEngine = VolumeScanEngine.UsnJournal,
+            Kind = VolumeKind.Unknown, IsCatalogable = true,
+        };
+        var now = new DateTime(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        // Probe now reports a cloud mount (no physical extents).
+        VolumeMapper.ApplyLiveState(existing, Probed(hasPhysicalExtents: false), now);
+
+        existing.Kind.Should().Be(VolumeKind.Cloud);
+        existing.IsCatalogable.Should().BeFalse("default catalogable for a cloud volume is false");
+    }
+
+    [Fact]
+    public void ApplyLiveState_preserves_manual_catalogable_override()
+    {
+        // User re-enabled a cloud volume (false positive): IsCatalogable=true differs from the
+        // cloud default (false), so the sync must not clobber it.
+        var reEnabledCloud = new Volume
+        {
+            VolumeGuid = "g", FileSystem = "NTFS", Kind = VolumeKind.Cloud, IsCatalogable = true,
+        };
+        VolumeMapper.ApplyLiveState(reEnabledCloud, Probed(hasPhysicalExtents: false), DateTime.UtcNow);
+        reEnabledCloud.IsCatalogable.Should().BeTrue();
+
+        // User excluded a real fixed disk: IsCatalogable=false differs from the fixed default (true).
+        var excludedFixed = new Volume
+        {
+            VolumeGuid = "g", FileSystem = "NTFS", Kind = VolumeKind.Fixed, IsCatalogable = false,
+        };
+        VolumeMapper.ApplyLiveState(excludedFixed, Probed(driveType: DriveType.Fixed), DateTime.UtcNow);
+        excludedFixed.IsCatalogable.Should().BeFalse();
     }
 }

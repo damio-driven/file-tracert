@@ -99,6 +99,24 @@ public sealed class VolumesController : ControllerBase
         return Accepted();
     }
 
+    /// <summary>
+    /// Manually override the catalogable flag (re-enable a false positive or exclude a
+    /// volume). 204 on success, 404 if unknown. The sync preserves the override afterwards.
+    /// </summary>
+    [HttpPost("{id:int}/catalogable")]
+    public async Task<IActionResult> SetCatalogable(int id, [FromBody] SetCatalogableRequest request, CancellationToken ct)
+    {
+        var volume = await _db.Volumes.FirstOrDefaultAsync(v => v.Id == id, ct);
+        if (volume is null)
+        {
+            return NotFound();
+        }
+
+        volume.IsCatalogable = request.IsCatalogable;
+        await _db.SaveChangesAsync(ct);
+        return NoContent();
+    }
+
     /// <summary>Resolve each monitored root's effective filter into the display summary.</summary>
     private async Task<IReadOnlyList<WatchedRootDto>> BuildWatchedRootsAsync(Volume volume, CancellationToken ct)
     {

@@ -81,6 +81,7 @@ public sealed class ScanWorker : BackgroundService
         var db = scope.ServiceProvider.GetRequiredService<FileTracertDbContext>();
         var pending = await db.Volumes
             .Where(v => v.IsOnline
+                && v.IsCatalogable
                 && v.LastFullScanUtc == null
                 && v.WatchedRoots.Any(r => r.IsActive))
             .Select(v => v.Id)

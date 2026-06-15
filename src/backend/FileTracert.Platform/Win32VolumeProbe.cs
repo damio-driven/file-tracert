@@ -1,3 +1,4 @@
+using System.IO;
 using System.Runtime.InteropServices;
 using FileTracert.Contracts.Platform;
 using FileTracert.Platform.Internal;
@@ -78,9 +79,12 @@ internal sealed class Win32VolumeProbe : IVolumeProbe
     {
         var mountPoints = GetMountPoints(volumeGuid);
         var (label, serial, fileSystem) = GetVolumeInformation(volumeGuid);
-        var isRemovable = NativeMethods.GetDriveType(volumeGuid) == NativeMethods.DriveRemovable;
+        // GetDriveType values map 1:1 onto System.IO.DriveType.
+        var driveType = (DriveType)NativeMethods.GetDriveType(volumeGuid);
+        var isRemovable = driveType == DriveType.Removable;
         var (capacity, free) = GetSpace(volumeGuid);
         var physicalDiskId = ResolvePhysicalDiskId(mountPoints, diskMap);
+        var disk = VolumeDiskInfo.Read(volumeGuid);
 
         return new ProbedVolume(
             volumeGuid,
@@ -91,7 +95,10 @@ internal sealed class Win32VolumeProbe : IVolumeProbe
             mountPoints,
             capacity,
             free,
-            physicalDiskId);
+            physicalDiskId,
+            driveType,
+            disk.HasPhysicalExtents,
+            disk.PartitionTypeGuid);
     }
 
     private static IReadOnlyList<string> GetMountPoints(string volumeGuid)

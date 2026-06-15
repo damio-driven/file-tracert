@@ -23,6 +23,8 @@ public sealed class VolumeFreshnessMapperTests
         LastUsn = 44_821_330,
         SerialNumber = "B83A-77F1",
         PhysicalDiskId = @"\\.\PHYSICALDRIVE2",
+        Kind = VolumeKind.Removable,
+        IsCatalogable = true,
     };
 
     [Fact]
@@ -36,6 +38,8 @@ public sealed class VolumeFreshnessMapperTests
         dto.FreeBytes.Should().Be(128);
         dto.FileCount.Should().Be(48_054);
         dto.CurrentLetter.Should().Be("H:");
+        dto.Kind.Should().Be("Removable");
+        dto.IsCatalogable.Should().BeTrue();
     }
 
     [Fact]

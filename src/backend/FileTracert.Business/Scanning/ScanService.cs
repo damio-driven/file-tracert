@@ -4,6 +4,7 @@ using FileTracert.Business.Filtering;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Notifications;
 using FileTracert.Contracts.Platform;
+using FileTracert.Contracts.Scanning;
 using FileTracert.Data;
 using FileTracert.Data.Entities;
 using FileTracert.Data.Indexing;
@@ -28,7 +29,11 @@ public sealed class ScanService
     private readonly IFileMetadataReader _metadataReader;
     private readonly IBulkIndexWriter _bulkWriter;
     private readonly INotificationPublisher _notifications;
+    private readonly IScanStatusTracker _statusTracker;
     private readonly ILogger<ScanService> _logger;
+
+    /// <summary>Push a running count to the tracker every this many enumerated items.</summary>
+    private const int SeenReportInterval = 5_000;
 
     public ScanService(
         FileTracertDbContext db,
@@ -38,6 +43,7 @@ public sealed class ScanService
         IFileMetadataReader metadataReader,
         IBulkIndexWriter bulkWriter,
         INotificationPublisher notifications,
+        IScanStatusTracker statusTracker,
         ILogger<ScanService> logger)
     {
         _db = db;
@@ -47,6 +53,7 @@ public sealed class ScanService
         _metadataReader = metadataReader;
         _bulkWriter = bulkWriter;
         _notifications = notifications;
+        _statusTracker = statusTracker;
         _logger = logger;
     }
 
@@ -70,6 +77,26 @@ public sealed class ScanService
             return;
         }
 
+        // Track progress for the duration of the scan. On any failure the tracker is
+        // marked failed (so the UI/poll stops showing it as running) and the error
+        // still propagates to the worker for logging + the user-facing notification.
+        _statusTracker.Begin(volume.Id, volume.Label);
+        try
+        {
+            await RunScanAsync(volume, probed, mountRoot, roots, ct);
+            _statusTracker.Complete(volume.Id);
+        }
+        catch
+        {
+            _statusTracker.Fail(volume.Id);
+            throw;
+        }
+    }
+
+    private async Task RunScanAsync(
+        Volume volume, ProbedVolume probed, string mountRoot, List<WatchedRoot> roots, CancellationToken ct)
+    {
+        var volumeId = volume.Id;
         var settings = await _db.AppSettings.FirstOrDefaultAsync(ct);
         var categoryMap = await _db.ExtensionCategories.ToDictionaryAsync(e => e.Extension, e => e.Category, ct);
 
@@ -110,9 +137,13 @@ public sealed class ScanService
 
         var filters = await ResolveRootFiltersAsync(volume, roots, settings, ct);
         var (dirItems, fileItems) = GatherAndFilter(volume, mountRoot, roots, filters);
+
+        _statusTracker.SetPhase(volumeId, ScanPhase.ReadingMetadata);
         var resolvedFiles = await ResolveFilesAsync(volume, mountRoot, fileItems, categoryMap, ct);
 
+        _statusTracker.SetPhase(volumeId, ScanPhase.Writing);
         await PersistAsync(volume, dirItems, resolvedFiles, checkpointUsn, ct);
+        _statusTracker.ReportWritten(volumeId, resolvedFiles.Count);
 
         _logger.LogInformation(
             "Scanned volume {VolumeId}: {Dirs} directories, {Files} files.",
@@ -173,8 +204,17 @@ public sealed class ScanService
         var dirs = new List<ScanItem>();
         var files = new List<ScanItem>();
 
+        // Enumeration is the long "blind" phase: report a running count periodically so
+        // the UI doesn't look frozen while the FRN map / directory walk is built.
+        var seen = 0L;
+
         foreach (var item in EnumerateRaw(volume, mountRoot, roots))
         {
+            if (++seen % SeenReportInterval == 0)
+            {
+                _statusTracker.ReportSeen(volume.Id, seen);
+            }
+
             // Find the most specific active root that contains this item.
             var rootKey = rootKeys
                 .Where(k => ScanPath.IsWithin(item.RelativePath, k))
@@ -204,6 +244,7 @@ public sealed class ScanService
             }
         }
 
+        _statusTracker.ReportSeen(volume.Id, seen);
         return (dirs, files);
     }
 

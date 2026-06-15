@@ -27,7 +27,9 @@ public static class VolumeFreshnessMapper
         fileCount,
         v.LastFullScanUtc,
         DataIsLive: v.IsOnline,
-        IsStale: !v.IsOnline);
+        IsStale: !v.IsOnline,
+        v.Kind.ToString(),
+        v.IsCatalogable);
 
     /// <summary>Detail projection: identity + monitored roots + index statistics.</summary>
     public static VolumeDetailDto ToDetailDto(
@@ -49,6 +51,8 @@ public static class VolumeFreshnessMapper
         v.LastFullScanUtc,
         DataIsLive: v.IsOnline,
         IsStale: !v.IsOnline,
+        v.Kind.ToString(),
+        v.IsCatalogable,
         v.SerialNumber,
         v.PhysicalDiskId,
         v.LastUsn,
