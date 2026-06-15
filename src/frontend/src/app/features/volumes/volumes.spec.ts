@@ -2,6 +2,7 @@ import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { of } from 'rxjs';
+import { vi } from 'vitest';
 
 import { ScansApi } from '../../core/api/scans-api.service';
 import { VolumesApi } from '../../core/api/volumes-api.service';
@@ -77,6 +78,42 @@ describe('Volumes screen', () => {
     // Auto-selected detail shows the GUID and USN checkpoint.
     expect(el.textContent).toContain('B83A-77F1');
     expect(el.textContent).toContain('44.821.330');
+  });
+
+  it('shows an exclude button in the detail panel for catalogable volumes', async () => {
+    const setCatalogableSpy = vi.fn(() => of(undefined));
+    await TestBed.configureTestingModule({
+      imports: [Volumes],
+      providers: [
+        provideZonelessChangeDetection(),
+        provideRouter([]),
+        {
+          provide: VolumesApi,
+          useValue: {
+            list: () => of([volume, cloud]),
+            detail: () => of(detail),
+            rescan: () => of(undefined),
+            setCatalogable: setCatalogableSpy,
+          },
+        },
+        { provide: ScansApi, useValue: { status: () => of([]) } },
+      ],
+    }).compileComponents();
+
+    const fixture = TestBed.createComponent(Volumes);
+    await fixture.whenStable();
+    const el = fixture.nativeElement as HTMLElement;
+
+    // Detail panel auto-selected volume 1; should have an exclude button.
+    const excludeBtn = [...el.querySelectorAll('.actions button')].find((b) =>
+      b.textContent?.trim().startsWith('Escludi'),
+    ) as HTMLButtonElement;
+
+    expect(excludeBtn).toBeTruthy();
+    excludeBtn.click();
+    await fixture.whenStable();
+
+    expect(setCatalogableSpy).toHaveBeenCalledWith(1, false);
   });
 
   it('keeps an excluded cloud volume out of the main list, behind the toggle', async () => {

@@ -168,6 +168,14 @@
                       [disabled]="!v.isOnline" [title]="v.isOnline ? '' : 'Collega il volume per configurarlo'">
                 Modifica filtri
               </button>
+              <button
+                class="ft-btn ft-btn--ghost ft-btn--exclude"
+                (click)="exclude(v.id)"
+                [disabled]="togglingId() === v.id"
+                title="Escludi questo volume dalla catalogazione"
+              >
+                {{ togglingId() === v.id ? 'Escludo…' : 'Escludi' }}
+              </button>
             } @else {
               <button
                 class="ft-btn ft-btn--primary"

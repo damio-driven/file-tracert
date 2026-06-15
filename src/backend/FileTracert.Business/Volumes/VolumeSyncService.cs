@@ -1,6 +1,7 @@
 using FileTracert.Contracts.Platform;
 using FileTracert.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace FileTracert.Business.Volumes;
 
@@ -13,11 +14,13 @@ public sealed class VolumeSyncService
 {
     private readonly IVolumeProbe _probe;
     private readonly FileTracertDbContext _db;
+    private readonly ILogger<VolumeSyncService> _logger;
 
-    public VolumeSyncService(IVolumeProbe probe, FileTracertDbContext db)
+    public VolumeSyncService(IVolumeProbe probe, FileTracertDbContext db, ILogger<VolumeSyncService> logger)
     {
         _probe = probe;
         _db = db;
+        _logger = logger;
     }
 
     public async Task SyncAsync(CancellationToken ct)
@@ -31,6 +34,16 @@ public sealed class VolumeSyncService
         foreach (var p in probed)
         {
             seen.Add(p.VolumeGuid);
+
+            // Diagnostic: log raw classifier signals so cloud-volume misclassifications are visible.
+            var kind = VolumeClassifier.Classify(p);
+            _logger.LogDebug(
+                "Volume {Guid} ({Label}): HasPhysicalExtents={HasExtents}, PhysicalDiskId={DiskId}, " +
+                "DriveType={DriveType} → Kind={Kind}, DefaultCatalogable={Catalogable}",
+                p.VolumeGuid, p.Label ?? "(no label)",
+                p.HasPhysicalExtents, p.PhysicalDiskId ?? "(null)",
+                p.DriveType, kind, VolumeClassifier.DefaultCatalogable(kind));
+
             if (byGuid.TryGetValue(p.VolumeGuid, out var volume))
             {
                 VolumeMapper.ApplyLiveState(volume, p, now);
@@ -41,12 +54,15 @@ public sealed class VolumeSyncService
             }
         }
 
-        // Known but not currently present → offline. Keep all data.
+        // Known but not currently present → offline.
+        // Also reclassify Unknown volumes from persisted data (catches cloud drives that were
+        // classified before the kernel-device probe was available).
         foreach (var volume in existing)
         {
             if (!seen.Contains(volume.VolumeGuid))
             {
                 volume.IsOnline = false;
+                VolumeMapper.ApplyOfflineReclassification(volume);
             }
         }
 

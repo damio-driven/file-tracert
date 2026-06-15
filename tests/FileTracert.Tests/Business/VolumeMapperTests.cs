@@ -125,6 +125,87 @@ public class VolumeMapperTests
         existing.IsCatalogable.Should().BeFalse("default catalogable for a cloud volume is false");
     }
 
+    // ---- ApplyOfflineReclassification ----
+
+    [Fact]
+    public void OfflineReclassify_unknown_with_null_disk_and_not_removable_becomes_cloud()
+    {
+        // Google Drive offline: Kind=Unknown, PhysicalDiskId=null, IsRemovable=false.
+        var volume = new Volume
+        {
+            VolumeGuid = "g", FileSystem = "NTFS", Kind = VolumeKind.Unknown,
+            IsCatalogable = true, PhysicalDiskId = null, IsRemovable = false,
+        };
+
+        VolumeMapper.ApplyOfflineReclassification(volume);
+
+        volume.Kind.Should().Be(VolumeKind.Cloud);
+        volume.IsCatalogable.Should().BeFalse();
+    }
+
+    [Fact]
+    public void OfflineReclassify_unknown_removable_drive_stays_unknown()
+    {
+        // A removable USB drive whose WMI lookup transiently failed must not become Cloud.
+        var volume = new Volume
+        {
+            VolumeGuid = "g", FileSystem = "exFAT", Kind = VolumeKind.Unknown,
+            IsCatalogable = true, PhysicalDiskId = null, IsRemovable = true,
+        };
+
+        VolumeMapper.ApplyOfflineReclassification(volume);
+
+        volume.Kind.Should().Be(VolumeKind.Unknown);
+        volume.IsCatalogable.Should().BeTrue();
+    }
+
+    [Fact]
+    public void OfflineReclassify_unknown_with_physical_disk_stays_unknown()
+    {
+        // A real disk that happened to get Kind=Unknown (e.g. before classification existed).
+        var volume = new Volume
+        {
+            VolumeGuid = "g", FileSystem = "NTFS", Kind = VolumeKind.Unknown,
+            IsCatalogable = true, PhysicalDiskId = @"\\.\PHYSICALDRIVE1", IsRemovable = false,
+        };
+
+        VolumeMapper.ApplyOfflineReclassification(volume);
+
+        volume.Kind.Should().Be(VolumeKind.Unknown);
+        volume.IsCatalogable.Should().BeTrue();
+    }
+
+    [Fact]
+    public void OfflineReclassify_already_classified_volume_is_untouched()
+    {
+        var volume = new Volume
+        {
+            VolumeGuid = "g", FileSystem = "NTFS", Kind = VolumeKind.Fixed,
+            IsCatalogable = true, PhysicalDiskId = @"\\.\PHYSICALDRIVE0", IsRemovable = false,
+        };
+
+        VolumeMapper.ApplyOfflineReclassification(volume);
+
+        volume.Kind.Should().Be(VolumeKind.Fixed);
+    }
+
+    [Fact]
+    public void OfflineReclassify_preserves_manual_catalogable_override()
+    {
+        // User manually excluded an Unknown volume (IsCatalogable=false differs from Unknown default=true).
+        var volume = new Volume
+        {
+            VolumeGuid = "g", FileSystem = "NTFS", Kind = VolumeKind.Unknown,
+            IsCatalogable = false, PhysicalDiskId = null, IsRemovable = false,
+        };
+
+        VolumeMapper.ApplyOfflineReclassification(volume);
+
+        // Kind reclassified to Cloud, but user's false override is preserved (Cloud default is also false).
+        volume.Kind.Should().Be(VolumeKind.Cloud);
+        volume.IsCatalogable.Should().BeFalse();
+    }
+
     [Fact]
     public void ApplyLiveState_preserves_manual_catalogable_override()
     {

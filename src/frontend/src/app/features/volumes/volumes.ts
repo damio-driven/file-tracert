@@ -100,6 +100,10 @@ export class Volumes implements OnInit {
     void this.store.setCatalogable(id, true);
   }
 
+  protected exclude(id: number): void {
+    void this.store.setCatalogable(id, false);
+  }
+
   protected toggleExcluded(): void {
     this.showExcluded.update((v) => !v);
   }

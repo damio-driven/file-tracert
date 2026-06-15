@@ -5,6 +5,7 @@ using FileTracert.Data.Entities;
 using FileTracert.Tests.Data;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace FileTracert.Tests.Business;
 
@@ -38,7 +39,7 @@ public sealed class VolumeSyncServiceTests
         await using (var ctx = harness.CreateContext())
         {
             var probe = new FakeVolumesProbe([Probed("A", free: 777), Probed("B", fs: "exFAT")]);
-            await new VolumeSyncService(probe, ctx).SyncAsync(CancellationToken.None);
+            await new VolumeSyncService(probe, ctx, NullLogger<VolumeSyncService>.Instance).SyncAsync(CancellationToken.None);
         }
 
         await using var read = harness.CreateContext();
@@ -58,5 +59,67 @@ public sealed class VolumeSyncServiceTests
 
         // C: missing from the probe → offline, not deleted.
         c.IsOnline.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Sync_reclassifies_offline_unknown_cloud_drive_using_persisted_data()
+    {
+        using var harness = new SqliteInMemoryContext();
+
+        // Seed: a volume that was previously classified Unknown (e.g. before the cloud-detection
+        // fix landed) with no physical disk topology → should be reclassified to Cloud at next sync.
+        await using (var seed = harness.CreateContext())
+        {
+            seed.Volumes.Add(new Volume
+            {
+                VolumeGuid = "GDrive", FileSystem = "FAT32", ScanEngine = VolumeScanEngine.Enumeration,
+                Kind = VolumeKind.Unknown, IsCatalogable = true,
+                PhysicalDiskId = null, IsRemovable = false, IsOnline = false,
+            });
+            await seed.SaveChangesAsync();
+        }
+
+        // Probe returns nothing — the cloud drive stays offline.
+        await using (var ctx = harness.CreateContext())
+        {
+            await new VolumeSyncService(new FakeVolumesProbe([]), ctx, NullLogger<VolumeSyncService>.Instance)
+                .SyncAsync(CancellationToken.None);
+        }
+
+        await using var read = harness.CreateContext();
+        var v = await read.Volumes.SingleAsync(v => v.VolumeGuid == "GDrive");
+
+        v.Kind.Should().Be(VolumeKind.Cloud);
+        v.IsCatalogable.Should().BeFalse();
+        v.IsOnline.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Sync_does_not_reclassify_offline_unknown_volume_with_physical_disk()
+    {
+        using var harness = new SqliteInMemoryContext();
+
+        await using (var seed = harness.CreateContext())
+        {
+            seed.Volumes.Add(new Volume
+            {
+                VolumeGuid = "RealDisk", FileSystem = "NTFS", ScanEngine = VolumeScanEngine.UsnJournal,
+                Kind = VolumeKind.Unknown, IsCatalogable = true,
+                PhysicalDiskId = @"\\.\PHYSICALDRIVE2", IsRemovable = false, IsOnline = false,
+            });
+            await seed.SaveChangesAsync();
+        }
+
+        await using (var ctx = harness.CreateContext())
+        {
+            await new VolumeSyncService(new FakeVolumesProbe([]), ctx, NullLogger<VolumeSyncService>.Instance)
+                .SyncAsync(CancellationToken.None);
+        }
+
+        await using var read = harness.CreateContext();
+        var v = await read.Volumes.SingleAsync(v => v.VolumeGuid == "RealDisk");
+
+        v.Kind.Should().Be(VolumeKind.Unknown, "a real disk in WMI topology must not become Cloud");
+        v.IsCatalogable.Should().BeTrue();
     }
 }

@@ -53,6 +53,43 @@ public static class VolumeMapper
     }
 
     /// <summary>
+    /// Reclassifies an offline volume using only the data already persisted in the DB.
+    /// Called by <see cref="VolumeSyncService"/> for every volume absent from the current probe.
+    /// Only acts when <see cref="Volume.Kind"/> is <see cref="VolumeKind.Unknown"/> (the legacy
+    /// pre-classification default); a volume already identified as Fixed/Cloud/etc. is left alone.
+    /// Mirrors classifier rule 1b: no physical-disk topology + non-removable → Cloud.
+    /// The <see cref="Volume.IsCatalogable"/> override-preservation logic is the same as
+    /// <see cref="ApplyLiveState"/>: only re-derives the flag when the user never changed it.
+    /// </summary>
+    public static void ApplyOfflineReclassification(Volume volume)
+    {
+        if (volume.Kind != VolumeKind.Unknown)
+        {
+            return;
+        }
+
+        // Guard: a removable drive (USB/SD) whose WMI lookup transiently failed must not become Cloud.
+        if (volume.IsRemovable)
+        {
+            return;
+        }
+
+        // Guard: a volume with a known physical disk ID was seen by WMI → real disk, not cloud.
+        if (volume.PhysicalDiskId != null)
+        {
+            return;
+        }
+
+        var newKind = VolumeKind.Cloud;
+        if (volume.IsCatalogable == VolumeClassifier.DefaultCatalogable(VolumeKind.Unknown))
+        {
+            volume.IsCatalogable = VolumeClassifier.DefaultCatalogable(newKind);
+        }
+
+        volume.Kind = newKind;
+    }
+
+    /// <summary>
     /// Refreshes only the live state of an existing volume. Deliberately leaves
     /// scan checkpoints (<see cref="Volume.LastUsn"/>, <see cref="Volume.LastFullScanUtc"/>)
     /// and the chosen <see cref="Volume.ScanEngine"/> untouched. The classification
