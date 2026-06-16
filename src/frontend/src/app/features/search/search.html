@@ -1,0 +1,259 @@
+<section class="ft-rise">
+  <h1 class="ft-h1">Ricerca</h1>
+  <p class="ft-sub">
+    Ricerca full-text sul catalogo — trova file anche su volumi scollegati. Il nome
+    proiettato riflette rename e spostamenti in coda non ancora eseguiti.
+  </p>
+
+  <!-- Search bar -->
+  <form class="search-bar" (ngSubmit)="onSubmit()">
+    <input
+      class="search-input"
+      type="search"
+      placeholder="Cerca per nome o percorso…"
+      [(ngModel)]="queryText"
+      name="q"
+      autocomplete="off"
+      spellcheck="false"
+    />
+
+    <div class="scope-toggle" role="group" aria-label="Ambito ricerca">
+      <button
+        type="button"
+        class="scope-btn"
+        [class.active]="store.scope() === 'Name'"
+        (click)="setScope('Name')"
+        title="Cerca solo nel nome del file"
+      >Nome</button>
+      <button
+        type="button"
+        class="scope-btn"
+        [class.active]="store.scope() === 'FullPath'"
+        (click)="setScope('FullPath')"
+        title="Cerca nel percorso completo"
+      >Percorso</button>
+    </div>
+
+    <button type="submit" class="ft-btn ft-btn--primary search-submit" [disabled]="!queryText.trim()">
+      Cerca
+    </button>
+  </form>
+
+  <!-- Filter chips -->
+  <div class="filter-row">
+    <div class="filter-chips" role="group" aria-label="Filtra per categoria">
+      @for (cat of CATEGORIES; track cat.value) {
+        <button
+          type="button"
+          class="chip"
+          [class.active]="store.filters().category === cat.value"
+          (click)="toggleCategory(cat.value)"
+        >
+          <span class="chip-icon">{{ cat.icon }}</span>
+          {{ cat.label }}
+        </button>
+      }
+    </div>
+
+    <div class="filter-chips filter-chips--right">
+      <button
+        type="button"
+        class="chip"
+        [class.active]="store.filters().onlineOnly"
+        (click)="toggleOnlineOnly()"
+        title="Mostra solo file su volumi attualmente connessi"
+      >
+        Solo online
+      </button>
+
+      @if (volumes.catalogable().length > 0) {
+        <select
+          class="volume-select"
+          [value]="store.filters().volumeId ?? ''"
+          (change)="store.setFilters({ volumeId: $any($event.target).value ? +$any($event.target).value : null }); onSubmit()"
+          aria-label="Filtra per volume"
+        >
+          <option value="">Tutti i volumi</option>
+          @for (v of volumes.catalogable(); track v.id) {
+            <option [value]="v.id">
+              {{ v.label ?? '(senza etichetta)' }}{{ v.currentLetter ? ' (' + v.currentLetter + ')' : '' }}
+            </option>
+          }
+        </select>
+      }
+    </div>
+  </div>
+
+  <!-- Results area -->
+  @if (store.loading()) {
+    <!-- Loading skeleton -->
+    <div class="loading-state" aria-live="polite" aria-label="Ricerca in corso">
+      <div class="skeleton-bar skeleton-bar--count"></div>
+      <div class="skeleton-table">
+        @for (i of [1,2,3,4,5,6,7,8]; track i) {
+          <div class="skeleton-row">
+            <div class="skeleton-cell skeleton-cell--name"></div>
+            <div class="skeleton-cell skeleton-cell--vol"></div>
+            <div class="skeleton-cell skeleton-cell--path"></div>
+            <div class="skeleton-cell skeleton-cell--size"></div>
+            <div class="skeleton-cell skeleton-cell--date"></div>
+          </div>
+        }
+      </div>
+    </div>
+
+  } @else if (store.error(); as err) {
+    <!-- Error state -->
+    <div class="error-state" role="alert">
+      <span class="error-icon">⚠</span>
+      <div>
+        <div class="error-title">Errore di ricerca</div>
+        <div class="error-msg mono">{{ err }}</div>
+      </div>
+    </div>
+
+  } @else if (store.results(); as results) {
+
+    @if (results.totalCount === 0) {
+      <!-- Zero results -->
+      <div class="empty-state">
+        <div class="empty-icon">◎</div>
+        <div class="empty-title">Nessun risultato</div>
+        <div class="empty-sub">
+          Nessun file corrisponde a
+          <span class="mono">&ldquo;{{ store.text() }}&rdquo;</span>.
+          Prova con termini diversi o rimuovi i filtri.
+        </div>
+      </div>
+
+    } @else {
+
+      <!-- Count + page indicator -->
+      <div class="result-count">
+        <span>
+          @if (store.isCapped()) {
+            <strong>10 000+</strong> risultati (limite raggiunto)
+          } @else {
+            <strong>{{ results.totalCount.toLocaleString('it-IT') }}</strong>
+            {{ results.totalCount === 1 ? 'risultato' : 'risultati' }}
+          }
+        </span>
+        <span class="page-indicator mono">
+          {{ results.skip + 1 }}–{{ results.skip + results.items.length }}
+          / {{ store.isCapped() ? '10 000+' : results.totalCount.toLocaleString('it-IT') }}
+        </span>
+      </div>
+
+      <!-- Sort bar -->
+      <div class="sort-bar" role="group" aria-label="Ordina risultati">
+        <span class="sort-label">Ordina:</span>
+        @for (s of SORTS; track s.value) {
+          <button
+            type="button"
+            class="sort-btn"
+            [class.active]="store.sort() === s.value"
+            (click)="setSort(s.value)"
+          >
+            {{ s.label }}
+            @if (store.sort() === s.value) {
+              <span class="sort-arrow">{{ store.desc() ? '↓' : '↑' }}</span>
+            }
+          </button>
+        }
+      </div>
+
+      <!-- Results table -->
+      <ft-panel>
+        <table class="ft-table results-table">
+          <thead>
+            <tr>
+              <th class="col-name">Nome</th>
+              <th class="col-vol">Volume</th>
+              <th class="col-path">Percorso</th>
+              <th class="col-size">Dim.</th>
+              <th class="col-date">Modificato</th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (file of results.items; track file.fileId) {
+              <tr class="result-row">
+                <td class="col-name">
+                  <div class="file-name-cell">
+                    <span class="cat-tag cat-tag--{{ file.category | lowercase }}">
+                      {{ catIcon(file.category) }}
+                    </span>
+                    <span class="file-name" [title]="file.name">{{ file.name }}</span>
+                    @if (file.projectedState !== 'None') {
+                      <span class="proj-badge">{{ file.projectedState }}</span>
+                    }
+                  </div>
+                </td>
+                <td class="col-vol">
+                  <div class="vol-cell">
+                    @if (file.volumeIsOnline) {
+                      <ft-pill variant="on">Online</ft-pill>
+                    } @else {
+                      <ft-pill variant="off">Offline</ft-pill>
+                    }
+                    <span class="vol-label txt-dim" [title]="file.volumeLabel ?? ''">
+                      {{ file.volumeLabel ?? '—' }}
+                    </span>
+                  </div>
+                </td>
+                <td class="col-path">
+                  <span class="mono txt-faint path-text" [title]="file.relativePath">
+                    {{ file.relativePath }}
+                  </span>
+                </td>
+                <td class="col-size">
+                  <span class="mono txt-dim">{{ file.sizeBytes | bytes }}</span>
+                </td>
+                <td class="col-date">
+                  <span class="mono txt-dim" [title]="file.modifiedUtc">
+                    {{ file.modifiedUtc | relativeTime }}
+                  </span>
+                </td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </ft-panel>
+
+      <!-- Pagination -->
+      <div class="pagination">
+        <button
+          type="button"
+          class="ft-btn ft-btn--ghost"
+          [disabled]="!hasPrev"
+          (click)="goToPage(prevSkip)"
+        >
+          ← Precedente
+        </button>
+        <span class="page-num mono txt-faint">
+          Pagina {{ Math.floor(results.skip / results.take) + 1 }}
+          / {{ Math.ceil(results.totalCount / results.take) }}
+        </span>
+        <button
+          type="button"
+          class="ft-btn ft-btn--ghost"
+          [disabled]="!hasNext"
+          (click)="goToPage(nextSkip)"
+        >
+          Successiva →
+        </button>
+      </div>
+    }
+
+  } @else {
+    <!-- Empty/initial state — no search performed yet -->
+    <div class="empty-state empty-state--initial">
+      <div class="empty-icon">⌕</div>
+      <div class="empty-title">Inizia la ricerca</div>
+      <div class="empty-sub">
+        Digita un termine nella barra in alto e premi Cerca. La ricerca utilizza
+        l'indice FTS5 sul nome proiettato — i file rinominati o spostati in coda
+        sono già trovabili con il nuovo nome.
+      </div>
+    </div>
+  }
+</section>
