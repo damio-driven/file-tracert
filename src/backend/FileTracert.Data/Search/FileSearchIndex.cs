@@ -105,13 +105,16 @@ public sealed class FileSearchIndex : IFileSearchIndex
 
             // COUNT is capped at 10 000. Large result sets can be very slow to count fully;
             // the UI displays "10 000+" when totalCount == 10 000 and items.Count == take.
+            // NOTE: SQLite FTS5 requires the real table name (not an alias) in the MATCH
+            // predicate when the FTS table is joined with other tables. Using the alias
+            // causes "no such column: <alias>" on SQLite 3.x.
             var countSql =
                 $"""
                 SELECT MIN(COUNT(*), 10000)
                 FROM FileSearchIndex fts
                 JOIN Files f ON f.Id = fts.rowid
                 JOIN Volumes v ON v.Id = f.VolumeId
-                WHERE fts MATCH $match
+                WHERE FileSearchIndex MATCH $match
                   AND f.IsIncluded = 1 AND f.IsPresent = 1
                 {filterSql}
                 """;
@@ -127,12 +130,13 @@ public sealed class FileSearchIndex : IFileSearchIndex
 
             // bm25 lower = more relevant → sort ASC for Relevance; for other sorts
             // honour query.Desc (default ascending).
+            // bm25() also requires the real table name (not alias) for the same SQLite reason.
             var sortExpr = query.Sort switch
             {
                 SearchSort.Name => "f.Name",
                 SearchSort.Date => "f.ModifiedUtc",
                 SearchSort.Size => "f.SizeBytes",
-                _              => "bm25(fts)",
+                _              => "bm25(FileSearchIndex)",
             };
             var sortDir = query.Sort == SearchSort.Relevance ? "ASC" : (query.Desc ? "DESC" : "ASC");
 
@@ -142,7 +146,7 @@ public sealed class FileSearchIndex : IFileSearchIndex
                 FROM FileSearchIndex fts
                 JOIN Files f ON f.Id = fts.rowid
                 JOIN Volumes v ON v.Id = f.VolumeId
-                WHERE fts MATCH $match
+                WHERE FileSearchIndex MATCH $match
                   AND f.IsIncluded = 1 AND f.IsPresent = 1
                 {filterSql}
                 ORDER BY {sortExpr} {sortDir}
@@ -179,16 +183,23 @@ public sealed class FileSearchIndex : IFileSearchIndex
     /// the match to the name column; without it both name and path are searched.
     /// An empty query becomes <c>*</c> which matches all rows (caller should avoid
     /// calling SearchAsync with an empty query, but this is a safe fallback).
+    ///
+    /// IMPORTANT — FTS5 phrase-prefix syntax: the asterisk must appear OUTSIDE the
+    /// closing double-quote (<c>"term"*</c>), NOT inside (<c>"term*"</c>).
+    /// Inside quotes, <c>*</c> is a literal character; outside, it is the prefix
+    /// operator. See https://www.sqlite.org/fts5.html#full_text_query_syntax.
     /// </summary>
     private static string BuildMatchTerm(string text, SearchScope scope)
     {
+        // Escape embedded double-quotes by doubling them (FTS5 convention).
         var sanitized = text.Replace("\"", "\"\"").Trim();
         if (string.IsNullOrEmpty(sanitized))
             return "*";
 
+        // Asterisk is placed OUTSIDE the closing quote for prefix matching.
         return scope == SearchScope.Name
-            ? $"name : \"{sanitized}*\""
-            : $"\"{sanitized}*\"";
+            ? $"name : \"{sanitized}\"*"
+            : $"\"{sanitized}\"*";
     }
 
     /// <summary>
