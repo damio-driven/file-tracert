@@ -1,0 +1,284 @@
+<section class="ft-rise">
+  <div class="catalog-layout">
+
+    <!-- ── Left column: volume selector ── -->
+    <aside class="vol-list">
+      <div class="vol-list-header">
+        <span class="vol-list-title">Volumi</span>
+        @if (volumes.loading()) {
+          <span class="vol-list-loading txt-faint mono">…</span>
+        }
+      </div>
+
+      @if (volumes.catalogable().length === 0 && !volumes.loading()) {
+        <div class="vol-empty">
+          <div class="vol-empty-icon">◎</div>
+          <div class="vol-empty-msg">Nessun volume catalogabile</div>
+        </div>
+      }
+
+      @for (vol of volumes.catalogable(); track vol.id) {
+        <button
+          type="button"
+          class="vol-item"
+          [class.selected]="store.selectedVolume()?.id === vol.id"
+          (click)="selectVolume(vol)"
+        >
+          <div class="vol-item-top">
+            <span class="vol-item-label" [title]="vol.volumeGuid">
+              {{ vol.label ?? '(senza etichetta)' }}
+            </span>
+            @if (vol.isOnline) {
+              <ft-pill variant="on">Online</ft-pill>
+            } @else {
+              <ft-pill variant="off">Offline</ft-pill>
+            }
+          </div>
+          <div class="vol-item-meta mono txt-faint">
+            @if (vol.currentLetter) {
+              <span>{{ vol.currentLetter }}</span>
+              <span class="vol-sep">·</span>
+            }
+            <span>{{ vol.fileSystem }}</span>
+            <span class="vol-sep">·</span>
+            <span>{{ vol.fileCount.toLocaleString('it-IT') }} file</span>
+          </div>
+        </button>
+      }
+    </aside>
+
+    <!-- ── Right column: catalog content ── -->
+    <div class="cat-content">
+
+      @if (!store.selectedVolume()) {
+        <!-- No volume selected: initial empty state -->
+        <div class="empty-state empty-state--initial">
+          <div class="empty-icon">◫</div>
+          <div class="empty-title">Seleziona un volume</div>
+          <div class="empty-sub">
+            Scegli un volume dalla lista a sinistra per sfogliare il catalogo.
+            I file sono navigabili anche quando il drive è scollegato.
+          </div>
+        </div>
+
+      } @else {
+
+        <!-- Header: breadcrumb + online status -->
+        <div class="cat-header">
+          <nav class="breadcrumb" aria-label="Percorso corrente">
+            <button
+              type="button"
+              class="breadcrumb-seg breadcrumb-seg--root"
+              [class.active]="store.breadcrumbs().length === 0"
+              (click)="navigateTo(-1)"
+            >
+              {{ store.selectedVolume()!.label ?? '(senza etichetta)' }}
+            </button>
+
+            @for (crumb of store.breadcrumbs(); track crumb.id; let i = $index; let last = $last) {
+              <span class="breadcrumb-sep" aria-hidden="true">›</span>
+              @if (last) {
+                <span class="breadcrumb-seg breadcrumb-seg--current" [title]="crumb.path">
+                  {{ crumb.name }}
+                </span>
+              } @else {
+                <button
+                  type="button"
+                  class="breadcrumb-seg"
+                  [title]="crumb.path"
+                  (click)="navigateTo(i)"
+                >
+                  {{ crumb.name }}
+                </button>
+              }
+            }
+          </nav>
+
+          <div class="cat-header-status">
+            @if (store.volumeIsOnline()) {
+              <ft-pill variant="on">Online</ft-pill>
+            } @else {
+              <ft-pill variant="off">Offline</ft-pill>
+            }
+          </div>
+        </div>
+
+        <!-- Offline notice -->
+        @if (!store.volumeIsOnline() && store.children()) {
+          <div class="offline-notice" role="status">
+            <span class="offline-icon">⚠</span>
+            <span>
+              Catalogo da disco offline · dati aggiornati al
+              <span class="mono">{{ store.selectedVolume()!.lastSeenUtc | relativeTime }}</span>
+            </span>
+          </div>
+        }
+
+        <!-- Loading state -->
+        @if (store.loading()) {
+          <div class="loading-state" aria-live="polite" aria-label="Caricamento in corso">
+            <div class="skeleton-grid">
+              @for (i of [1,2,3,4,5,6]; track i) {
+                <div class="skeleton-card"></div>
+              }
+            </div>
+            <div class="skeleton-table">
+              @for (i of [1,2,3,4,5]; track i) {
+                <div class="skeleton-row">
+                  <div class="skeleton-cell skeleton-cell--name"></div>
+                  <div class="skeleton-cell skeleton-cell--size"></div>
+                  <div class="skeleton-cell skeleton-cell--date"></div>
+                </div>
+              }
+            </div>
+          </div>
+
+        } @else if (store.error(); as err) {
+          <!-- Error state -->
+          <div class="error-state" role="alert">
+            <span class="error-icon">⚠</span>
+            <div>
+              <div class="error-title">Errore durante il caricamento</div>
+              <div class="error-msg mono">{{ err }}</div>
+            </div>
+          </div>
+
+        } @else if (store.children(); as children) {
+
+          <!-- Empty volume: no data indexed -->
+          @if (children.directories.length === 0 && children.files.totalCount === 0) {
+            <div class="empty-state">
+              <div class="empty-icon">◎</div>
+              <div class="empty-title">Nessun file indicizzato</div>
+              <div class="empty-sub">
+                Questo volume non ha ancora file indicizzati.
+                Avvia una scansione dalla schermata Volumi.
+              </div>
+            </div>
+          } @else {
+
+            <!-- Directories grid -->
+            @if (children.directories.length > 0) {
+              <div class="dir-section">
+                <div class="section-label">Cartelle</div>
+                <div class="dir-grid">
+                  @for (dir of children.directories; track dir.id) {
+                    <button
+                      type="button"
+                      class="dir-card"
+                      (click)="openDir(dir.id, dir.name, dir.materializedPath)"
+                      [title]="dir.materializedPath"
+                    >
+                      <div class="dir-icon" aria-hidden="true">▤</div>
+                      <div class="dir-name" [title]="dir.name">{{ dir.name }}</div>
+                      <div class="dir-counts mono txt-faint">
+                        @if (dir.childDirectoryCount > 0) {
+                          <span>{{ dir.childDirectoryCount }} cartelle</span>
+                          @if (dir.fileCount > 0) {
+                            <span class="dir-counts-sep">·</span>
+                          }
+                        }
+                        @if (dir.fileCount > 0) {
+                          <span>{{ dir.fileCount.toLocaleString('it-IT') }} file</span>
+                        }
+                        @if (dir.childDirectoryCount === 0 && dir.fileCount === 0) {
+                          <span>Vuota</span>
+                        }
+                      </div>
+                    </button>
+                  }
+                </div>
+              </div>
+            }
+
+            <!-- Files table -->
+            @if (children.files.totalCount > 0) {
+              <div class="file-section">
+                <div class="section-label">
+                  File
+                  <span class="section-count mono txt-faint">
+                    ({{ children.files.totalCount.toLocaleString('it-IT') }})
+                  </span>
+                </div>
+
+                <ft-panel>
+                  <cdk-virtual-scroll-viewport itemSize="40" class="file-scroll-viewport">
+                    <table class="ft-table file-table">
+                      <thead>
+                        <tr>
+                          <th class="col-name">Nome</th>
+                          <th class="col-size">Dim.</th>
+                          <th class="col-date">Modificato</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        @for (file of children.files.items; track file.id) {
+                          <tr class="file-row">
+                            <td class="col-name">
+                              <div class="file-name-cell">
+                                <span class="cat-tag cat-tag--{{ file.category.toLowerCase() }}"
+                                      [title]="catLabel(file.category)">
+                                  {{ catIcon(file.category) }}
+                                </span>
+                                <span class="file-name" [title]="file.name">{{ file.name }}</span>
+                                @if (file.projectedState !== 'None') {
+                                  <span class="proj-badge">{{ file.projectedState }}</span>
+                                }
+                              </div>
+                            </td>
+                            <td class="col-size">
+                              <span class="mono txt-dim">{{ file.sizeBytes | bytes }}</span>
+                            </td>
+                            <td class="col-date">
+                              <span class="mono txt-dim" [title]="file.modifiedUtc">
+                                {{ file.modifiedUtc | relativeTime }}
+                              </span>
+                            </td>
+                          </tr>
+                        }
+                      </tbody>
+                    </table>
+                  </cdk-virtual-scroll-viewport>
+                </ft-panel>
+
+                <!-- Pagination -->
+                @if (children.files.totalCount > children.files.take) {
+                  <div class="pagination">
+                    <button
+                      type="button"
+                      class="ft-btn ft-btn--ghost"
+                      [disabled]="!hasPrev"
+                      (click)="loadFilePage(prevSkip)"
+                    >
+                      ← Precedente
+                    </button>
+                    <span class="page-num mono txt-faint">
+                      {{ children.files.skip + 1 }}–{{ children.files.skip + children.files.items.length }}
+                      / {{ children.files.totalCount.toLocaleString('it-IT') }}
+                    </span>
+                    <button
+                      type="button"
+                      class="ft-btn ft-btn--ghost"
+                      [disabled]="!hasNext"
+                      (click)="loadFilePage(nextSkip)"
+                    >
+                      Successiva →
+                    </button>
+                  </div>
+                }
+              </div>
+            }
+          }
+
+        }
+
+        <!-- Read-only notice -->
+        @if (store.selectedVolume()) {
+          <p class="readonly-note txt-faint">
+            Sola lettura — le operazioni di spostamento arriveranno nella Coda (prossima versione)
+          </p>
+        }
+      }
+    </div>
+  </div>
+</section>
