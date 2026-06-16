@@ -281,8 +281,13 @@ aggiornato in cascata sui rename) · `UsnFileRef?` · `IsMaterialized` ·
 Indici: `(VolumeId, DirectoryId)`, `Extension`, `Category`, `SizeBytes`,
 `ModifiedUtc`, `UsnFileRef` unique per volume.
 
-**FileSearchIndex** — tabella virtuale **FTS5** sul nome proiettato. SQLite-specific,
-dietro `IFileSearchIndex`.
+**FileSearchIndex** — tabella virtuale **FTS5** (DB principale), colonne `name`
+(nome proiettato) + `path` (path relativo completo), `rowid = Files.Id`, tokenizer
+`unicode61` accent-insensitive (prefix query supportate). Creata via SQL raw in
+migration. **Sync esplicito** via `IFileSearchIndex` (no trigger): popolata negli
+stessi batch del `BulkIndexWriter`; `RebuildAsync` per il backfill. La ricerca
+supporta scope **solo nome** (colonna `name`) o **path completo** (entrambe le
+colonne), scelto dall'utente in UI. SQLite-specific, dietro `IFileSearchIndex`.
 
 ### Dominio Operazioni
 
@@ -459,6 +464,16 @@ src/app/
 - Eventuale **upgrade ad Angular 22** quando assestata.
 
 ### Debiti tecnici noti e datati
+- **Classificazione Cloud non affidabile** *(emerso allo step 6.7)* — Google Drive
+  File Stream (online e offline) resta classificato `Unknown` invece di `Cloud`
+  nonostante la regola `HasPhysicalExtents=null && PhysicalDiskId=null → Cloud`.
+  Workaround attuale: **esclusione manuale** (`IsCatalogable=false`), che funziona.
+  Da chiudere: (1) loggare i segnali grezzi che arrivano al `VolumeClassifier`
+  durante il sync (`HasPhysicalExtents`, `PhysicalDiskId`, `DriveType`, `Kind`
+  risultante) per capire su quale ramo cade davvero; (2) i volumi **offline** non
+  vengono mai ri-sondati → mantengono la classificazione vecchia: serve una
+  riconciliazione dai dati già persistiti. Non urgente finché l'esclusione manuale
+  copre il caso.
 - **Re-scan idempotente vs proiezione** *(introdotto allo step 4)* — lo
   `ScanService` usa **truncate-per-volume** in transazione per la re-scan
   completa. È corretto finché la proiezione non esiste, MA cancella anche i
