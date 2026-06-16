@@ -99,69 +99,75 @@ public sealed class FileSearchIndex : IFileSearchIndex
 
         var conn = (SqliteConnection)_db.Database.GetDbConnection();
         await _db.Database.OpenConnectionAsync(ct);
-
-        var (filterSql, filterParams) = BuildFilterClause(query);
-
-        // COUNT is capped at 10 000. Large result sets can be very slow to count fully;
-        // the UI displays "10 000+" when totalCount == 10 000 and items.Count == take.
-        var countSql =
-            $"""
-            SELECT MIN(COUNT(*), 10000)
-            FROM FileSearchIndex fts
-            JOIN Files f ON f.Id = fts.rowid
-            JOIN Volumes v ON v.Id = f.VolumeId
-            WHERE fts MATCH $match
-              AND f.IsIncluded = 1 AND f.IsPresent = 1
-            {filterSql}
-            """;
-
-        int total;
-        await using (var cmd = conn.CreateCommand())
+        try
         {
-            cmd.CommandText = countSql;
-            cmd.Parameters.AddWithValue("$match", matchTerm);
-            foreach (var (n, v) in filterParams) cmd.Parameters.AddWithValue(n, v);
-            total = Convert.ToInt32((long)(await cmd.ExecuteScalarAsync(ct))!);
+            var (filterSql, filterParams) = BuildFilterClause(query);
+
+            // COUNT is capped at 10 000. Large result sets can be very slow to count fully;
+            // the UI displays "10 000+" when totalCount == 10 000 and items.Count == take.
+            var countSql =
+                $"""
+                SELECT MIN(COUNT(*), 10000)
+                FROM FileSearchIndex fts
+                JOIN Files f ON f.Id = fts.rowid
+                JOIN Volumes v ON v.Id = f.VolumeId
+                WHERE fts MATCH $match
+                  AND f.IsIncluded = 1 AND f.IsPresent = 1
+                {filterSql}
+                """;
+
+            int total;
+            await using (var cmd = conn.CreateCommand())
+            {
+                cmd.CommandText = countSql;
+                cmd.Parameters.AddWithValue("$match", matchTerm);
+                foreach (var (n, v) in filterParams) cmd.Parameters.AddWithValue(n, v);
+                total = Convert.ToInt32((long)(await cmd.ExecuteScalarAsync(ct))!);
+            }
+
+            // bm25 lower = more relevant → sort ASC for Relevance; for other sorts
+            // honour query.Desc (default ascending).
+            var sortExpr = query.Sort switch
+            {
+                SearchSort.Name => "f.Name",
+                SearchSort.Date => "f.ModifiedUtc",
+                SearchSort.Size => "f.SizeBytes",
+                _              => "bm25(fts)",
+            };
+            var sortDir = query.Sort == SearchSort.Relevance ? "ASC" : (query.Desc ? "DESC" : "ASC");
+
+            var pageSql =
+                $"""
+                SELECT fts.rowid
+                FROM FileSearchIndex fts
+                JOIN Files f ON f.Id = fts.rowid
+                JOIN Volumes v ON v.Id = f.VolumeId
+                WHERE fts MATCH $match
+                  AND f.IsIncluded = 1 AND f.IsPresent = 1
+                {filterSql}
+                ORDER BY {sortExpr} {sortDir}
+                LIMIT $take OFFSET $skip
+                """;
+
+            var ids = new List<int>();
+            await using (var cmd = conn.CreateCommand())
+            {
+                cmd.CommandText = pageSql;
+                cmd.Parameters.AddWithValue("$match", matchTerm);
+                foreach (var (n, v) in filterParams) cmd.Parameters.AddWithValue(n, v);
+                cmd.Parameters.AddWithValue("$take", paged.Take);
+                cmd.Parameters.AddWithValue("$skip", paged.Skip);
+                await using var reader = await cmd.ExecuteReaderAsync(ct);
+                while (await reader.ReadAsync(ct))
+                    ids.Add(reader.GetInt32(0));
+            }
+
+            return new PagedResult<int>(ids, total, paged.Skip, paged.Take);
         }
-
-        // bm25 lower = more relevant → sort ASC for Relevance; for other sorts
-        // honour query.Desc (default ascending).
-        var sortExpr = query.Sort switch
+        finally
         {
-            SearchSort.Name => "f.Name",
-            SearchSort.Date => "f.ModifiedUtc",
-            SearchSort.Size => "f.SizeBytes",
-            _              => "bm25(fts)",
-        };
-        var sortDir = query.Sort == SearchSort.Relevance ? "ASC" : (query.Desc ? "DESC" : "ASC");
-
-        var pageSql =
-            $"""
-            SELECT fts.rowid
-            FROM FileSearchIndex fts
-            JOIN Files f ON f.Id = fts.rowid
-            JOIN Volumes v ON v.Id = f.VolumeId
-            WHERE fts MATCH $match
-              AND f.IsIncluded = 1 AND f.IsPresent = 1
-            {filterSql}
-            ORDER BY {sortExpr} {sortDir}
-            LIMIT $take OFFSET $skip
-            """;
-
-        var ids = new List<int>();
-        await using (var cmd = conn.CreateCommand())
-        {
-            cmd.CommandText = pageSql;
-            cmd.Parameters.AddWithValue("$match", matchTerm);
-            foreach (var (n, v) in filterParams) cmd.Parameters.AddWithValue(n, v);
-            cmd.Parameters.AddWithValue("$take", paged.Take);
-            cmd.Parameters.AddWithValue("$skip", paged.Skip);
-            await using var reader = await cmd.ExecuteReaderAsync(ct);
-            while (await reader.ReadAsync(ct))
-                ids.Add(reader.GetInt32(0));
+            _db.Database.CloseConnection();
         }
-
-        return new PagedResult<int>(ids, total, paged.Skip, paged.Take);
     }
 
     // -------------------------------------------------------------------------

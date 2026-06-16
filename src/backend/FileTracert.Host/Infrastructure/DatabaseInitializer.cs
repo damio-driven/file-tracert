@@ -132,7 +132,7 @@ public sealed class DatabaseInitializer
         long ftsCount;
         await using (var cmd = conn.CreateCommand())
         {
-            cmd.CommandText = "SELECT COUNT(*) FROM FileSearchIndex LIMIT 1";
+            cmd.CommandText = "SELECT EXISTS(SELECT 1 FROM FileSearchIndex)";
             ftsCount = (long)(await cmd.ExecuteScalarAsync(ct))!;
         }
 
