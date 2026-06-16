@@ -177,3 +177,67 @@ export interface LogEntryDto {
 export interface LogLevelDto {
   level: string;
 }
+
+// ---- Step 7: Search + Catalog ----
+
+export type SearchScope = 'Name' | 'FullPath';
+export type SearchSort = 'Relevance' | 'Name' | 'Date' | 'Size';
+export type FileCategory = 'Image' | 'Video' | 'Audio' | 'Document' | 'Archive' | 'Other';
+
+export interface SearchRequest {
+  text: string;
+  scope: SearchScope;
+  category: FileCategory | null;
+  extensions: string[] | null;
+  sizeBytesMin: number | null;
+  sizeBytesMax: number | null;
+  modifiedFrom: string | null;
+  modifiedTo: string | null;
+  volumeId: number | null;
+  onlineOnly: boolean;
+  sort: SearchSort;
+  desc: boolean;
+  skip: number;
+  take: number;
+}
+
+export interface SearchResultDto {
+  fileId: number;
+  name: string;
+  relativePath: string;
+  volumeId: number;
+  volumeLabel: string | null;
+  volumeLetter: string | null;
+  volumeIsOnline: boolean;
+  sizeBytes: number;
+  modifiedUtc: string;
+  category: FileCategory;
+  projectedState: string;
+}
+
+export interface CatalogDirDto {
+  id: number;
+  name: string;
+  materializedPath: string;
+  childDirectoryCount: number;
+  fileCount: number;
+}
+
+export interface CatalogFileDto {
+  id: number;
+  name: string;
+  sizeBytes: number;
+  modifiedUtc: string;
+  category: FileCategory;
+  projectedState: string;
+}
+
+export interface CatalogChildrenDto {
+  directories: CatalogDirDto[];
+  files: PagedResult<CatalogFileDto>;
+  volumeIsOnline: boolean;
+  volumeLabel: string | null;
+  volumeLetter: string | null;
+  currentDirectoryId: number | null;
+  currentDirectoryPath: string | null;
+}

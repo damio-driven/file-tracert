@@ -23,5 +23,15 @@ export const routes: Routes = [
     title: 'Log · FileTracert',
     loadComponent: () => import('./features/logs/logs').then((m) => m.Logs),
   },
+  {
+    path: 'catalog',
+    title: 'Catalogo · FileTracert',
+    loadComponent: () => import('./features/catalog/catalog').then((m) => m.Catalog),
+  },
+  {
+    path: 'search',
+    title: 'Ricerca · FileTracert',
+    loadComponent: () => import('./features/search/search').then((m) => m.Search),
+  },
   { path: '**', redirectTo: 'dashboard' },
 ];
