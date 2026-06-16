@@ -1,8 +1,10 @@
 using System.Security.Cryptography;
 using FileTracert.Contracts.Logging;
+using FileTracert.Contracts.Search;
 using FileTracert.Data;
 using FileTracert.Data.Entities;
 using FileTracert.Host.Logging;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
 namespace FileTracert.Host.Infrastructure;
@@ -59,6 +61,10 @@ public sealed class DatabaseInitializer
             // the seeder so a seeded override is honored).
             await ApplyLogLevelAsync(db, ct);
 
+            // If Files exist but the FTS index is empty (e.g. first start after this
+            // feature was added), do a one-time full backfill.
+            await BackfillFtsIfNeededAsync(scope, db, ct);
+
             _logger.LogInformation("Database initialized (migrated, WAL on).");
         }
         catch (Exception ex)
@@ -106,6 +112,34 @@ public sealed class DatabaseInitializer
         {
             _logLevelSwitch.Current = (Microsoft.Extensions.Logging.LogLevel)level;
             _logger.LogInformation("Minimum log level set to {Level}.", name);
+        }
+    }
+
+    /// <summary>
+    /// One-time FTS backfill: if the database has indexed files but the FTS5 table is
+    /// empty (first startup after the search feature was introduced), rebuild the index.
+    /// Subsequent startups are cheap — the COUNT query returns quickly on a non-empty table.
+    /// </summary>
+    private static async Task BackfillFtsIfNeededAsync(
+        IServiceScope scope, FileTracertDbContext db, CancellationToken ct)
+    {
+        var hasFiles = await db.Files.AnyAsync(f => f.IsIncluded && f.IsPresent, ct);
+        if (!hasFiles) return;
+
+        var conn = (SqliteConnection)db.Database.GetDbConnection();
+        await db.Database.OpenConnectionAsync(ct);
+
+        long ftsCount;
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = "SELECT COUNT(*) FROM FileSearchIndex LIMIT 1";
+            ftsCount = (long)(await cmd.ExecuteScalarAsync(ct))!;
+        }
+
+        if (ftsCount == 0)
+        {
+            var fts = scope.ServiceProvider.GetRequiredService<IFileSearchIndex>();
+            await fts.RebuildAsync(ct);
         }
     }
 

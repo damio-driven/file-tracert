@@ -72,6 +72,7 @@ public sealed class ScanShutdownTests
                     [@"Docs\r.pdf"] = new FileMetadata(1234, T, T),
                 }),
                 new BulkIndexWriter(ctx),
+                new FakeFileSearchIndex(),
                 new FakeNotificationPublisher(),
                 new ScanStatusTracker(),
                 NullLogger<ScanService>.Instance);

@@ -1,8 +1,10 @@
 using System.ComponentModel;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Notifications;
+using FileTracert.Contracts.Paging;
 using FileTracert.Contracts.Platform;
 using FileTracert.Contracts.Scanning;
+using FileTracert.Contracts.Search;
 
 namespace FileTracert.Tests.Business;
 
@@ -117,4 +119,16 @@ internal sealed class FakeFileSystemBrowser(
 {
     public IReadOnlyList<FolderNode> ListFolders(string volumeGuid, string relativePath) =>
         byPath.TryGetValue(relativePath, out var folders) ? folders : [];
+}
+
+/// <summary>No-op FTS index for unit tests that do not exercise search.</summary>
+internal sealed class FakeFileSearchIndex : IFileSearchIndex
+{
+    public Task ClearVolumeAsync(int volumeId, CancellationToken ct) => Task.CompletedTask;
+    public Task SyncVolumeFromDbAsync(int volumeId, CancellationToken ct) => Task.CompletedTask;
+    public Task RebuildAsync(CancellationToken ct) => Task.CompletedTask;
+    public Task UpsertAsync(int fileId, string name, string path, CancellationToken ct) => Task.CompletedTask;
+    public Task RemoveAsync(int fileId, CancellationToken ct) => Task.CompletedTask;
+    public Task<PagedResult<int>> SearchAsync(FileSearchQuery query, CancellationToken ct)
+        => Task.FromResult(new PagedResult<int>([], 0, query.Skip, query.Take));
 }

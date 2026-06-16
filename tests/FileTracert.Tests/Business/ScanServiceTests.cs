@@ -53,6 +53,7 @@ public sealed class ScanServiceTests
         IVolumeProbe probe, IUsnReader usn, IDirectoryEnumerator enumerator, IFileMetadataReader meta,
         INotificationPublisher? notifications = null, IScanStatusTracker? tracker = null) =>
         new(ctx, probe, usn, enumerator, meta, new BulkIndexWriter(ctx),
+            new FakeFileSearchIndex(),
             notifications ?? new FakeNotificationPublisher(),
             tracker ?? new ScanStatusTracker(), NullLogger<ScanService>.Instance);
 

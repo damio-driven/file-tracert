@@ -5,6 +5,7 @@ using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Notifications;
 using FileTracert.Contracts.Platform;
 using FileTracert.Contracts.Scanning;
+using FileTracert.Contracts.Search;
 using FileTracert.Data;
 using FileTracert.Data.Entities;
 using FileTracert.Data.Indexing;
@@ -28,6 +29,7 @@ public sealed class ScanService
     private readonly IDirectoryEnumerator _enumerator;
     private readonly IFileMetadataReader _metadataReader;
     private readonly IBulkIndexWriter _bulkWriter;
+    private readonly IFileSearchIndex _ftsIndex;
     private readonly INotificationPublisher _notifications;
     private readonly IScanStatusTracker _statusTracker;
     private readonly ILogger<ScanService> _logger;
@@ -42,6 +44,7 @@ public sealed class ScanService
         IDirectoryEnumerator enumerator,
         IFileMetadataReader metadataReader,
         IBulkIndexWriter bulkWriter,
+        IFileSearchIndex ftsIndex,
         INotificationPublisher notifications,
         IScanStatusTracker statusTracker,
         ILogger<ScanService> logger)
@@ -52,6 +55,7 @@ public sealed class ScanService
         _enumerator = enumerator;
         _metadataReader = metadataReader;
         _bulkWriter = bulkWriter;
+        _ftsIndex = ftsIndex;
         _notifications = notifications;
         _statusTracker = statusTracker;
         _logger = logger;
@@ -351,6 +355,10 @@ public sealed class ScanService
         // reinsert in any order within the transaction.
         await _db.Database.ExecuteSqlRawAsync("PRAGMA defer_foreign_keys=ON;", ct);
 
+        // Clear FTS entries BEFORE deleting Files rows (FTS rowids reference Files.Id;
+        // once the rows are gone we can no longer identify what to remove).
+        await _ftsIndex.ClearVolumeAsync(volume.Id, ct);
+
         // Idempotent re-scan: replace this volume's index.
         await _db.Files.Where(f => f.VolumeId == volume.Id).ExecuteDeleteAsync(ct);
         await _db.Directories.Where(d => d.VolumeId == volume.Id).ExecuteDeleteAsync(ct);
@@ -381,6 +389,9 @@ public sealed class ScanService
         }).ToList();
 
         await _bulkWriter.BulkInsertFilesAsync(fileEntities, ct);
+
+        // Populate FTS5 index from the newly inserted Files rows for this volume.
+        await _ftsIndex.SyncVolumeFromDbAsync(volume.Id, ct);
 
         volume.LastFullScanUtc = now;
         if (checkpointUsn is { } usn)
