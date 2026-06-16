@@ -18,4 +18,16 @@ public sealed record SearchRequest(
     SearchSort Sort,
     bool Desc,
     int Skip,
-    int Take);
+    int Take)
+{
+    /// <summary>
+    /// Builds a <see cref="FileSearchQuery"/> from this request using the supplied
+    /// normalised paging values (use <see cref="Paging.PagedRequest.Normalized"/> before calling).
+    /// </summary>
+    public FileSearchQuery ToQuery(int skip, int take) =>
+        new(Text, Scope, Category, Extensions,
+            SizeBytesMin, SizeBytesMax,
+            ModifiedFrom, ModifiedTo,
+            VolumeId, OnlineOnly,
+            Sort, Desc, skip, take);
+}

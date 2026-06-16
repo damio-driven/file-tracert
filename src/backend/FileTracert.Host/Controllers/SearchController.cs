@@ -4,6 +4,7 @@ using FileTracert.Contracts.Search;
 using FileTracert.Data;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace FileTracert.Host.Controllers;
 
@@ -14,11 +15,13 @@ public sealed class SearchController : ControllerBase
 {
     private readonly IFileSearchIndex _fts;
     private readonly FileTracertDbContext _db;
+    private readonly ILogger<SearchController> _logger;
 
-    public SearchController(IFileSearchIndex fts, FileTracertDbContext db)
+    public SearchController(IFileSearchIndex fts, FileTracertDbContext db, ILogger<SearchController> logger)
     {
         _fts = fts;
         _db = db;
+        _logger = logger;
     }
 
     /// <summary>
@@ -33,12 +36,16 @@ public sealed class SearchController : ControllerBase
         if (string.IsNullOrWhiteSpace(req.Text))
             return BadRequest("text is required");
 
-        var query = new FileSearchQuery(
-            req.Text, req.Scope, req.Category, req.Extensions,
-            req.SizeBytesMin, req.SizeBytesMax,
-            req.ModifiedFrom, req.ModifiedTo,
-            req.VolumeId, req.OnlineOnly,
-            req.Sort, req.Desc, req.Skip, req.Take);
+        if (req.Text.Length > 500)
+            return BadRequest("text must be 500 characters or fewer");
+
+        if (req.ModifiedFrom?.Kind == DateTimeKind.Unspecified ||
+            req.ModifiedTo?.Kind == DateTimeKind.Unspecified)
+            return BadRequest("ModifiedFrom and ModifiedTo must be UTC (append 'Z' to the date string)");
+
+        var paged = new PagedRequest(req.Skip, req.Take).Normalized();
+
+        var query = req.ToQuery(paged.Skip, paged.Take);
 
         var pagedIds = await _fts.SearchAsync(query, ct);
 
@@ -56,6 +63,10 @@ public sealed class SearchController : ControllerBase
 
         // Preserve the FTS relevance/sort order.
         var byId = rows.ToDictionary(f => f.Id);
+
+        var phantomCount = ids.Count - rows.Count;
+        if (phantomCount > 0)
+            _logger.LogWarning("FTS index has {Count} stale entries (file IDs with no DB row)", phantomCount);
         var dtos = pagedIds.Items
             .Where(id => byId.ContainsKey(id))
             .Select(id =>
