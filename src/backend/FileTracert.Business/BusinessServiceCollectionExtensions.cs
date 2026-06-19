@@ -32,6 +32,10 @@ public static class BusinessServiceCollectionExtensions
 
         // Queue service is scoped: each API request gets its own DbContext.
         services.AddScoped<IQueueService, QueueService>();
+
+        // Execution engine + index updater are scoped: resolved per job execution.
+        services.AddScoped<IndexUpdater>();
+        services.AddScoped<JobExecutionEngine>();
         return services;
     }
 }

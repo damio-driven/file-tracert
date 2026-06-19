@@ -51,6 +51,7 @@ builder.Services.AddSingleton<DatabaseInitializer>();
 builder.Services.AddSingleton<IScanScheduler, ScanScheduler>();
 builder.Services.AddHostedService<VolumeSyncWorker>();
 builder.Services.AddHostedService<ScanWorker>();
+builder.Services.AddHostedService<QueueProcessorWorker>();
 builder.Services.AddHostedService<LogRetentionWorker>();
 
 builder.Services
