@@ -29,6 +29,9 @@ public static class BusinessServiceCollectionExtensions
 
         // Space ledger is a singleton: preview (API threads) and processor both read/write it.
         services.AddSingleton<ISpaceLedger, SpaceLedger>();
+
+        // Queue service is scoped: each API request gets its own DbContext.
+        services.AddScoped<IQueueService, QueueService>();
         return services;
     }
 }
