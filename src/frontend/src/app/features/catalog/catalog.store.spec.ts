@@ -131,4 +131,74 @@ describe('CatalogStore', () => {
     expect(store.children()).toBeNull();
     expect(store.breadcrumbs()).toHaveLength(0);
   });
+
+  // ── file selection ────────────────────────────────────────────────────────
+
+  it('toggleSelection adds file id to selectedFileIds', async () => {
+    const { store } = setup((_v, dirId) => dirId === 10 ? photoChildren : rootChildren);
+    await store.selectVolume(mockVolume);
+    await store.openDirectory(10, 'Photos', 'Photos');
+
+    store.toggleSelection(1);
+
+    expect(store.selectedFileIds()).toContain(1);
+    expect(store.hasSelection()).toBe(true);
+    expect(store.selectionCount()).toBe(1);
+  });
+
+  it('toggleSelection removes already-selected file id', async () => {
+    const { store } = setup((_v, dirId) => dirId === 10 ? photoChildren : rootChildren);
+    await store.selectVolume(mockVolume);
+    await store.openDirectory(10, 'Photos', 'Photos');
+
+    store.toggleSelection(1);
+    store.toggleSelection(1);
+
+    expect(store.selectedFileIds()).not.toContain(1);
+    expect(store.hasSelection()).toBe(false);
+  });
+
+  it('clearSelection empties selectedFileIds', async () => {
+    const { store } = setup((_v, dirId) => dirId === 10 ? photoChildren : rootChildren);
+    await store.selectVolume(mockVolume);
+    await store.openDirectory(10, 'Photos', 'Photos');
+
+    store.toggleSelection(1);
+    store.clearSelection();
+
+    expect(store.selectedFileIds()).toHaveLength(0);
+  });
+
+  it('selectPage selects all files on current page', async () => {
+    const { store } = setup((_v, dirId) => dirId === 10 ? photoChildren : rootChildren);
+    await store.selectVolume(mockVolume);
+    await store.openDirectory(10, 'Photos', 'Photos');
+
+    store.selectPage();
+
+    expect(store.selectedFileIds()).toContain(1);
+    expect(store.allPageSelected()).toBe(true);
+  });
+
+  it('deselectPage removes page file ids', async () => {
+    const { store } = setup((_v, dirId) => dirId === 10 ? photoChildren : rootChildren);
+    await store.selectVolume(mockVolume);
+    await store.openDirectory(10, 'Photos', 'Photos');
+
+    store.selectPage();
+    store.deselectPage();
+
+    expect(store.selectedFileIds()).not.toContain(1);
+  });
+
+  it('selectVolume resets selectedFileIds', async () => {
+    const { store } = setup((_v, dirId) => dirId === 10 ? photoChildren : rootChildren);
+    await store.selectVolume(mockVolume);
+    await store.openDirectory(10, 'Photos', 'Photos');
+    store.toggleSelection(1);
+
+    await store.selectVolume(mockVolume);
+
+    expect(store.selectedFileIds()).toHaveLength(0);
+  });
 });

@@ -97,4 +97,84 @@ describe('SearchStore', () => {
     expect(store.text()).toBe('');
     expect(store.results()).toBeNull();
   });
+
+  // ── selection ────────────────────────────────────────────────────────────
+
+  it('toggleSelection adds fileId', async () => {
+    const store = setup();
+    store.setQuery('photo');
+    await store.search();
+    store.toggleSelection(1);
+    expect(store.selectedFileIds()).toContain(1);
+    expect(store.hasSelection()).toBe(true);
+    expect(store.selectionCount()).toBe(1);
+  });
+
+  it('toggleSelection removes already-selected fileId', async () => {
+    const store = setup();
+    store.setQuery('photo');
+    await store.search();
+    store.toggleSelection(1);
+    store.toggleSelection(1);
+    expect(store.selectedFileIds()).not.toContain(1);
+    expect(store.hasSelection()).toBe(false);
+  });
+
+  it('clearSelection empties selectedFileIds', async () => {
+    const store = setup();
+    store.setQuery('photo');
+    await store.search();
+    store.toggleSelection(1);
+    store.clearSelection();
+    expect(store.selectedFileIds()).toHaveLength(0);
+  });
+
+  it('selectPage adds all page file IDs', async () => {
+    const store = setup();
+    store.setQuery('photo');
+    await store.search();
+    store.selectPage();
+    expect(store.selectedFileIds()).toContain(1);
+    expect(store.allPageSelected()).toBe(true);
+  });
+
+  it('deselectPage removes page file IDs', async () => {
+    const store = setup();
+    store.setQuery('photo');
+    await store.search();
+    store.selectPage();
+    store.deselectPage();
+    expect(store.selectedFileIds()).not.toContain(1);
+    expect(store.allPageSelected()).toBe(false);
+  });
+
+  it('allPageSelected false when only some items selected', async () => {
+    const twoItems: PagedResult<SearchResultDto> = {
+      ...mockResult,
+      items: [
+        { ...mockResult.items[0] },
+        {
+          fileId: 2, name: 'clip.mp4', relativePath: 'Videos\\clip.mp4',
+          volumeId: 1, volumeLabel: 'Disk', volumeLetter: 'D:', volumeIsOnline: true,
+          sizeBytes: 5000, modifiedUtc: '2026-01-01T00:00:00Z',
+          category: 'Video', projectedState: 'None',
+        },
+      ],
+      totalCount: 2,
+    };
+    const store = setup({ search: vi.fn(() => of(twoItems)) });
+    store.setQuery('x');
+    await store.search();
+    store.toggleSelection(1);
+    expect(store.allPageSelected()).toBe(false);
+  });
+
+  it('clear also resets selectedFileIds', async () => {
+    const store = setup();
+    store.setQuery('photo');
+    await store.search();
+    store.toggleSelection(1);
+    store.clear();
+    expect(store.selectedFileIds()).toHaveLength(0);
+  });
 });
