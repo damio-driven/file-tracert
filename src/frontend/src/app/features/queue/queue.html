@@ -1,0 +1,227 @@
+<div class="queue-page">
+
+  <!-- Header -->
+  <div class="queue-header">
+    <div class="queue-title-row">
+      <h1 class="queue-title">Coda operazioni</h1>
+      <button class="ft-btn ft-btn--ghost queue-refresh-btn"
+              (click)="refresh()"
+              [disabled]="store.loading()"
+              title="Aggiorna">
+        <span class="refresh-ic" [class.spinning]="store.loading()">↻</span>
+      </button>
+    </div>
+
+    @if (store.result() !== null) {
+      <div class="queue-stats">
+        @if (store.activeCount() > 0) {
+          <div class="stat-chip stat-chip--run">
+            <span class="stat-dot"></span>
+            <span class="stat-val">{{ store.activeCount() }}</span>
+            <span class="stat-label">in esecuzione</span>
+          </div>
+        }
+        @if (store.pendingCount() > 0) {
+          <div class="stat-chip stat-chip--wait">
+            <span class="stat-val">{{ store.pendingCount() }}</span>
+            <span class="stat-label">in attesa</span>
+          </div>
+        }
+        @if (store.blockedCount() > 0) {
+          <div class="stat-chip stat-chip--block">
+            <span class="stat-val">{{ store.blockedCount() }}</span>
+            <span class="stat-label">{{ store.blockedCount() === 1 ? 'bloccato' : 'bloccati' }}</span>
+          </div>
+        }
+        @if (store.totalCount() > 0 && store.activeCount() === 0 && store.pendingCount() === 0 && store.blockedCount() === 0) {
+          <div class="stat-chip stat-chip--done">
+            <span class="stat-val">{{ store.totalCount() }}</span>
+            <span class="stat-label">{{ store.totalCount() === 1 ? 'completato' : 'completati' }}</span>
+          </div>
+        }
+      </div>
+    }
+  </div>
+
+  <!-- Error -->
+  @if (store.error()) {
+    <div class="error-state">
+      <span class="error-icon">⚠</span>
+      <div>
+        <div class="error-title">Errore caricamento coda</div>
+        <div class="error-msg mono">{{ store.error() }}</div>
+      </div>
+    </div>
+  }
+
+  <!-- Skeleton loading -->
+  @if (store.loading() && store.result() === null) {
+    <div class="skeleton-table">
+      @for (i of [1,2,3,4,5]; track i) {
+        <div class="skeleton-row">
+          <div class="skeleton-cell skeleton-cell--seq"></div>
+          <div class="skeleton-cell skeleton-cell--type"></div>
+          <div class="skeleton-cell skeleton-cell--path"></div>
+          <div class="skeleton-cell skeleton-cell--size"></div>
+          <div class="skeleton-cell skeleton-cell--state"></div>
+          <div class="skeleton-cell skeleton-cell--action"></div>
+        </div>
+      }
+    </div>
+  }
+
+  <!-- Empty state -->
+  @if (!store.loading() && store.result() !== null && !store.hasJobs()) {
+    <div class="empty-state">
+      <span class="empty-icon">≣</span>
+      <div class="empty-title">Nessuna operazione in coda</div>
+      <div class="empty-sub">
+        Quando sposti o rinomini file dal Catalogo o dalla Ricerca,
+        le operazioni compaiono qui. Puoi lavorare anche con volumi scollegati:
+        l'operazione viene eseguita appena il drive torna disponibile.
+      </div>
+    </div>
+  }
+
+  <!-- Jobs table -->
+  @if (store.hasJobs()) {
+    <ft-panel>
+      <table class="ft-table queue-table">
+        <thead>
+          <tr>
+            <th class="col-seq">#</th>
+            <th class="col-type">Tipo</th>
+            <th class="col-paths">Percorso</th>
+            <th class="col-size">Dim</th>
+            <th class="col-state">Stato</th>
+            <th class="col-actions"></th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (job of store.jobs(); track job.id) {
+            <tr class="job-row" [class.job-row--active]="isActive(job.state)"
+                                [class.job-row--blocked]="job.state === 'Blocked'"
+                                [class.job-row--terminal]="isTerminal(job.state)">
+
+              <!-- Sequence -->
+              <td class="col-seq mono txt-faint">{{ job.sequenceOrder }}</td>
+
+              <!-- Type -->
+              <td class="col-type">
+                <span class="type-label">{{ typeLabel(job.type) }}</span>
+                @if (!job.isIntraVolume && !isTerminal(job.state)) {
+                  <span class="xvol-badge">⇄</span>
+                }
+              </td>
+
+              <!-- Paths -->
+              <td class="col-paths">
+                <div class="path-flow">
+                  @if (job.sourcePath) {
+                    <div class="path-row">
+                      <span class="path-vol txt-faint">
+                        {{ job.sourceVolumeLabel ?? 'Vol ' + job.sourceVolumeId }}
+                      </span>
+                      <span class="path-text mono truncate">{{ job.sourcePath }}</span>
+                    </div>
+                  }
+                  @if (job.targetPath) {
+                    <div class="path-row path-row--target">
+                      <span class="path-arrow txt-faint">→</span>
+                      <span class="path-vol txt-faint">
+                        {{ job.targetVolumeLabel ?? 'Vol ' + job.targetVolumeId }}
+                      </span>
+                      <span class="path-text mono truncate">{{ job.targetPath }}</span>
+                    </div>
+                  }
+                </div>
+              </td>
+
+              <!-- Size -->
+              <td class="col-size mono txt-dim">
+                @if (job.totalBytes > 0) {
+                  {{ job.totalBytes | bytes }}
+                } @else {
+                  <span class="txt-faint">—</span>
+                }
+              </td>
+
+              <!-- State + progress -->
+              <td class="col-state">
+                <div class="state-cell">
+                  <ft-pill [variant]="stateVariant(job.state)">{{ stateLabel(job.state) }}</ft-pill>
+
+                  @if (isActive(job.state) && job.totalBytes > 0) {
+                    <div class="progress-wrap">
+                      <ft-bar [value]="progress(job)" color="blue" />
+                      <span class="progress-pct mono">{{ progress(job) }}%</span>
+                    </div>
+                  }
+
+                  @if (job.state === 'Blocked') {
+                    <div class="block-detail">
+                      <span class="block-reason">{{ blockReasonLabel(job.blockReason) }}</span>
+                      @if (job.feasibility && job.feasibility.deficitBytes > 0) {
+                        <span class="block-deficit mono">
+                          −{{ job.feasibility.deficitBytes | bytes }}
+                          @if (!job.feasibility.estimateIsLive) {
+                            <span class="stale-flag" title="Stima su dati offline">~</span>
+                          }
+                        </span>
+                      }
+                    </div>
+                  }
+
+                  @if (job.state === 'Failed' && job.errorMessage) {
+                    <div class="error-detail mono truncate" [title]="job.errorMessage">
+                      {{ job.errorMessage }}
+                    </div>
+                  }
+                </div>
+              </td>
+
+              <!-- Actions -->
+              <td class="col-actions">
+                @if (!isTerminal(job.state)) {
+                  <button class="ft-btn ft-btn--danger-ghost cancel-btn"
+                          [disabled]="isCancelling(job.id)"
+                          (click)="cancel(job.id)"
+                          title="Annulla operazione">
+                    {{ isCancelling(job.id) ? '…' : '✕' }}
+                  </button>
+                }
+                @if (job.completedUtc) {
+                  <span class="done-time txt-faint mono">
+                    {{ job.completedUtc | relativeTime }}
+                  </span>
+                }
+              </td>
+
+            </tr>
+          }
+        </tbody>
+      </table>
+    </ft-panel>
+
+    @if (store.totalCount() > store.take()) {
+      <div class="pagination">
+        <span class="page-num txt-faint">
+          {{ store.skip() + 1 }}–{{ store.skip() + store.jobs().length }} di {{ store.totalCount() }}
+        </span>
+        <div class="flex gap-2">
+          <button class="ft-btn ft-btn--ghost"
+                  [disabled]="store.skip() === 0"
+                  (click)="store.load(store.skip() - store.take(), store.take())">
+            ← Precedente
+          </button>
+          <button class="ft-btn ft-btn--ghost"
+                  [disabled]="store.skip() + store.take() >= store.totalCount()"
+                  (click)="store.load(store.skip() + store.take(), store.take())">
+            Successivo →
+          </button>
+        </div>
+      </div>
+    }
+  }
+
+</div>

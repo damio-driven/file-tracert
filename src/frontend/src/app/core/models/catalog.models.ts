@@ -241,3 +241,60 @@ export interface CatalogChildrenDto {
   currentDirectoryId: number | null;
   currentDirectoryPath: string | null;
 }
+
+// ---- Step 8: Queue / Operations ----
+
+export type JobState =
+  | 'Pending' | 'SpaceReserved' | 'Copying' | 'Verifying' | 'DeletingSource'
+  | 'Completed' | 'Blocked' | 'Failed' | 'Cancelled';
+
+export type JobType =
+  | 'CreateFolder' | 'RenameFile' | 'RenameFolder' | 'MoveFile' | 'MoveFolder';
+
+export type JobBlockReason =
+  | 'None' | 'InsufficientSpace' | 'TargetVolumeOffline' | 'SourceVolumeOffline'
+  | 'NameCollision' | 'DependencyPending' | 'DependencyCancelled';
+
+export interface FeasibilityResult {
+  feasible: boolean;
+  requiredBytes: number;
+  reservedBytes: number;
+  availableEstimateBytes: number;
+  deficitBytes: number;
+  estimateIsLive: boolean;
+  blockingVolumeId: number | null;
+}
+
+export interface OperationJobDto {
+  id: number;
+  type: JobType;
+  state: JobState;
+  blockReason: JobBlockReason;
+  sourceVolumeId: number | null;
+  sourceVolumeLabel: string | null;
+  targetVolumeId: number | null;
+  targetVolumeLabel: string | null;
+  sourcePath: string | null;
+  targetPath: string | null;
+  isIntraVolume: boolean;
+  totalBytes: number;
+  bytesProcessed: number;
+  requiredBytesTarget: number;
+  freedBytesSource: number;
+  estimateIsLive: boolean;
+  sequenceOrder: number;
+  errorMessage: string | null;
+  createdUtc: string;
+  startedUtc: string | null;
+  completedUtc: string | null;
+  feasibility: FeasibilityResult | null;
+}
+
+export interface CreateJobRequest {
+  type: JobType;
+  sourceFileId: number | null;
+  sourceDirectoryId: number | null;
+  targetVolumeId: number | null;
+  targetRelativePath: string | null;
+  newName: string | null;
+}

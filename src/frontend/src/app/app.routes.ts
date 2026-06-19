@@ -33,5 +33,10 @@ export const routes: Routes = [
     title: 'Ricerca · FileTracert',
     loadComponent: () => import('./features/search/search').then((m) => m.Search),
   },
+  {
+    path: 'queue',
+    title: 'Coda · FileTracert',
+    loadComponent: () => import('./features/queue/queue').then((m) => m.Queue),
+  },
   { path: '**', redirectTo: 'dashboard' },
 ];
