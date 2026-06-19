@@ -1,0 +1,101 @@
+using FileTracert.Contracts.Operations;
+using FileTracert.Contracts.Paging;
+using Microsoft.AspNetCore.Mvc;
+
+namespace FileTracert.Host.Controllers;
+
+/// <summary>Queue operation endpoints: enqueue, preview, list, cancel.</summary>
+[ApiController]
+[Route("api/operations")]
+public sealed class OperationsController : ControllerBase
+{
+    private readonly IQueueService _queue;
+    private readonly ILogger<OperationsController> _logger;
+
+    public OperationsController(IQueueService queue, ILogger<OperationsController> logger)
+    {
+        _queue = queue;
+        _logger = logger;
+    }
+
+    /// <summary>Returns all jobs ordered by sequence, with feasibility attached for Blocked jobs.</summary>
+    [HttpGet]
+    public async Task<ActionResult<PagedResult<OperationJobDto>>> List(
+        [FromQuery] int skip = 0,
+        [FromQuery] int take = 50,
+        CancellationToken ct = default)
+    {
+        var paged = new PagedRequest(skip, take).Normalized();
+        return Ok(await _queue.ListAsync(paged.Skip, paged.Take, ct));
+    }
+
+    /// <summary>
+    /// Creates and enqueues a new operation. Reserves space for cross-volume moves.
+    /// Returns 409 if the source entity already has a non-terminal job pending.
+    /// </summary>
+    [HttpPost("enqueue")]
+    public async Task<ActionResult<OperationJobDto>> Enqueue(
+        [FromBody] CreateJobRequest req,
+        CancellationToken ct)
+    {
+        try
+        {
+            var dto = await _queue.EnqueueAsync(req, ct);
+            return CreatedAtAction(nameof(List), new { }, dto);
+        }
+        catch (EntityAlreadyPendingException ex)
+        {
+            return Conflict(new { error = ex.Message, entityType = ex.EntityType, entityId = ex.EntityId });
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Computes feasibility for an operation without creating any DB record.
+    /// Safe to call from the UI "confirm" dialog.
+    /// </summary>
+    [HttpPost("preview")]
+    public async Task<ActionResult<FeasibilityResult>> Preview(
+        [FromBody] CreateJobRequest req,
+        CancellationToken ct)
+    {
+        try
+        {
+            return Ok(await _queue.PreviewAsync(req, ct));
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
+    /// <summary>Cancels a non-terminal job and releases its ledger reservation.</summary>
+    [HttpDelete("{id:int}")]
+    public async Task<IActionResult> Cancel(int id, CancellationToken ct)
+    {
+        try
+        {
+            await _queue.CancelAsync(id, ct);
+            return NoContent();
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("not found"))
+        {
+            return NotFound(new { error = ex.Message });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+}
