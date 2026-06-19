@@ -17,6 +17,7 @@ public static class PlatformServiceCollectionExtensions
         services.AddSingleton<IDirectoryEnumerator, ManagedDirectoryEnumerator>();
         services.AddSingleton<IFileMetadataReader, ManagedFileMetadataReader>();
         services.AddSingleton<IFileSystemBrowser, ManagedFileSystemBrowser>();
+        services.AddSingleton<IFileMover, Win32FileMover>();
         return services;
     }
 }
