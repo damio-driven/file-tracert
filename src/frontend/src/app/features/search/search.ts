@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, OnInit, inject } from '@angular/core';
+import { ChangeDetectionStrategy, Component, OnInit, computed, inject } from '@angular/core';
 import { LowerCasePipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ScrollingModule } from '@angular/cdk/scrolling';
@@ -9,12 +9,13 @@ import { BytesPipe } from '../../shared/pipes/bytes.pipe';
 import { RelativeTimePipe } from '../../shared/pipes/relative-time.pipe';
 import { FtPill } from '../../shared/components/ft-pill/ft-pill';
 import { FtPanel } from '../../shared/components/ft-panel/ft-panel';
-import { FileCategory, SearchScope, SearchSort } from '../../core/models/catalog.models';
+import { OperationPicker } from '../../shared/components/operation-picker/operation-picker';
+import { FileCategory, SearchResultDto, SearchScope, SearchSort, SelectedFile } from '../../core/models/catalog.models';
 
 @Component({
   selector: 'ft-search',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [FormsModule, ScrollingModule, LowerCasePipe, BytesPipe, RelativeTimePipe, FtPill, FtPanel],
+  imports: [FormsModule, ScrollingModule, LowerCasePipe, BytesPipe, RelativeTimePipe, FtPill, FtPanel, OperationPicker],
   templateUrl: './search.html',
   styleUrl: './search.scss',
 })
@@ -24,6 +25,19 @@ export class Search implements OnInit {
   protected readonly Math = Math;
 
   protected queryText = '';
+  protected pickerOpen = false;
+
+  protected readonly pickerFiles = computed<SelectedFile[]>(() => {
+    const sel = new Set(this.store.selectedFileIds());
+    return (this.store.results()?.items ?? [])
+      .filter((f: SearchResultDto) => sel.has(f.fileId))
+      .map((f: SearchResultDto) => ({
+        fileId: f.fileId,
+        name: f.name,
+        sizeBytes: f.sizeBytes,
+        volumeId: f.volumeId,
+      }));
+  });
 
   protected readonly CATEGORIES: { value: FileCategory; label: string; icon: string }[] = [
     { value: 'Image', label: 'Immagini', icon: 'IMG' },
@@ -103,5 +117,30 @@ export class Search implements OnInit {
     const r = this.store.results();
     if (!r) return 0;
     return r.skip + r.take;
+  }
+
+  protected toggleSelect(fileId: number): void {
+    this.store.toggleSelection(fileId);
+  }
+
+  protected toggleSelectAll(): void {
+    if (this.store.allPageSelected()) {
+      this.store.deselectPage();
+    } else {
+      this.store.selectPage();
+    }
+  }
+
+  protected isSelected(fileId: number): boolean {
+    return this.store.selectedFileIds().includes(fileId);
+  }
+
+  protected openPicker(): void {
+    this.pickerOpen = true;
+  }
+
+  protected closePicker(): void {
+    this.pickerOpen = false;
+    this.store.clearSelection();
   }
 }

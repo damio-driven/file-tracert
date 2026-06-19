@@ -162,11 +162,38 @@
         }
       </div>
 
+      <!-- Selection action bar -->
+      @if (store.hasSelection()) {
+        <div class="selection-bar">
+          <span class="selection-count">
+            <strong>{{ store.selectionCount() }}</strong>
+            {{ store.selectionCount() === 1 ? 'file selezionato' : 'file selezionati' }}
+          </span>
+          <div class="flex gap-2">
+            <button type="button" class="ft-btn ft-btn--primary" (click)="openPicker()">
+              Sposta selezionati…
+            </button>
+            <button type="button" class="ft-btn ft-btn--ghost" (click)="store.clearSelection()">
+              Deseleziona
+            </button>
+          </div>
+        </div>
+      }
+
       <!-- Results table -->
       <ft-panel>
         <table class="ft-table results-table">
           <thead>
             <tr>
+              <th class="col-check">
+                <input
+                  type="checkbox"
+                  class="row-check"
+                  [checked]="store.allPageSelected()"
+                  (change)="toggleSelectAll()"
+                  aria-label="Seleziona tutti i risultati della pagina"
+                />
+              </th>
               <th class="col-name">Nome</th>
               <th class="col-vol">Volume</th>
               <th class="col-path">Percorso</th>
@@ -176,7 +203,17 @@
           </thead>
           <tbody>
             @for (file of results.items; track file.fileId) {
-              <tr class="result-row">
+              <tr class="result-row" [class.result-row--selected]="isSelected(file.fileId)"
+                  (click)="toggleSelect(file.fileId)">
+                <td class="col-check" (click)="$event.stopPropagation()">
+                  <input
+                    type="checkbox"
+                    class="row-check"
+                    [checked]="isSelected(file.fileId)"
+                    (change)="toggleSelect(file.fileId)"
+                    [attr.aria-label]="'Seleziona ' + file.name"
+                  />
+                </td>
                 <td class="col-name">
                   <div class="file-name-cell">
                     <span class="cat-tag cat-tag--{{ file.category | lowercase }}">
@@ -257,3 +294,7 @@
     </div>
   }
 </section>
+
+@if (pickerOpen) {
+  <ft-operation-picker [files]="pickerFiles()" (closed)="closePicker()" />
+}

@@ -298,3 +298,11 @@ export interface CreateJobRequest {
   targetRelativePath: string | null;
   newName: string | null;
 }
+
+/** File selected in Catalog or Search, passed to OperationPicker. */
+export interface SelectedFile {
+  fileId: number;
+  name: string;
+  sizeBytes: number;
+  volumeId: number;
+}

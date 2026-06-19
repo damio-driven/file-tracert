@@ -201,11 +201,38 @@
                   </span>
                 </div>
 
+                <!-- Selection bar -->
+                @if (store.hasSelection()) {
+                  <div class="selection-bar">
+                    <span class="selection-count">
+                      <strong>{{ store.selectionCount() }}</strong>
+                      {{ store.selectionCount() === 1 ? 'file selezionato' : 'file selezionati' }}
+                    </span>
+                    <div class="flex gap-2">
+                      <button type="button" class="ft-btn ft-btn--primary" (click)="openPicker()">
+                        Sposta selezionati…
+                      </button>
+                      <button type="button" class="ft-btn ft-btn--ghost" (click)="store.clearSelection()">
+                        Deseleziona
+                      </button>
+                    </div>
+                  </div>
+                }
+
                 <ft-panel>
                   <cdk-virtual-scroll-viewport itemSize="40" class="file-scroll-viewport">
                     <table class="ft-table file-table">
                       <thead>
                         <tr>
+                          <th class="col-check">
+                            <input
+                              type="checkbox"
+                              class="row-check"
+                              [checked]="store.allPageSelected()"
+                              (change)="toggleSelectAll()"
+                              aria-label="Seleziona tutti i file della pagina"
+                            />
+                          </th>
                           <th class="col-name">Nome</th>
                           <th class="col-size">Dim.</th>
                           <th class="col-date">Modificato</th>
@@ -213,7 +240,17 @@
                       </thead>
                       <tbody>
                         @for (file of children.files.items; track file.id) {
-                          <tr class="file-row">
+                          <tr class="file-row" [class.file-row--selected]="isSelected(file.id)"
+                              (click)="toggleSelect(file.id)">
+                            <td class="col-check" (click)="$event.stopPropagation()">
+                              <input
+                                type="checkbox"
+                                class="row-check"
+                                [checked]="isSelected(file.id)"
+                                (change)="toggleSelect(file.id)"
+                                [attr.aria-label]="'Seleziona ' + file.name"
+                              />
+                            </td>
                             <td class="col-name">
                               <div class="file-name-cell">
                                 <span class="cat-tag cat-tag--{{ file.category.toLowerCase() }}"
@@ -272,13 +309,11 @@
 
         }
 
-        <!-- Read-only notice -->
-        @if (store.selectedVolume()) {
-          <p class="readonly-note txt-faint">
-            Sola lettura — le operazioni di spostamento arriveranno nella Coda (prossima versione)
-          </p>
-        }
       }
     </div>
   </div>
 </section>
+
+@if (pickerOpen) {
+  <ft-operation-picker [files]="pickerFiles()" (closed)="closePicker()" />
+}

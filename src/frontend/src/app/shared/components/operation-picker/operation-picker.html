@@ -1,0 +1,140 @@
+<div class="picker-backdrop" (click)="onBackdropClick($event)" role="dialog" aria-modal="true" aria-label="Sposta file">
+  <div class="picker-modal">
+
+    <!-- Header -->
+    <div class="picker-header">
+      <div class="picker-title">
+        Sposta {{ files().length === 1 ? '1 file' : files().length + ' file' }}
+      </div>
+      <button class="picker-close" type="button" (click)="close()" aria-label="Chiudi">✕</button>
+    </div>
+
+    @if (enqueued()) {
+      <!-- Success state -->
+      <div class="picker-body">
+        <div class="enqueued-state">
+          <div class="enqueued-icon">✓</div>
+          <div class="enqueued-title">
+            {{ enqueuedCount() === 1 ? '1 operazione accodata' : enqueuedCount() + ' operazioni accodate' }}
+          </div>
+          <div class="enqueued-sub">
+            Le operazioni vengono eseguite appena il volume destinazione è disponibile.
+          </div>
+          <button type="button" class="ft-btn ft-btn--primary" (click)="goToQueue()">
+            Vai alla Coda →
+          </button>
+        </div>
+      </div>
+
+    } @else {
+
+      <div class="picker-body">
+
+        <!-- File summary -->
+        <div class="file-summary">
+          <div class="file-summary-names">
+            @for (f of files().slice(0, 3); track f.fileId) {
+              <span class="file-chip mono">{{ f.name }}</span>
+            }
+            @if (files().length > 3) {
+              <span class="file-chip-more txt-faint">+{{ files().length - 3 }} altri</span>
+            }
+          </div>
+          <div class="file-summary-size txt-faint">
+            Totale: <span class="mono">{{ totalBytes | bytes }}</span>
+          </div>
+        </div>
+
+        <!-- Target volume -->
+        <div class="picker-field">
+          <label class="picker-label" for="picker-vol">Volume destinazione</label>
+          <select id="picker-vol" class="picker-select" [(ngModel)]="targetVolumeId" (ngModelChange)="preview.set(null)">
+            <option [ngValue]="null" disabled>Scegli un volume…</option>
+            @for (v of volumes.catalogable(); track v.id) {
+              <option [ngValue]="v.id">
+                {{ v.label ?? '(senza etichetta)' }}
+                {{ v.currentLetter ? '(' + v.currentLetter + ')' : '' }}
+                {{ v.isOnline ? '' : '— offline' }}
+              </option>
+            }
+          </select>
+        </div>
+
+        <!-- Target folder -->
+        <div class="picker-field">
+          <label class="picker-label" for="picker-path">Cartella destinazione</label>
+          <input
+            id="picker-path"
+            class="picker-input mono"
+            type="text"
+            placeholder="es. Documenti\Foto 2025"
+            [(ngModel)]="targetFolder"
+            (ngModelChange)="preview.set(null)"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <span class="picker-hint txt-faint">
+            Percorso relativo alla radice del volume. La cartella viene creata se non esiste.
+          </span>
+        </div>
+
+        <!-- Preview -->
+        <div class="picker-preview-row">
+          <button
+            type="button"
+            class="ft-btn ft-btn--ghost"
+            [disabled]="!canSubmit || previewing()"
+            (click)="runPreview()"
+          >
+            {{ previewing() ? '…' : 'Verifica spazio' }}
+          </button>
+
+          @if (preview(); as p) {
+            <div class="feasibility-chip" [class.feasibility-chip--ok]="p.feasible" [class.feasibility-chip--bad]="!p.feasible">
+              @if (p.feasible) {
+                <ft-pill variant="done">Fattibile</ft-pill>
+                <span class="feasibility-detail txt-faint">
+                  Richiesto {{ p.requiredBytes | bytes }} ·
+                  Disponibile {{ p.availableEstimateBytes | bytes }}
+                  @if (!p.estimateIsLive) { <span class="stale-flag" title="Stima su dati offline">~</span> }
+                </span>
+              } @else {
+                <ft-pill variant="block">Spazio insufficiente</ft-pill>
+                <span class="feasibility-detail txt-faint">
+                  Mancano {{ p.deficitBytes | bytes }}
+                  @if (!p.estimateIsLive) { <span class="stale-flag" title="Stima su dati offline">~</span> }
+                </span>
+              }
+            </div>
+          }
+        </div>
+
+        <!-- Error -->
+        @if (error()) {
+          <div class="picker-error">
+            <span class="picker-error-icon">⚠</span>
+            <span class="mono">{{ error() }}</span>
+          </div>
+        }
+
+      </div>
+
+      <!-- Footer -->
+      <div class="picker-footer">
+        <button type="button" class="ft-btn ft-btn--ghost" (click)="close()" [disabled]="enqueueing()">
+          Annulla
+        </button>
+        <button
+          type="button"
+          class="ft-btn ft-btn--primary"
+          [disabled]="!canSubmit || enqueueing()"
+          (click)="enqueue()"
+        >
+          {{ enqueueing() ? 'Accodamento…' : 'Accoda →' }}
+        </button>
+      </div>
+
+    }
+
+  </div>
+</div>

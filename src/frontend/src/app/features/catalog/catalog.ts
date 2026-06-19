@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, OnInit, inject } from '@angular/core';
+import { ChangeDetectionStrategy, Component, OnInit, computed, inject } from '@angular/core';
 import { ScrollingModule } from '@angular/cdk/scrolling';
 
 import { CatalogStore } from './catalog.store';
@@ -7,7 +7,8 @@ import { BytesPipe } from '../../shared/pipes/bytes.pipe';
 import { RelativeTimePipe } from '../../shared/pipes/relative-time.pipe';
 import { FtPill } from '../../shared/components/ft-pill/ft-pill';
 import { FtPanel } from '../../shared/components/ft-panel/ft-panel';
-import { FileCategory, VolumeDto } from '../../core/models/catalog.models';
+import { OperationPicker } from '../../shared/components/operation-picker/operation-picker';
+import { CatalogFileDto, FileCategory, SelectedFile, VolumeDto } from '../../core/models/catalog.models';
 
 const CATEGORY_LABELS: Record<FileCategory, string> = {
   Image: 'Immagine', Video: 'Video', Audio: 'Audio',
@@ -22,7 +23,7 @@ const CATEGORY_ICONS: Record<FileCategory, string> = {
 @Component({
   selector: 'ft-catalog',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [ScrollingModule, BytesPipe, RelativeTimePipe, FtPill, FtPanel],
+  imports: [ScrollingModule, BytesPipe, RelativeTimePipe, FtPill, FtPanel, OperationPicker],
   templateUrl: './catalog.html',
   styleUrl: './catalog.scss',
 })
@@ -30,6 +31,22 @@ export class Catalog implements OnInit {
   protected readonly store = inject(CatalogStore);
   protected readonly volumes = inject(VolumesStore);
   protected readonly Math = Math;
+
+  protected pickerOpen = false;
+
+  protected readonly pickerFiles = computed<SelectedFile[]>(() => {
+    const sel = new Set(this.store.selectedFileIds());
+    const vol = this.store.selectedVolume();
+    if (!vol) return [];
+    return (this.store.children()?.files.items ?? [])
+      .filter((f: CatalogFileDto) => sel.has(f.id))
+      .map((f: CatalogFileDto) => ({
+        fileId: f.id,
+        name: f.name,
+        sizeBytes: f.sizeBytes,
+        volumeId: vol.id,
+      }));
+  });
 
   ngOnInit(): void {
     void this.volumes.loadList();
@@ -79,5 +96,30 @@ export class Catalog implements OnInit {
     const f = this.store.children()?.files;
     if (!f) return 0;
     return f.skip + f.take;
+  }
+
+  protected toggleSelect(fileId: number): void {
+    this.store.toggleSelection(fileId);
+  }
+
+  protected toggleSelectAll(): void {
+    if (this.store.allPageSelected()) {
+      this.store.deselectPage();
+    } else {
+      this.store.selectPage();
+    }
+  }
+
+  protected isSelected(fileId: number): boolean {
+    return this.store.selectedFileIds().includes(fileId);
+  }
+
+  protected openPicker(): void {
+    this.pickerOpen = true;
+  }
+
+  protected closePicker(): void {
+    this.pickerOpen = false;
+    this.store.clearSelection();
   }
 }

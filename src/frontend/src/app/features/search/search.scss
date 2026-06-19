@@ -238,18 +238,23 @@
 .results-table {
   table-layout: fixed;
 
+  .col-check {
+    width: 36px;
+    text-align: center;
+  }
+
   .col-name {
     width: auto;
     min-width: 180px;
   }
 
   .col-vol {
-    width: 160px;
+    width: 150px;
   }
 
   .col-path {
     width: auto;
-    min-width: 160px;
+    min-width: 140px;
   }
 
   .col-size {
@@ -258,7 +263,7 @@
   }
 
   .col-date {
-    width: 120px;
+    width: 110px;
     text-align: right;
   }
 
@@ -269,7 +274,44 @@
 }
 
 .result-row {
-  // Hover handled by ft-table base styles
+  cursor: pointer;
+
+  &--selected td {
+    background: var(--teal-dim);
+  }
+}
+
+// ---- Checkbox ----
+
+.row-check {
+  cursor: pointer;
+  accent-color: var(--teal);
+  width: 14px;
+  height: 14px;
+}
+
+// ---- Selection action bar ----
+
+.selection-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--teal-dim);
+  border: 1px solid color-mix(in srgb, var(--teal) 35%, transparent);
+  border-radius: var(--r-panel);
+  margin-bottom: var(--sp-2);
+}
+
+.selection-count {
+  font-size: 13px;
+  color: var(--txt);
+
+  strong {
+    color: var(--teal);
+    font-weight: 700;
+  }
 }
 
 .file-name-cell {

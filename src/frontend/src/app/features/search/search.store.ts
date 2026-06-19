@@ -30,6 +30,7 @@ interface SearchState {
   error: string | null;
   currentSkip: number;
   take: number;
+  selectedFileIds: number[];
 }
 
 const defaultFilters: SearchFilters = {
@@ -54,6 +55,7 @@ const initial: SearchState = {
   error: null,
   currentSkip: 0,
   take: 50,
+  selectedFileIds: [],
 };
 
 export const SearchStore = signalStore(
@@ -63,6 +65,14 @@ export const SearchStore = signalStore(
     hasResults: computed(() => (store.results()?.totalCount ?? 0) > 0),
     totalCount: computed(() => store.results()?.totalCount ?? 0),
     isCapped: computed(() => store.results()?.totalCount === 10000),
+    selectionCount: computed(() => store.selectedFileIds().length),
+    hasSelection: computed(() => store.selectedFileIds().length > 0),
+    allPageSelected: computed(() => {
+      const items = store.results()?.items ?? [];
+      if (items.length === 0) return false;
+      const sel = store.selectedFileIds();
+      return items.every(f => sel.includes(f.fileId));
+    }),
   })),
   withMethods((store, api = inject(SearchApi)) => {
     function buildRequest(skip: number): SearchRequest {
@@ -113,7 +123,27 @@ export const SearchStore = signalStore(
         await doSearch(skip);
       },
       clear(): void {
-        patchState(store, { text: '', results: null, error: null, currentSkip: 0 });
+        patchState(store, { text: '', results: null, error: null, currentSkip: 0, selectedFileIds: [] });
+      },
+      toggleSelection(fileId: number): void {
+        const ids = store.selectedFileIds();
+        patchState(store, {
+          selectedFileIds: ids.includes(fileId) ? ids.filter(x => x !== fileId) : [...ids, fileId],
+        });
+      },
+      selectPage(): void {
+        const items = store.results()?.items ?? [];
+        const existing = store.selectedFileIds();
+        const pageIds = items.map(f => f.fileId);
+        const merged = [...new Set([...existing, ...pageIds])];
+        patchState(store, { selectedFileIds: merged });
+      },
+      deselectPage(): void {
+        const pageIds = new Set((store.results()?.items ?? []).map(f => f.fileId));
+        patchState(store, { selectedFileIds: store.selectedFileIds().filter(id => !pageIds.has(id)) });
+      },
+      clearSelection(): void {
+        patchState(store, { selectedFileIds: [] });
       },
     };
   }),
