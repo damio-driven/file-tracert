@@ -60,12 +60,13 @@ export class OperationPicker implements OnInit {
     this.preview.set(null);
     this.error.set(null);
     try {
+      // Send the destination folder only — the backend appends the file name.
       const result = await firstValueFrom(this.api.preview({
         type: 'MoveFile',
         sourceFileId: first.fileId,
         sourceDirectoryId: null,
         targetVolumeId: this.targetVolumeId!,
-        targetRelativePath: folder + '\\' + first.name,
+        targetRelativePath: folder,
         newName: null,
       }));
       this.preview.set(result);
@@ -85,12 +86,13 @@ export class OperationPicker implements OnInit {
     let count = 0;
     try {
       for (const file of this.files()) {
+        // Send the destination folder only — the backend appends the file name.
         await firstValueFrom(this.api.enqueue({
           type: 'MoveFile',
           sourceFileId: file.fileId,
           sourceDirectoryId: null,
           targetVolumeId: this.targetVolumeId!,
-          targetRelativePath: folder + '\\' + file.name,
+          targetRelativePath: folder,
           newName: null,
         }));
         count++;
