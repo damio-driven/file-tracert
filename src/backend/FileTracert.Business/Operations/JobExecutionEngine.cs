@@ -196,6 +196,24 @@ public sealed class JobExecutionEngine
         var srcGuid = job.SourceVolume!.VolumeGuid;
         var tgtGuid = job.TargetVolume!.VolumeGuid;
 
+        // Resume safety: an item left in Copying by an interrupted prior run (crash / cancel)
+        // has an orphan .fadit-partial and would be skipped by the Pending filter below —
+        // the job would then never satisfy the "all copied" gate and stall forever.
+        // Reset those items to Pending so they are re-copied from scratch; the partial is
+        // discardable and gets overwritten (CopyFileAsync opens it with FileMode.Create).
+        var interrupted = job.Items.Where(i => i.State == JobItemState.Copying).ToList();
+        if (interrupted.Count > 0)
+        {
+            foreach (var item in interrupted)
+            {
+                item.State = JobItemState.Pending;
+                item.BytesCopied = 0;
+            }
+            await _db.SaveChangesAsync(ct);
+            _logger.LogInformation(
+                "Job {Id}: reset {Count} interrupted item(s) to Pending for re-copy.", job.Id, interrupted.Count);
+        }
+
         foreach (var item in job.Items.Where(i => i.State == JobItemState.Pending))
         {
             ct.ThrowIfCancellationRequested();
