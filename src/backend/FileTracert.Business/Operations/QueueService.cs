@@ -19,12 +19,18 @@ public sealed class QueueService : IQueueService
 
     private readonly FileTracertDbContext _db;
     private readonly ISpaceLedger _ledger;
+    private readonly IJobCancellationRegistry _cancellation;
     private readonly ILogger<QueueService> _logger;
 
-    public QueueService(FileTracertDbContext db, ISpaceLedger ledger, ILogger<QueueService> logger)
+    public QueueService(
+        FileTracertDbContext db,
+        ISpaceLedger ledger,
+        IJobCancellationRegistry cancellation,
+        ILogger<QueueService> logger)
     {
         _db = db;
         _ledger = ledger;
+        _cancellation = cancellation;
         _logger = logger;
     }
 
@@ -84,6 +90,10 @@ public sealed class QueueService : IQueueService
         job.State = JobState.Cancelled;
         job.CompletedUtc = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
+
+        // Signal the running job (if any) AFTER Cancelled is committed, so the engine both
+        // sees the state on re-check and has its copy interrupted via the token.
+        _cancellation.Cancel(jobId);
 
         await _ledger.ReleaseAsync(jobId, ct);
         _logger.LogInformation("Cancelled job {Id}.", jobId);

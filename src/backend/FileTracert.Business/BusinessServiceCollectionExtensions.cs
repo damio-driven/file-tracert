@@ -30,6 +30,10 @@ public static class BusinessServiceCollectionExtensions
         // Space ledger is a singleton: preview (API threads) and processor both read/write it.
         services.AddSingleton<ISpaceLedger, SpaceLedger>();
 
+        // Cancellation registry is a singleton: the API (Cancel) signals the token the worker
+        // is running the job under, across two different DbContexts.
+        services.AddSingleton<IJobCancellationRegistry, JobCancellationRegistry>();
+
         // Queue service is scoped: each API request gets its own DbContext.
         services.AddScoped<IQueueService, QueueService>();
 

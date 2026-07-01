@@ -64,7 +64,20 @@ public sealed class JobExecutionEngine
             else
                 await ExecuteCrossVolumeAsync(job, ct);
         }
-        catch (OperationCanceledException) { throw; }
+        catch (OperationCanceledException)
+        {
+            // Distinguish a user Cancel (job committed to Cancelled by the API) from a shutdown
+            // (job stays runnable and resumes next start). On a real cancel, clean the orphan
+            // .fadit-partial and swallow — this is expected, not an error. On shutdown, rethrow
+            // so the worker loop stops and the job resumes later.
+            if (await IsCancelledInDbAsync(job.Id))
+            {
+                _logger.LogInformation("Job {Id}: cancelled during execution — cleaning partials.", job.Id);
+                CleanupPartials(job);
+                return;
+            }
+            throw;
+        }
         catch (NameCollisionException ex)
         {
             _logger.LogWarning("Job {Id}: name collision at '{Path}'.", job.Id, ex.TargetPath);
@@ -146,21 +159,30 @@ public sealed class JobExecutionEngine
             await CopyItemsAsync(job, ct);
             // Cancelled mid-copy: leave in Copying so the next run resumes.
             if (ct.IsCancellationRequested) return;
+            // A Cancel may have committed (from the API's DbContext) without cancelling our token
+            // — re-read before advancing so we don't march on to the destructive steps.
+            if (await AbortIfCancelledAsync(job)) return;
             if (job.Items.All(i => i.State is JobItemState.Copied or JobItemState.Done))
                 await TransitionAsync(job, JobState.Verifying, ct);
         }
 
         if (job.State == JobState.Verifying)
         {
+            if (await AbortIfCancelledAsync(job)) return;
             await VerifyAndFinalizeItemsAsync(job, ct);
             if (ct.IsCancellationRequested) return;
             // If VerifyAndFinalize set Failed/Blocked, abort.
             if (job.State is JobState.Failed or JobState.Blocked) return;
+            // Re-check BEFORE the transition: TransitionAsync would otherwise overwrite a
+            // concurrently-written Cancelled with DeletingSource and hide the cancel.
+            if (await AbortIfCancelledAsync(job)) return;
             await TransitionAsync(job, JobState.DeletingSource, ct);
         }
 
         if (job.State == JobState.DeletingSource)
         {
+            // Last line of defense before recycling the source: honour a concurrent cancel.
+            if (await AbortIfCancelledAsync(job)) return;
             await DeleteSourcesAsync(job, ct);
             await CompleteJobAsync(job, ct);
             await _indexUpdater.UpdateAfterCompletionAsync(job, ct);
@@ -242,6 +264,9 @@ public sealed class JobExecutionEngine
 
     private async Task DeleteSourcesAsync(OperationJob job, CancellationToken ct)
     {
+        // Nothing below this line is reversible — bail out if cancellation raced in.
+        ct.ThrowIfCancellationRequested();
+
         var srcGuid = job.SourceVolume!.VolumeGuid;
 
         if (job.Type == JobType.MoveFile)
@@ -322,6 +347,54 @@ public sealed class JobExecutionEngine
         await _db.SaveChangesAsync(ct);
         await _ledger.ReleaseAsync(job.Id, ct);
         _logger.LogError("Job {Id} failed: {Msg}.", job.Id, message);
+    }
+
+    // ── cancellation guards ───────────────────────────────────────────────────
+
+    /// <summary>
+    /// Re-reads the job's committed <see cref="JobState"/> from the database. A concurrent
+    /// <c>CancelAsync</c> writes <c>Cancelled</c> on a DIFFERENT DbContext, so our tracked
+    /// entity never sees it — a projection query hits the DB and returns the true value.
+    /// Uses <see cref="CancellationToken.None"/> so the read completes even when the job token
+    /// is already tripped.
+    /// </summary>
+    private async Task<bool> IsCancelledInDbAsync(int jobId)
+    {
+        var state = await _db.OperationJobs.AsNoTracking()
+            .Where(j => j.Id == jobId)
+            .Select(j => j.State)
+            .FirstOrDefaultAsync(CancellationToken.None);
+        return state == JobState.Cancelled;
+    }
+
+    /// <summary>
+    /// If the job was cancelled, cleans up any orphan <c>.fadit-partial</c> and returns true so
+    /// the caller aborts before the next (possibly destructive) step. The source is never touched.
+    /// </summary>
+    private async Task<bool> AbortIfCancelledAsync(OperationJob job)
+    {
+        if (!await IsCancelledInDbAsync(job.Id))
+            return false;
+
+        _logger.LogInformation(
+            "Job {Id}: cancellation detected — aborting before the next step; source left untouched.", job.Id);
+        CleanupPartials(job);
+        return true;
+    }
+
+    private void CleanupPartials(OperationJob job)
+    {
+        var tgtGuid = job.TargetVolume?.VolumeGuid;
+        if (tgtGuid is null) return;
+
+        foreach (var item in job.Items.Where(i => !string.IsNullOrEmpty(i.TempPath)))
+        {
+            try { _mover.DeleteToRecycleBin(tgtGuid, item.TempPath!); }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Job {Id}: could not remove orphan partial '{Path}'.", job.Id, item.TempPath);
+            }
+        }
     }
 
     // ── path utilities ────────────────────────────────────────────────────────

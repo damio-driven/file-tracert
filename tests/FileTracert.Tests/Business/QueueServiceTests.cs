@@ -52,8 +52,10 @@ public sealed class QueueServiceTests : IDisposable
         return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
     }
 
+    private readonly JobCancellationRegistry _cancellation = new();
+
     private QueueService Svc() =>
-        new(_harness.CreateContext(), _ledger, NullLogger<QueueService>.Instance);
+        new(_harness.CreateContext(), _ledger, _cancellation, NullLogger<QueueService>.Instance);
 
     private void Seed()
     {

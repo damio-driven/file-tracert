@@ -15,6 +15,7 @@ public sealed class QueueProcessorWorker : BackgroundService
 {
     private readonly IServiceProvider _services;
     private readonly ISpaceLedger _ledger;
+    private readonly IJobCancellationRegistry _cancellation;
     private readonly ILogger<QueueProcessorWorker> _logger;
 
     // Runnable states: the job is ready to execute or already in-flight from a prior run.
@@ -30,10 +31,12 @@ public sealed class QueueProcessorWorker : BackgroundService
     public QueueProcessorWorker(
         IServiceProvider services,
         ISpaceLedger ledger,
+        IJobCancellationRegistry cancellation,
         ILogger<QueueProcessorWorker> logger)
     {
         _services = services;
         _ledger = ledger;
+        _cancellation = cancellation;
         _logger = logger;
     }
 
@@ -57,7 +60,18 @@ public sealed class QueueProcessorWorker : BackgroundService
 
                 using var scope = _services.CreateScope();
                 var engine = scope.ServiceProvider.GetRequiredService<JobExecutionEngine>();
-                await engine.ExecuteJobAsync(jobId.Value, stoppingToken);
+
+                // Run under a per-job token so a Cancel request from the API can interrupt this
+                // job specifically; linked to stoppingToken so shutdown still cancels it.
+                var jobToken = _cancellation.Register(jobId.Value, stoppingToken);
+                try
+                {
+                    await engine.ExecuteJobAsync(jobId.Value, jobToken);
+                }
+                finally
+                {
+                    _cancellation.Remove(jobId.Value);
+                }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
