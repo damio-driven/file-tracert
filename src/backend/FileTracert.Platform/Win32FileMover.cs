@@ -124,7 +124,52 @@ internal sealed class Win32FileMover : IFileMover
             throw new InvalidOperationException(
                 $"Volume '{volumeGuid}' has no mount point (offline?).");
 
-        return Path.GetFullPath(Path.Combine(mountPoints[0], relativePath));
+        return ResolveWithinMount(mountPoints[0], relativePath);
+    }
+
+    /// <summary>
+    /// Composes a volume-relative path against its mount point and guarantees the result
+    /// stays inside the mount. The relative path comes from untrusted UI input, so a
+    /// drive-qualified path (<c>C:\…</c>), a leading separator (<c>\x</c> — which makes
+    /// <see cref="Path.Combine(string, string)"/> discard the mount) or a <c>..</c>
+    /// segment must be rejected: this class runs in the elevated service, so an escape
+    /// here means writing/deleting outside the catalog volume.
+    /// </summary>
+    internal static string ResolveWithinMount(string mount, string relativePath)
+    {
+        relativePath ??= string.Empty;
+
+        // Drive-qualified (contains ':') or rooted (leading '\' or '/') paths would let
+        // Path.Combine discard the mount and escape to another drive / the volume root.
+        if (relativePath.Contains(':') || Path.IsPathRooted(relativePath))
+            throw new InvalidOperationException(
+                $"Relative path '{relativePath}' must be relative to the volume root " +
+                "(no drive letter, no leading separator).");
+
+        // Any '..' segment can climb out of the volume.
+        foreach (var segment in relativePath.Split('\\', '/'))
+            if (segment == "..")
+                throw new InvalidOperationException(
+                    $"Relative path '{relativePath}' must not contain '..' segments.");
+
+        var mountFull = Path.GetFullPath(mount);
+        var full = Path.GetFullPath(Path.Combine(mountFull, relativePath));
+
+        // Defense in depth: confirm the resolved path is still under the mount. Compare with a
+        // trailing separator so a sibling ("C:\Mount2") is not accepted for mount "C:\Mount".
+        var boundary = mountFull.EndsWith(Path.DirectorySeparatorChar)
+            ? mountFull
+            : mountFull + Path.DirectorySeparatorChar;
+
+        bool within =
+            full.Equals(boundary.TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase) ||
+            full.StartsWith(boundary, StringComparison.OrdinalIgnoreCase);
+
+        if (!within)
+            throw new InvalidOperationException(
+                $"Resolved path '{full}' escapes the volume mount '{mountFull}'.");
+
+        return full;
     }
 
     private static IReadOnlyList<string> GetMountPoints(string volumeGuid)
