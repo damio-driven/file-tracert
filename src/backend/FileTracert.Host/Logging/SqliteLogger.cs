@@ -25,7 +25,7 @@ internal sealed class SqliteLogger : ILogger
         where TState : notnull => null;
 
     public bool IsEnabled(LogLevel logLevel) =>
-        logLevel != LogLevel.None && logLevel >= _levelSwitch.Current;
+        LogCategoryPolicy.IsEnabled(_category, logLevel, _levelSwitch.Current);
 
     public void Log<TState>(
         LogLevel logLevel,

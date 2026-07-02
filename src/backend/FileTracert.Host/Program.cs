@@ -39,7 +39,11 @@ builder.Services.AddSingleton<ILogStore>(logStore);
 builder.Services.AddSingleton(logLevelSwitch);
 builder.Services.AddSingleton(logProcessor);
 builder.Logging.SetMinimumLevel(LogLevel.Trace);
-builder.Logging.AddFilter((_, level) => level >= logLevelSwitch.Current);
+// Category-aware gate: the user switch governs FileTracert categories; framework
+// categories (Microsoft.*, System.*) stay capped at Warning — EF internals at Debug
+// once flooded the log DB (~1M rows/hour) until main-DB writes timed out.
+builder.Logging.AddFilter((category, level) =>
+    LogCategoryPolicy.IsEnabled(category ?? string.Empty, level, logLevelSwitch.Current));
 builder.Logging.AddProvider(new SqliteLoggerProvider(logProcessor, logLevelSwitch));
 
 builder.Services.AddDataServices(connectionString);
