@@ -18,16 +18,6 @@ public sealed class QueueProcessorWorker : BackgroundService
     private readonly IJobCancellationRegistry _cancellation;
     private readonly ILogger<QueueProcessorWorker> _logger;
 
-    // Runnable states: the job is ready to execute or already in-flight from a prior run.
-    private static readonly IReadOnlySet<JobState> RunnableStates = new HashSet<JobState>
-    {
-        JobState.Pending,
-        JobState.SpaceReserved,
-        JobState.Copying,
-        JobState.Verifying,
-        JobState.DeletingSource
-    };
-
     public QueueProcessorWorker(
         IServiceProvider services,
         ISpaceLedger ledger,
@@ -93,7 +83,7 @@ public sealed class QueueProcessorWorker : BackgroundService
         var db = scope.ServiceProvider.GetRequiredService<FileTracertDbContext>();
 
         return await db.OperationJobs
-            .Where(j => RunnableStates.Contains(j.State))
+            .Where(j => JobStates.Runnable.Contains(j.State))
             .OrderBy(j => j.SequenceOrder)
             .Select(j => (int?)j.Id)
             .FirstOrDefaultAsync(ct);
