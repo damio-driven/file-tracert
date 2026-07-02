@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Text.Json;
 using FileTracert.Business.Filtering;
+using FileTracert.Business.Volumes;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Notifications;
 using FileTracert.Contracts.Platform;
@@ -107,22 +108,27 @@ public sealed class ScanService
         // For NTFS, ensure the journal exists then checkpoint its position BEFORE
         // reading the snapshot, so the future incremental catches everything that
         // changed during the scan. A volume can be NTFS yet have no active journal:
-        // EnsureJournal creates it (needs admin). If the journal cannot be created
-        // or queried, fall back to plain enumeration and persist the engine switch
-        // so we don't keep retrying USN on every cycle.
+        // EnsureJournal creates it (needs admin). Whether USN is even attempted is
+        // decided from the volume's actual filesystem (VolumeMapper.EngineFor), not
+        // from the persisted ScanEngine — that field only records what the LAST scan
+        // used, and if it were the gate, one transient failure (e.g. not elevated at
+        // the time) would downgrade the volume to slow enumeration forever, with no
+        // way back even after the real problem (elevation, journal state) is fixed.
+        // Retrying every scan means the fast path recovers on its own next attempt.
         long? checkpointUsn = null;
-        if (volume.ScanEngine == VolumeScanEngine.UsnJournal)
+        if (VolumeMapper.EngineFor(volume.FileSystem) == VolumeScanEngine.UsnJournal)
         {
             try
             {
                 _usnReader.EnsureJournal(volume.VolumeGuid);
                 checkpointUsn = _usnReader.GetJournalState(volume.VolumeGuid).NextUsn;
+                volume.ScanEngine = VolumeScanEngine.UsnJournal;
             }
             catch (Win32Exception ex)
             {
                 _logger.LogWarning(
                     ex,
-                    "USN journal unavailable for volume {VolumeId} ({Guid}); falling back to enumeration.",
+                    "USN journal unavailable for volume {VolumeId} ({Guid}); falling back to enumeration for this scan.",
                     volumeId, volume.VolumeGuid);
                 volume.ScanEngine = VolumeScanEngine.Enumeration;
 
@@ -133,10 +139,14 @@ public sealed class ScanService
                     "Scan",
                     $"USN journal non disponibile per «{volume.Label ?? volume.VolumeGuid}»",
                     $"Indicizzazione tramite enumerazione (più lenta). Dettaglio: {ex.Message} (codice {ex.NativeErrorCode}). " +
-                    "Eseguire il servizio come amministratore abilita il giornale USN.",
+                    "Eseguire il servizio come amministratore abilita il giornale USN. Verrà ritentato al prossimo scan.",
                     volume.Id,
                     ct);
             }
+        }
+        else
+        {
+            volume.ScanEngine = VolumeScanEngine.Enumeration;
         }
 
         var filters = await ResolveRootFiltersAsync(volume, roots, settings, ct);

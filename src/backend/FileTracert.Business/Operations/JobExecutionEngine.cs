@@ -18,10 +18,19 @@ namespace FileTracert.Business.Operations;
 /// </summary>
 public sealed class JobExecutionEngine
 {
+    /// <summary>
+    /// Minimum wall-clock gap between two <c>BytesCopied</c>/<c>BytesProcessed</c> persists
+    /// during a single file's copy. Bounds DB writes to ~1/sec regardless of file size or
+    /// buffer count, instead of either 0 (silent until the whole item finishes) or one
+    /// write per 80 KB buffer (thousands of writes on a multi-GB file).
+    /// </summary>
+    private static readonly TimeSpan ProgressSaveInterval = TimeSpan.FromSeconds(1);
+
     private readonly FileTracertDbContext _db;
     private readonly IFileMover _mover;
     private readonly ISpaceLedger _ledger;
     private readonly IndexUpdater _indexUpdater;
+    private readonly TimeProvider _timeProvider;
     private readonly ILogger<JobExecutionEngine> _logger;
 
     public JobExecutionEngine(
@@ -29,12 +38,14 @@ public sealed class JobExecutionEngine
         IFileMover mover,
         ISpaceLedger ledger,
         IndexUpdater indexUpdater,
+        TimeProvider timeProvider,
         ILogger<JobExecutionEngine> logger)
     {
         _db = db;
         _mover = mover;
         _ledger = ledger;
         _indexUpdater = indexUpdater;
+        _timeProvider = timeProvider;
         _logger = logger;
     }
 
@@ -209,10 +220,16 @@ public sealed class JobExecutionEngine
                 item.State = JobItemState.Pending;
                 item.BytesCopied = 0;
             }
-            await _db.SaveChangesAsync(ct);
             _logger.LogInformation(
                 "Job {Id}: reset {Count} interrupted item(s) to Pending for re-copy.", job.Id, interrupted.Count);
         }
+
+        // Idempotent progress: rebuild the job counter from the items' real states instead of
+        // trusting the persisted accumulator. A pre-crash live tick may have counted partial
+        // bytes of an item that was just reset above — keeping them and re-copying the item
+        // would double-count and push the progress past 100%.
+        job.BytesProcessed = CompletedItemBytes(job);
+        await _db.SaveChangesAsync(ct);
 
         foreach (var item in job.Items.Where(i => i.State == JobItemState.Pending))
         {
@@ -228,19 +245,42 @@ public sealed class JobExecutionEngine
             item.State = JobItemState.Copying;
             await _db.SaveChangesAsync(ct);
 
-            // IProgress tick: update BytesCopied in memory (no DB write per tick to avoid thrashing).
-            var progress = new Progress<long>(bytes => item.BytesCopied = bytes);
+            // Baseline = bytes of items already completed (derived from their states, never the
+            // raw accumulator); this item's live BytesCopied goes on top for a job-level total
+            // that updates during the copy, not only when the whole item completes.
+            var bytesProcessedBeforeThisItem = CompletedItemBytes(job);
+            var lastSaveTimestamp = _timeProvider.GetTimestamp();
 
-            await _mover.CopyFileAsync(srcGuid, item.SourceRelativePath, tgtGuid, partialRel, progress, ct);
+            async Task PersistProgressAsync(long bytesCopied, CancellationToken tickCt)
+            {
+                item.BytesCopied = bytesCopied;
+                if (_timeProvider.GetElapsedTime(lastSaveTimestamp) < ProgressSaveInterval)
+                    return;
+                lastSaveTimestamp = _timeProvider.GetTimestamp();
+                job.BytesProcessed = bytesProcessedBeforeThisItem + bytesCopied;
+                await _db.SaveChangesAsync(tickCt);
+            }
+
+            await _mover.CopyFileAsync(srcGuid, item.SourceRelativePath, tgtGuid, partialRel, PersistProgressAsync, ct);
 
             item.BytesCopied = item.SizeBytes;
             item.State = JobItemState.Copied;
-            job.BytesProcessed += item.SizeBytes;
+            job.BytesProcessed = CompletedItemBytes(job);
             await _db.SaveChangesAsync(ct);
 
             _logger.LogDebug("Job {Id}: copied '{Src}'.", job.Id, item.SourceRelativePath);
         }
     }
+
+    /// <summary>
+    /// Bytes of items whose copy is complete, derived from item states. The single source of
+    /// truth for <see cref="OperationJob.BytesProcessed"/>: recomputing (instead of accumulating)
+    /// keeps the progress idempotent across crash/resume — 100% means 100%.
+    /// </summary>
+    private static long CompletedItemBytes(OperationJob job) =>
+        job.Items
+            .Where(i => i.State is JobItemState.Copied or JobItemState.Verified or JobItemState.Done)
+            .Sum(i => i.SizeBytes);
 
     // ── verify + finalize phase ───────────────────────────────────────────────
 

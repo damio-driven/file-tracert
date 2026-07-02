@@ -19,12 +19,16 @@ public interface IFileMover
 
     /// <summary>
     /// Copies a single file cross-volume, writing to <paramref name="destPartialRel"/>
-    /// (a <c>.fadit-partial</c> temp path). Reports bytes-copied via <paramref name="progress"/>.
+    /// (a <c>.fadit-partial</c> temp path). <paramref name="onProgress"/> is awaited inline
+    /// after each buffer write (not fire-and-forget like <see cref="IProgress{T}"/>, which
+    /// posts through a captured <see cref="SynchronizationContext"/>/thread pool and would
+    /// race the caller's own DB writes) — this lets the caller safely persist bytes-copied
+    /// to a non-thread-safe resource such as an EF <c>DbContext</c> from the same async flow.
     /// Cancellation is honoured; the partial file is left on disk for possible resume.
     /// </summary>
     Task CopyFileAsync(string srcVolGuid, string srcRel,
                        string destVolGuid, string destPartialRel,
-                       IProgress<long>? progress, CancellationToken ct);
+                       Func<long, CancellationToken, Task>? onProgress, CancellationToken ct);
 
     /// <summary>
     /// Returns <c>true</c> when the two files are identical in size (and optionally SHA-256 hash).

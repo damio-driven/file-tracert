@@ -76,7 +76,7 @@ public sealed class JobCancellationTests : IDisposable
     {
         var db = _harness.CreateContext();
         var indexUpdater = new IndexUpdater(db, new FakeFileSearchIndex(), NullLogger<IndexUpdater>.Instance);
-        return new JobExecutionEngine(db, mover, NoopLedger(), indexUpdater, NullLogger<JobExecutionEngine>.Instance);
+        return new JobExecutionEngine(db, mover, NoopLedger(), indexUpdater, TimeProvider.System, NullLogger<JobExecutionEngine>.Instance);
     }
 
     private QueueService MakeQueue() =>
@@ -167,7 +167,7 @@ public sealed class JobCancellationTests : IDisposable
         public void CreateFolder(string v, string r) => _inner.CreateFolder(v, r);
         public void RenameIntraVolume(string v, string r, string n) => _inner.RenameIntraVolume(v, r, n);
         public void MoveIntraVolume(string v, string s, string d) => _inner.MoveIntraVolume(v, s, d);
-        public Task CopyFileAsync(string sv, string sr, string dv, string dpr, IProgress<long>? p, CancellationToken ct)
+        public Task CopyFileAsync(string sv, string sr, string dv, string dpr, Func<long, CancellationToken, Task>? p, CancellationToken ct)
             => _inner.CopyFileAsync(sv, sr, dv, dpr, p, ct);
         public void FinalizePartial(string v, string p, string f) => _inner.FinalizePartial(v, p, f);
         public void DeleteToRecycleBin(string v, string r) => _inner.DeleteToRecycleBin(v, r);

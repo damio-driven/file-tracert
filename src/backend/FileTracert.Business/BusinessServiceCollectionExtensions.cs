@@ -40,6 +40,9 @@ public static class BusinessServiceCollectionExtensions
         // Execution engine + index updater are scoped: resolved per job execution.
         services.AddScoped<IndexUpdater>();
         services.AddScoped<JobExecutionEngine>();
+
+        // Real wall clock for the engine's copy-progress throttle; tests substitute a fake.
+        services.AddSingleton(TimeProvider.System);
         return services;
     }
 }

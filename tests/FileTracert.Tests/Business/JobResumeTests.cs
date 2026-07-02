@@ -71,7 +71,7 @@ public sealed class JobResumeTests : IDisposable
 
         var db = _harness.CreateContext();
         var indexUpdater = new IndexUpdater(db, new FakeFileSearchIndex(), NullLogger<IndexUpdater>.Instance);
-        return new JobExecutionEngine(db, _mover, ledger, indexUpdater, NullLogger<JobExecutionEngine>.Instance);
+        return new JobExecutionEngine(db, _mover, ledger, indexUpdater, TimeProvider.System, NullLogger<JobExecutionEngine>.Instance);
     }
 
     [Fact]
@@ -127,5 +127,77 @@ public sealed class JobResumeTests : IDisposable
         File.Exists(Abs(dstRel)).Should().BeTrue();
         File.ReadAllText(Abs(dstRel)).Should().Be(content);
         File.Exists(Abs(partialRel)).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Resume_rebuilds_BytesProcessed_from_item_states_so_progress_never_exceeds_total()
+    {
+        // MoveFolder with two items. Item1 fully copied before the crash. Item2 was interrupted
+        // mid-copy AFTER a live progress tick persisted its partial bytes into job.BytesProcessed
+        // (10 done + 4 partial = 14). The resume resets item2 and re-copies its full 16 bytes:
+        // an accumulating counter would end at 14 + 16 = 30 > TotalBytes 26 (progress over 100%).
+        const string content1 = "0123456789";       // 10 bytes — already copied
+        const string content2 = "the real content";  // 16 bytes — interrupted
+        var src1 = R("src", "one.txt");
+        var src2 = R("src", "two.txt");
+        var dst1 = R("dst", "one.txt");
+        var dst2 = R("dst", "two.txt");
+
+        Directory.CreateDirectory(Abs(R("src")));
+        File.WriteAllText(Abs(src1), content1);
+        File.WriteAllText(Abs(src2), content2);
+        Directory.CreateDirectory(Abs(R("dst")));
+        File.WriteAllText(Abs(dst1 + ".fadit-partial"), content1);   // item1: copy finished
+        File.WriteAllText(Abs(dst2 + ".fadit-partial"), "half");     // item2: orphan partial
+
+        long totalBytes = content1.Length + content2.Length;
+
+        int jobId;
+        using (var db = _harness.CreateContext())
+        {
+            db.Volumes.Add(new Volume
+            {
+                Id = 1, VolumeGuid = _volumeGuid, FileSystem = "NTFS",
+                FreeBytesLastKnown = 1_000_000, IsOnline = true,
+            });
+
+            var job = new OperationJob
+            {
+                Id = 1, Type = JobType.MoveFolder, State = JobState.Copying,
+                IsIntraVolume = false, SourceVolumeId = 1, TargetVolumeId = 1,
+                TargetRelativePath = R("dst"), TotalBytes = totalBytes, RequiredBytesTarget = totalBytes,
+                BytesProcessed = content1.Length + 4, // 10 done + 4 live-ticked from item2's aborted copy
+                SequenceOrder = 1, CreatedUtc = DateTime.UtcNow, UpdatedUtc = DateTime.UtcNow,
+            };
+            job.Items.Add(new OperationJobItem
+            {
+                SourceRelativePath = src1, TargetRelativePath = dst1,
+                SizeBytes = content1.Length, State = JobItemState.Copied,
+                TempPath = dst1 + ".fadit-partial", BytesCopied = content1.Length,
+                CreatedUtc = DateTime.UtcNow, UpdatedUtc = DateTime.UtcNow,
+            });
+            job.Items.Add(new OperationJobItem
+            {
+                SourceRelativePath = src2, TargetRelativePath = dst2,
+                SizeBytes = content2.Length, State = JobItemState.Copying,
+                TempPath = dst2 + ".fadit-partial", BytesCopied = 4,
+                CreatedUtc = DateTime.UtcNow, UpdatedUtc = DateTime.UtcNow,
+            });
+            db.OperationJobs.Add(job);
+            db.SaveChanges();
+            jobId = job.Id;
+        }
+
+        await MakeEngine().ExecuteJobAsync(jobId, CancellationToken.None);
+
+        using var check = _harness.CreateContext();
+        var final = await check.OperationJobs.AsNoTracking().SingleAsync(j => j.Id == jobId);
+
+        final.State.Should().Be(JobState.Completed);
+        // Idempotent progress: exactly 100%, never beyond.
+        final.BytesProcessed.Should().Be(totalBytes);
+
+        File.ReadAllText(Abs(dst1)).Should().Be(content1);
+        File.ReadAllText(Abs(dst2)).Should().Be(content2);
     }
 }

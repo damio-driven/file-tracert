@@ -52,7 +52,7 @@ internal sealed class Win32FileMover : IFileMover
 
     public async Task CopyFileAsync(string srcVolGuid, string srcRel,
                                      string destVolGuid, string destPartialRel,
-                                     IProgress<long>? progress, CancellationToken ct)
+                                     Func<long, CancellationToken, Task>? onProgress, CancellationToken ct)
     {
         var src = Resolve(srcVolGuid, srcRel);
         var dest = Resolve(destVolGuid, destPartialRel);
@@ -73,7 +73,8 @@ internal sealed class Win32FileMover : IFileMover
         {
             await dstStream.WriteAsync(buf.AsMemory(0, read), ct);
             totalCopied += read;
-            progress?.Report(totalCopied);
+            if (onProgress is not null)
+                await onProgress(totalCopied, ct);
         }
     }
 

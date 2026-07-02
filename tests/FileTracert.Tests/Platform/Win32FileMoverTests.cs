@@ -173,9 +173,9 @@ public class Win32FileMoverTests : IDisposable
         WriteFile(srcRel, "copy content");
 
         long lastProgress = 0;
-        var progress = new Progress<long>(b => lastProgress = b);
+        Task OnProgress(long b, CancellationToken _) { lastProgress = b; return Task.CompletedTask; }
 
-        await _mover.CopyFileAsync(_volumeGuid, srcRel, _volumeGuid, dstPartial, progress, CancellationToken.None);
+        await _mover.CopyFileAsync(_volumeGuid, srcRel, _volumeGuid, dstPartial, OnProgress, CancellationToken.None);
 
         File.Exists(Abs(dstPartial)).Should().BeTrue();
         File.ReadAllText(Abs(dstPartial)).Should().Be("copy content");
@@ -190,12 +190,12 @@ public class Win32FileMoverTests : IDisposable
         File.WriteAllBytes(Abs(srcRel), new byte[200 * 1024]);
 
         var progressValues = new List<long>();
-        var progress = new Progress<long>(b => progressValues.Add(b));
+        Task OnProgress(long b, CancellationToken _) { progressValues.Add(b); return Task.CompletedTask; }
 
-        await _mover.CopyFileAsync(_volumeGuid, srcRel, _volumeGuid, dstPartial, progress, CancellationToken.None);
+        await _mover.CopyFileAsync(_volumeGuid, srcRel, _volumeGuid, dstPartial, OnProgress, CancellationToken.None);
 
-        // Allow progress callbacks to flush (Progress<T> posts to thread pool)
-        await Task.Delay(50);
+        // onProgress is awaited inline (not posted to a thread pool like IProgress<T>), so every
+        // tick is already applied by the time CopyFileAsync returns — no flush delay needed.
         progressValues.Should().NotBeEmpty();
         progressValues.Last().Should().Be(200 * 1024);
     }

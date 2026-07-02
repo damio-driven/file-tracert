@@ -143,7 +143,7 @@ public sealed class ScanServiceTests
     }
 
     [Fact]
-    public async Task Ntfs_without_journal_falls_back_to_enumeration_and_persists_engine()
+    public async Task Ntfs_without_journal_falls_back_to_enumeration_for_this_scan()
     {
         using var harness = new SqliteInMemoryContext();
         var volumeId = Seed(harness, VolumeScanEngine.UsnJournal, "NTFS", ["jpg"]);
@@ -169,7 +169,9 @@ public sealed class ScanServiceTests
         await using var read = harness.CreateContext();
         var volume = await read.Volumes.SingleAsync();
 
-        // Engine flipped to Enumeration and persisted, so future cycles don't retry USN.
+        // Engine recorded as Enumeration for THIS scan (what was actually used) — but
+        // this is not a one-way trap: the next scan re-attempts USN regardless of this
+        // value (see Ntfs_stuck_on_enumeration_from_a_past_failure_recovers_to_usn_once_journal_works).
         volume.ScanEngine.Should().Be(VolumeScanEngine.Enumeration);
         volume.LastFullScanUtc.Should().NotBeNull();
         volume.LastUsn.Should().BeNull();
@@ -180,6 +182,42 @@ public sealed class ScanServiceTests
         // Resilience, not silence: the degraded path raised a user-visible notification.
         notifications.Published.Should().ContainSingle()
             .Which.Severity.Should().Be(NotificationSeverity.Warning);
+    }
+
+    [Fact]
+    public async Task Ntfs_stuck_on_enumeration_from_a_past_failure_recovers_to_usn_once_journal_works()
+    {
+        using var harness = new SqliteInMemoryContext();
+        // Simulates the exact state a prior USN failure leaves behind (e.g. the service
+        // wasn't elevated on an earlier run): NTFS volume, but ScanEngine persisted as
+        // Enumeration. The engine choice must be re-derived from the filesystem every
+        // scan, not trusted from this stale value, or it would never recover even after
+        // the real problem (elevation) is fixed.
+        var volumeId = Seed(harness, VolumeScanEngine.Enumeration, "NTFS", ["pdf"]);
+
+        var usnEntries = new List<UsnEntry>
+        {
+            new(100, 5, "Docs", @"Docs", true, null, FileAttributes.Directory, 7),
+            new(101, 100, "r.pdf", @"Docs\r.pdf", false, null, FileAttributes.Normal, 8),
+        };
+        var meta = new Dictionary<string, FileMetadata> { [@"Docs\r.pdf"] = new FileMetadata(1234, T, T) };
+
+        await using (var ctx = harness.CreateContext())
+        {
+            var sut = Build(harness, ctx,
+                new FakeVolumeProbe(ProbedFor("NTFS")),
+                new FakeUsnReader(usnEntries, nextUsn: 999), // journal works now
+                new FakeDirectoryEnumerator([]),
+                new FakeFileMetadataReader(meta));
+            await sut.ScanVolumeAsync(volumeId, CancellationToken.None);
+        }
+
+        await using var read = harness.CreateContext();
+        var volume = await read.Volumes.SingleAsync();
+
+        volume.ScanEngine.Should().Be(VolumeScanEngine.UsnJournal);
+        volume.LastUsn.Should().Be(999);
+        (await read.Files.Select(f => f.Name).ToListAsync()).Should().Equal("r.pdf");
     }
 
     [Fact]

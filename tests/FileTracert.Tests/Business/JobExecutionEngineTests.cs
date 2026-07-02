@@ -9,6 +9,7 @@ using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
+using NSubstitute.Core;
 using NSubstitute.ExceptionExtensions;
 
 namespace FileTracert.Tests.Business;
@@ -109,7 +110,7 @@ public sealed class JobExecutionEngineTests : IDisposable
         return job.Id;
     }
 
-    private JobExecutionEngine MakeEngine(IFileMover mover, bool feasible = true)
+    private JobExecutionEngine MakeEngine(IFileMover mover, bool feasible = true, TimeProvider? timeProvider = null)
     {
         var ledger = Substitute.For<ISpaceLedger>();
         var feasibilityResult = feasible
@@ -123,7 +124,8 @@ public sealed class JobExecutionEngineTests : IDisposable
         var fts = new FakeFileSearchIndex();
         var indexUpdater = new IndexUpdater(db, fts, NullLogger<IndexUpdater>.Instance);
 
-        return new JobExecutionEngine(db, mover, ledger, indexUpdater, NullLogger<JobExecutionEngine>.Instance);
+        return new JobExecutionEngine(
+            db, mover, ledger, indexUpdater, timeProvider ?? TimeProvider.System, NullLogger<JobExecutionEngine>.Instance);
     }
 
     private IFileMover DefaultMover()
@@ -132,7 +134,7 @@ public sealed class JobExecutionEngineTests : IDisposable
         mover.CopyFileAsync(
                 Arg.Any<string>(), Arg.Any<string>(),
                 Arg.Any<string>(), Arg.Any<string>(),
-                Arg.Any<IProgress<long>>(), Arg.Any<CancellationToken>())
+                Arg.Any<Func<long, CancellationToken, Task>>(), Arg.Any<CancellationToken>())
              .Returns(Task.CompletedTask);
         mover.Verify(
                 Arg.Any<string>(), Arg.Any<string>(),
@@ -140,6 +142,14 @@ public sealed class JobExecutionEngineTests : IDisposable
                 Arg.Any<bool>())
              .Returns(true);
         return mover;
+    }
+
+    /// <summary>Manually-advanced clock for deterministic throttle testing (no real Task.Delay).</summary>
+    private sealed class ManualTimeProvider : TimeProvider
+    {
+        private long _timestamp;
+        public override long GetTimestamp() => _timestamp;
+        public void Advance(TimeSpan by) => _timestamp += by.Ticks;
     }
 
     private async Task<JobState> ReadState(int jobId)
@@ -268,7 +278,7 @@ public sealed class JobExecutionEngineTests : IDisposable
         mover.Received(1).CopyFileAsync(
             Vol1Guid, @"Docs\report.txt",
             Vol2Guid, @"Backup\report.txt.fadit-partial",
-            Arg.Any<IProgress<long>>(), Arg.Any<CancellationToken>());
+            Arg.Any<Func<long, CancellationToken, Task>>(), Arg.Any<CancellationToken>());
 #pragma warning restore CS4014
         mover.Received(1).Verify(
             Vol1Guid, @"Docs\report.txt",
@@ -277,6 +287,67 @@ public sealed class JobExecutionEngineTests : IDisposable
         mover.Received(1).FinalizePartial(
             Vol2Guid, @"Backup\report.txt.fadit-partial", @"Backup\report.txt");
         mover.Received(1).DeleteToRecycleBin(Vol1Guid, @"Docs\report.txt");
+    }
+
+    // ── MoveFile cross-volume — progress persists mid-copy, not only at completion ────
+
+    [Fact]
+    public async Task MoveFile_cross_volume_persists_BytesProcessed_mid_copy_once_throttle_interval_elapses()
+    {
+        var timeProvider = new ManualTimeProvider();
+
+        int jobId = SeedJob(
+            JobType.MoveFile, JobState.Pending, intraVolume: false,
+            srcVol: Vol1Id, tgtVol: Vol2Id, tgtPath: @"Backup\bigfile.bin", totalBytes: 1_000_000,
+            items:
+            [
+                new OperationJobItem
+                {
+                    SourceRelativePath = @"Docs\bigfile.bin",
+                    TargetRelativePath = @"Backup\bigfile.bin",
+                    State = JobItemState.Pending,
+                    SizeBytes = 1_000_000,
+                    CreatedUtc = DateTime.UtcNow,
+                    UpdatedUtc = DateTime.UtcNow,
+                },
+            ]);
+
+        long? bytesProcessedMidCopy = null;
+
+        async Task RunProgressTicksAsync(CallInfo callInfo)
+        {
+            var onProgress = callInfo.ArgAt<Func<long, CancellationToken, Task>>(4);
+            var ct = callInfo.ArgAt<CancellationToken>(5);
+
+            await onProgress(400_000, ct);                        // 0.0s elapsed — must NOT persist yet
+            timeProvider.Advance(TimeSpan.FromMilliseconds(500));
+            await onProgress(600_000, ct);                        // 0.5s elapsed — must NOT persist yet
+            timeProvider.Advance(TimeSpan.FromMilliseconds(600));  // 1.1s elapsed — past the throttle
+            await onProgress(900_000, ct);                        // must persist here, before the item finishes
+
+            // Read via a separate context: proves the value is actually committed to the DB at
+            // this point in the copy, not just held on the tracked entity in memory.
+            await using var probe = _harness.CreateContext();
+            bytesProcessedMidCopy = await probe.OperationJobs
+                .Where(j => j.Id == jobId)
+                .Select(j => j.BytesProcessed)
+                .SingleAsync();
+        }
+
+        var mover = Substitute.For<IFileMover>();
+        mover.Verify(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<bool>())
+             .Returns(true);
+        mover.CopyFileAsync(
+                Arg.Any<string>(), Arg.Any<string>(),
+                Arg.Any<string>(), Arg.Any<string>(),
+                Arg.Any<Func<long, CancellationToken, Task>>(), Arg.Any<CancellationToken>())
+             .Returns(callInfo => RunProgressTicksAsync(callInfo));
+
+        await MakeEngine(mover, feasible: true, timeProvider).ExecuteJobAsync(jobId, None);
+
+        bytesProcessedMidCopy.Should().Be(900_000,
+            "the 3rd tick crossed the 1s throttle and should have persisted mid-copy, before the item finished");
+        (await ReadState(jobId)).Should().Be(JobState.Completed);
     }
 
     // ── MoveFile cross-volume — hard space check fails ────────────────────────
@@ -309,7 +380,7 @@ public sealed class JobExecutionEngineTests : IDisposable
         mover.DidNotReceive().CopyFileAsync(
             Arg.Any<string>(), Arg.Any<string>(),
             Arg.Any<string>(), Arg.Any<string>(),
-            Arg.Any<IProgress<long>>(), Arg.Any<CancellationToken>());
+            Arg.Any<Func<long, CancellationToken, Task>>(), Arg.Any<CancellationToken>());
 #pragma warning restore CS4014
     }
 
