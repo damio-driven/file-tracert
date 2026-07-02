@@ -1,7 +1,7 @@
 import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Router } from '@angular/router';
-import { of } from 'rxjs';
+import { of, throwError } from 'rxjs';
 import { describe, expect, it, vi } from 'vitest';
 
 import { CatalogApi } from '../../../core/api/catalog-api.service';
@@ -66,6 +66,7 @@ function setup() {
     crumbs: { (): { id: number; name: string }[]; set(v: { id: number; name: string }[]): void };
     newFolderSegments: { (): string[] };
     dirChildren: { (): CatalogDirDto[] };
+    error: { (): string | null };
     newFolderName: string;
     openDirectory(dir: CatalogDirDto): Promise<void>;
     navigateToRoot(): Promise<void>;
@@ -172,5 +173,18 @@ describe('OperationPicker target path', () => {
 
     expect(preview).toHaveBeenCalledTimes(1);
     expect(preview.mock.calls[0][0].targetRelativePath).toBe('Archivio');
+  });
+
+  it('a stale fetch error is cleared once a subsequent navigation succeeds', async () => {
+    const { children, cmp } = setup();
+    children.mockImplementationOnce(() => throwError(() => new Error('boom')));
+
+    await cmp.openDirectory(dir(10, 'Documenti'));
+    expect(cmp.error()).toBe('boom');
+
+    await cmp.navigateToRoot();
+
+    expect(cmp.error()).toBeNull();
+    expect(cmp.dirChildren()).toEqual([dir(10, 'Documenti'), dir(11, 'Archivio')]);
   });
 });

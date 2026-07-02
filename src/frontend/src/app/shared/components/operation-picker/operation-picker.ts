@@ -140,6 +140,7 @@ export class OperationPicker implements OnInit {
       return;
     }
     this.loadingDirs.set(true);
+    this.error.set(null);
     try {
       const result = await firstValueFrom(this.catalogApi.children(this.targetVolumeId, dirId));
       this.dirChildren.set(result.directories);
