@@ -66,11 +66,55 @@ public sealed class ManagedDirectoryEnumeratorTests : IDisposable
             .Which.Should().Be(Path.Combine("sub", "b.txt"));
     }
 
+    [Fact]
+    public void Enumerate_does_not_descend_into_reparse_points()
+    {
+        // Junction "gate" → "sub". Following it duplicates entries; a junction into an
+        // ancestor (like AppData\Local\Application Data) loops forever. The enumerator
+        // must yield the junction itself as a directory but never walk through it.
+        var junction = Path.Combine(_root, "gate");
+        CreateJunction(junction, Path.Combine(_root, "sub"));
+
+        var entries = _sut.Enumerate(_root, string.Empty, CancellationToken.None).ToList();
+
+        entries.Select(e => e.RelativePath)
+            .Should()
+            .BeEquivalentTo("a.txt", "sub", Path.Combine("sub", "b.txt"), "gate");
+    }
+
+    /// <summary>Creates an NTFS junction (no elevation required, unlike symlinks).</summary>
+    private static void CreateJunction(string junctionPath, string targetPath)
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo("cmd.exe",
+            $"/c mklink /J \"{junctionPath}\" \"{targetPath}\"")
+        {
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        using var proc = System.Diagnostics.Process.Start(psi)!;
+        proc.WaitForExit();
+        if (proc.ExitCode != 0)
+            throw new InvalidOperationException($"mklink /J failed: {proc.StandardError.ReadToEnd()}");
+    }
+
     public void Dispose()
     {
-        if (Directory.Exists(_root))
+        if (!Directory.Exists(_root))
         {
-            Directory.Delete(_root, recursive: true);
+            return;
         }
+
+        // Junctions must be unlinked non-recursively BEFORE the recursive delete,
+        // which cannot traverse them.
+        foreach (var dir in Directory.GetDirectories(_root, "*", SearchOption.AllDirectories))
+        {
+            if (File.GetAttributes(dir).HasFlag(FileAttributes.ReparsePoint))
+            {
+                Directory.Delete(dir, recursive: false);
+            }
+        }
+
+        Directory.Delete(_root, recursive: true);
     }
 }

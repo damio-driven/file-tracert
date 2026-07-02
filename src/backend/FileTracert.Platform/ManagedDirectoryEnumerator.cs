@@ -40,7 +40,10 @@ internal sealed class ManagedDirectoryEnumerator : IDirectoryEnumerator
                     continue;
                 }
 
-                if (entry.IsDirectory)
+                // Never walk THROUGH a reparse point (junction/symlink): the entry itself is
+                // yielded, but descending would duplicate content that lives elsewhere and a
+                // junction into an ancestor (e.g. AppData\Local\Application Data) loops forever.
+                if (entry.IsDirectory && !entry.Attributes.HasFlag(FileAttributes.ReparsePoint))
                 {
                     stack.Push(path);
                 }
