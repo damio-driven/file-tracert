@@ -48,7 +48,7 @@
         <!-- Target volume -->
         <div class="picker-field">
           <label class="picker-label" for="picker-vol">Volume destinazione</label>
-          <select id="picker-vol" class="picker-select" [(ngModel)]="targetVolumeId" (ngModelChange)="preview.set(null)">
+          <select id="picker-vol" class="picker-select" [(ngModel)]="targetVolumeId" (ngModelChange)="onVolumeChange()">
             <option [ngValue]="null" disabled>Scegli un volume…</option>
             @for (v of volumes.catalogable(); track v.id) {
               <option [ngValue]="v.id">
@@ -62,19 +62,108 @@
 
         <!-- Target folder -->
         <div class="picker-field">
-          <label class="picker-label" for="picker-path">Cartella destinazione</label>
-          <input
-            id="picker-path"
-            class="picker-input mono"
-            type="text"
-            placeholder="es. Documenti\Foto 2025"
-            [(ngModel)]="targetFolder"
-            (ngModelChange)="preview.set(null)"
-            autocomplete="off"
-            spellcheck="false"
-          />
+          <label class="picker-label" id="picker-folder-label">Cartella destinazione</label>
+
+          @if (targetVolume && !targetVolume.isOnline) {
+            <div class="folder-offline-notice">
+              <span class="offline-icon">⚠</span>
+              <span>
+                Struttura da ultima scansione · dati aggiornati al
+                <span class="mono">{{ targetVolume.lastSeenUtc | relativeTime }}</span>
+              </span>
+            </div>
+          }
+
+          <div class="folder-picker" role="group" aria-labelledby="picker-folder-label">
+            <nav class="folder-crumbs" aria-label="Percorso cartella destinazione">
+              <button
+                type="button"
+                class="folder-crumb folder-crumb--root"
+                [class.active]="crumbs().length === 0 && newFolderSegments().length === 0"
+                (click)="navigateToRoot()"
+              >
+                Radice
+              </button>
+              @for (c of crumbs(); track c.id; let i = $index) {
+                <span class="folder-crumb-sep" aria-hidden="true">›</span>
+                <button
+                  type="button"
+                  class="folder-crumb"
+                  [class.active]="i === crumbs().length - 1 && newFolderSegments().length === 0"
+                  (click)="navigateToCrumb(i)"
+                >
+                  {{ c.name }}
+                </button>
+              }
+              @for (seg of newFolderSegments(); track $index; let i = $index) {
+                <span class="folder-crumb-sep" aria-hidden="true">›</span>
+                <button
+                  type="button"
+                  class="folder-crumb folder-crumb--new"
+                  [class.active]="i === newFolderSegments().length - 1"
+                  (click)="navigateToVirtualCrumb(i)"
+                >
+                  {{ seg }}
+                </button>
+              }
+            </nav>
+
+            <div class="folder-list">
+              @if (newFolderSegments().length > 0) {
+                <div class="folder-empty txt-faint">
+                  Cartella nuova — verrà creata al momento dello spostamento.
+                </div>
+              } @else if (loadingDirs()) {
+                <div class="folder-empty txt-faint">Caricamento…</div>
+              } @else if (dirChildren().length === 0) {
+                <div class="folder-empty txt-faint">Cartella vuota</div>
+              } @else {
+                @for (dir of dirChildren(); track dir.id) {
+                  <button
+                    type="button"
+                    class="folder-row"
+                    [title]="dir.materializedPath"
+                    (click)="openDirectory(dir)"
+                  >
+                    <span class="folder-row-icon" aria-hidden="true">▤</span>
+                    <span class="folder-row-name" [title]="dir.name">{{ dir.name }}</span>
+                    <span class="folder-row-meta mono txt-faint">
+                      @if (dir.childDirectoryCount > 0) {
+                        <span>{{ dir.childDirectoryCount }} cartelle</span>
+                      }
+                      @if (dir.fileCount > 0) {
+                        <span>{{ dir.fileCount }} file</span>
+                      }
+                    </span>
+                  </button>
+                }
+              }
+            </div>
+
+            @if (newFolderInputOpen()) {
+              <div class="new-folder-row">
+                <input
+                  class="new-folder-input mono"
+                  type="text"
+                  placeholder="Nome cartella"
+                  [(ngModel)]="newFolderName"
+                  (keydown.enter)="confirmNewFolder()"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+                <button type="button" class="ft-btn ft-btn--ghost" (click)="confirmNewFolder()">Crea</button>
+                <button type="button" class="ft-btn ft-btn--ghost" (click)="cancelNewFolder()">Annulla</button>
+              </div>
+            } @else {
+              <button type="button" class="new-folder-toggle" (click)="openNewFolderInput()">
+                + Nuova cartella
+              </button>
+            }
+          </div>
+
           <span class="picker-hint txt-faint">
-            Percorso relativo alla radice del volume. La cartella viene creata se non esiste.
+            Percorso: <span class="mono">{{ targetFolder || '(radice volume)' }}</span> ·
+            la cartella viene creata se non esiste.
           </span>
         </div>
 

@@ -5,17 +5,26 @@ import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
 
+import { CatalogApi } from '../../../core/api/catalog-api.service';
 import { QueueApi } from '../../../core/api/queue-api.service';
 import { VolumesStore } from '../../../features/volumes/volumes.store';
 import { BytesPipe } from '../../pipes/bytes.pipe';
+import { RelativeTimePipe } from '../../pipes/relative-time.pipe';
 import { FtPill } from '../ft-pill/ft-pill';
-import { FeasibilityResult, SelectedFile } from '../../../core/models/catalog.models';
+import {
+  CatalogDirDto, FeasibilityResult, SelectedFile, VolumeDto,
+} from '../../../core/models/catalog.models';
+
+interface FolderCrumb {
+  id: number;
+  name: string;
+}
 
 @Component({
   selector: 'ft-operation-picker',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [FormsModule, BytesPipe, FtPill],
+  imports: [FormsModule, BytesPipe, RelativeTimePipe, FtPill],
   templateUrl: './operation-picker.html',
   styleUrl: './operation-picker.scss',
 })
@@ -25,10 +34,17 @@ export class OperationPicker implements OnInit {
 
   protected readonly volumes = inject(VolumesStore);
   private readonly api = inject(QueueApi);
+  private readonly catalogApi = inject(CatalogApi);
   private readonly router = inject(Router);
 
   protected targetVolumeId: number | null = null;
-  protected targetFolder = '';
+
+  protected readonly crumbs = signal<FolderCrumb[]>([]);
+  protected readonly newFolderSegments = signal<string[]>([]);
+  protected readonly dirChildren = signal<CatalogDirDto[]>([]);
+  protected readonly loadingDirs = signal(false);
+  protected readonly newFolderInputOpen = signal(false);
+  protected newFolderName = '';
 
   protected readonly preview = signal<FeasibilityResult | null>(null);
   protected readonly previewing = signal(false);
@@ -40,21 +56,105 @@ export class OperationPicker implements OnInit {
   ngOnInit(): void {
     void this.volumes.loadList();
     const online = this.volumes.catalogable().find(v => v.isOnline);
-    if (online) this.targetVolumeId = online.id;
+    if (online) {
+      this.targetVolumeId = online.id;
+      void this.loadChildren(null);
+    }
   }
 
   protected get totalBytes(): number {
     return this.files().reduce((s, f) => s + f.sizeBytes, 0);
   }
 
+  protected get targetVolume(): VolumeDto | undefined {
+    return this.volumes.catalogable().find(v => v.id === this.targetVolumeId);
+  }
+
+  /** Real crumbs (existing folders) + virtual segments (not created yet), joined for the API. */
+  protected get targetFolder(): string {
+    return [...this.crumbs().map(c => c.name), ...this.newFolderSegments()].join('\\');
+  }
+
   protected get canSubmit(): boolean {
-    return !!this.targetVolumeId && this.targetFolder.trim().length > 0;
+    return this.targetVolumeId !== null;
+  }
+
+  protected async onVolumeChange(): Promise<void> {
+    this.preview.set(null);
+    this.crumbs.set([]);
+    this.newFolderSegments.set([]);
+    this.newFolderInputOpen.set(false);
+    await this.loadChildren(null);
+  }
+
+  protected async openDirectory(dir: CatalogDirDto): Promise<void> {
+    this.preview.set(null);
+    this.crumbs.update(c => [...c, { id: dir.id, name: dir.name }]);
+    await this.loadChildren(dir.id);
+  }
+
+  protected async navigateToRoot(): Promise<void> {
+    this.preview.set(null);
+    this.crumbs.set([]);
+    this.newFolderSegments.set([]);
+    await this.loadChildren(null);
+  }
+
+  protected async navigateToCrumb(index: number): Promise<void> {
+    this.preview.set(null);
+    const target = this.crumbs()[index];
+    this.crumbs.update(c => c.slice(0, index + 1));
+    this.newFolderSegments.set([]);
+    await this.loadChildren(target.id);
+  }
+
+  /** Virtual crumbs never hit the API — dropping the deeper ones is a pure client-side truncation. */
+  protected navigateToVirtualCrumb(index: number): void {
+    this.preview.set(null);
+    this.newFolderSegments.update(s => s.slice(0, index + 1));
+  }
+
+  protected openNewFolderInput(): void {
+    this.newFolderName = '';
+    this.newFolderInputOpen.set(true);
+  }
+
+  protected cancelNewFolder(): void {
+    this.newFolderInputOpen.set(false);
+    this.newFolderName = '';
+  }
+
+  protected confirmNewFolder(): void {
+    const name = this.newFolderName.trim();
+    if (!name) return;
+    this.preview.set(null);
+    this.newFolderSegments.update(s => [...s, name]);
+    this.dirChildren.set([]);
+    this.newFolderInputOpen.set(false);
+    this.newFolderName = '';
+  }
+
+  private async loadChildren(dirId: number | null): Promise<void> {
+    if (this.targetVolumeId === null || this.newFolderSegments().length > 0) {
+      this.dirChildren.set([]);
+      return;
+    }
+    this.loadingDirs.set(true);
+    try {
+      const result = await firstValueFrom(this.catalogApi.children(this.targetVolumeId, dirId));
+      this.dirChildren.set(result.directories);
+    } catch (e) {
+      this.error.set((e as Error).message);
+      this.dirChildren.set([]);
+    } finally {
+      this.loadingDirs.set(false);
+    }
   }
 
   protected async runPreview(): Promise<void> {
     if (!this.canSubmit) return;
     const first = this.files()[0];
-    const folder = this.targetFolder.trim();
+    const folder = this.targetFolder;
 
     this.previewing.set(true);
     this.preview.set(null);
@@ -79,7 +179,7 @@ export class OperationPicker implements OnInit {
 
   protected async enqueue(): Promise<void> {
     if (!this.canSubmit) return;
-    const folder = this.targetFolder.trim();
+    const folder = this.targetFolder;
 
     this.enqueueing.set(true);
     this.error.set(null);
