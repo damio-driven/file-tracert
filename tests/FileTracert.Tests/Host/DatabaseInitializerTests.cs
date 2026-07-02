@@ -59,6 +59,33 @@ public sealed class DatabaseInitializerTests : IDisposable
         ReadJournalMode().Should().Be("wal");
     }
 
+    [Fact]
+    public async Task Initialize_checkpoints_and_truncates_a_grown_wal()
+    {
+        await using var provider = BuildProvider(out _);
+        var initializer = provider.GetRequiredService<DatabaseInitializer>();
+        await initializer.InitializeAsync(CancellationToken.None);
+
+        // Grow the WAL: bulk-write without checkpointing.
+        await using (var db = provider.CreateScope().ServiceProvider.GetRequiredService<FileTracertDbContext>())
+        {
+            await db.Database.ExecuteSqlRawAsync("PRAGMA wal_autocheckpoint=0;");
+            var payload = new string('x', 4000);
+            for (int i = 0; i < 50; i++)
+            {
+                await db.Database.ExecuteSqlAsync(
+                    $"INSERT INTO Notifications (TimestampUtc, Severity, Source, Title, Message, IsRead, IsDismissed, CreatedUtc, UpdatedUtc) VALUES ('2026-01-01', 'Info', 'T', {"grow-" + i}, {payload}, 0, 0, '2026-01-01', '2026-01-01');");
+            }
+        }
+        var grownWal = new FileInfo(_dbPath + "-wal").Length;
+        grownWal.Should().BeGreaterThan(100_000);
+
+        // Re-init (as at service startup) must merge + truncate the WAL.
+        await initializer.InitializeAsync(CancellationToken.None);
+
+        new FileInfo(_dbPath + "-wal").Length.Should().BeLessThan(grownWal / 10);
+    }
+
     private string ReadJournalMode()
     {
         using var connection = new SqliteConnection(DatabaseLocation.ConnectionString(_dbPath));

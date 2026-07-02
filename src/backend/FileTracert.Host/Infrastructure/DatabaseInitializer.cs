@@ -48,6 +48,14 @@ public sealed class DatabaseInitializer
             // WAL is persistent in the file; running it every startup is cheap and idempotent.
             await db.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;", ct);
 
+            // Merge the WAL back into the main file and truncate it. Under constant read
+            // traffic passive auto-checkpoints can starve forever (observed: a 146 MB WAL
+            // never merged for days → every write slow, "database is locked" timeouts).
+            // Startup is the one moment with no concurrent readers, so force it here, and
+            // cap the WAL size going forward so auto-checkpoints keep it bounded.
+            await db.Database.ExecuteSqlRawAsync("PRAGMA wal_checkpoint(TRUNCATE);", ct);
+            await db.Database.ExecuteSqlRawAsync("PRAGMA journal_size_limit=67108864;", ct);
+
             var token = await EnsureSettingsTokenAsync(db, ct);
             _tokenAccessor.Set(token);
 
