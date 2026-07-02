@@ -13,11 +13,14 @@ public static class DataServiceCollectionExtensions
     public static IServiceCollection AddDataServices(this IServiceCollection services, string connectionString)
     {
         services.AddSingleton<AuditingSaveChangesInterceptor>();
+        services.AddSingleton<SqliteBusyTimeoutInterceptor>();
 
         services.AddDbContext<FileTracertDbContext>((sp, options) =>
             options
                 .UseSqlite(connectionString)
-                .AddInterceptors(sp.GetRequiredService<AuditingSaveChangesInterceptor>()));
+                .AddInterceptors(
+                    sp.GetRequiredService<AuditingSaveChangesInterceptor>(),
+                    sp.GetRequiredService<SqliteBusyTimeoutInterceptor>()));
 
         services.AddScoped<IBulkIndexWriter, BulkIndexWriter>();
         services.AddScoped<IFileSearchIndex, FileSearchIndex>();
