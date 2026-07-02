@@ -1,4 +1,5 @@
 using FileTracert.Contracts.Enums;
+using FileTracert.Contracts.Notifications;
 using FileTracert.Contracts.Operations;
 using FileTracert.Contracts.Platform;
 using FileTracert.Data;
@@ -30,6 +31,7 @@ public sealed class JobExecutionEngine
     private readonly IFileMover _mover;
     private readonly ISpaceLedger _ledger;
     private readonly IndexUpdater _indexUpdater;
+    private readonly INotificationPublisher _notifications;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<JobExecutionEngine> _logger;
 
@@ -38,6 +40,7 @@ public sealed class JobExecutionEngine
         IFileMover mover,
         ISpaceLedger ledger,
         IndexUpdater indexUpdater,
+        INotificationPublisher notifications,
         TimeProvider timeProvider,
         ILogger<JobExecutionEngine> logger)
     {
@@ -45,6 +48,7 @@ public sealed class JobExecutionEngine
         _mover = mover;
         _ledger = ledger;
         _indexUpdater = indexUpdater;
+        _notifications = notifications;
         _timeProvider = timeProvider;
         _logger = logger;
     }
@@ -398,6 +402,16 @@ public sealed class JobExecutionEngine
         job.ErrorMessage = message;
         await _db.SaveChangesAsync(ct);
         // Ledger reservation kept — the job may still execute once the blocker resolves.
+
+        // The engine runs in a BackgroundService: no API response can carry this to the
+        // user, so a block on a user-queued operation must land in Notifications (§9).
+        await _notifications.PublishAsync(
+            NotificationSeverity.Warning,
+            "Coda",
+            $"Operazione {job.Type} bloccata ({reason})",
+            message,
+            job.TargetVolumeId ?? job.SourceVolumeId,
+            ct);
     }
 
     private async Task SetFailedAsync(OperationJob job, string message, CancellationToken ct)
@@ -408,6 +422,16 @@ public sealed class JobExecutionEngine
         await _db.SaveChangesAsync(ct);
         await _ledger.ReleaseAsync(job.Id, ct);
         _logger.LogError("Job {Id} failed: {Msg}.", job.Id, message);
+
+        // Resilience, not silence: the processor moves on to the next job, but the
+        // failure of a user-queued operation must be visible in the UI bell.
+        await _notifications.PublishAsync(
+            NotificationSeverity.Error,
+            "Coda",
+            $"Operazione {job.Type} fallita",
+            message,
+            job.TargetVolumeId ?? job.SourceVolumeId,
+            ct);
     }
 
     // ── cancellation guards ───────────────────────────────────────────────────

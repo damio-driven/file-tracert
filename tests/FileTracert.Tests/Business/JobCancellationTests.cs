@@ -76,7 +76,9 @@ public sealed class JobCancellationTests : IDisposable
     {
         var db = _harness.CreateContext();
         var indexUpdater = new IndexUpdater(db, new FakeFileSearchIndex(), NullLogger<IndexUpdater>.Instance);
-        return new JobExecutionEngine(db, mover, NoopLedger(), indexUpdater, TimeProvider.System, NullLogger<JobExecutionEngine>.Instance);
+        var notifications = new FileTracert.Business.Notifications.NotificationService(db);
+        return new JobExecutionEngine(db, mover, NoopLedger(), indexUpdater, notifications,
+            TimeProvider.System, NullLogger<JobExecutionEngine>.Instance);
     }
 
     private QueueService MakeQueue() =>

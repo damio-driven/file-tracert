@@ -71,7 +71,9 @@ public sealed class JobResumeTests : IDisposable
 
         var db = _harness.CreateContext();
         var indexUpdater = new IndexUpdater(db, new FakeFileSearchIndex(), NullLogger<IndexUpdater>.Instance);
-        return new JobExecutionEngine(db, _mover, ledger, indexUpdater, TimeProvider.System, NullLogger<JobExecutionEngine>.Instance);
+        var notifications = new FileTracert.Business.Notifications.NotificationService(db);
+        return new JobExecutionEngine(db, _mover, ledger, indexUpdater, notifications,
+            TimeProvider.System, NullLogger<JobExecutionEngine>.Instance);
     }
 
     [Fact]

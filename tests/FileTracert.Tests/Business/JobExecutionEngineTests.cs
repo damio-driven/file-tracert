@@ -128,9 +128,11 @@ public sealed class JobExecutionEngineTests : IDisposable
         var db = _harness.CreateContext();
         var fts = new FakeFileSearchIndex();
         var indexUpdater = new IndexUpdater(db, fts, NullLogger<IndexUpdater>.Instance);
+        var notifications = new FileTracert.Business.Notifications.NotificationService(db);
 
         return new JobExecutionEngine(
-            db, mover, _ledger, indexUpdater, timeProvider ?? TimeProvider.System, NullLogger<JobExecutionEngine>.Instance);
+            db, mover, _ledger, indexUpdater, notifications,
+            timeProvider ?? TimeProvider.System, NullLogger<JobExecutionEngine>.Instance);
     }
 
     private void SetVolumeFreeBytes(int volumeId, long freeBytes)
@@ -435,6 +437,77 @@ public sealed class JobExecutionEngineTests : IDisposable
             "the job's own ledger reservation must be excluded from the execution-time re-check");
     }
 
+    // ── FIX #10 — job failures/blocks must surface in Notifications ───────────
+
+    [Fact]
+    public async Task Failed_job_writes_an_Error_notification_with_the_real_message()
+    {
+        var mover = DefaultMover();
+        mover.CopyFileAsync(
+                Arg.Any<string>(), Arg.Any<string>(),
+                Arg.Any<string>(), Arg.Any<string>(),
+                Arg.Any<Func<long, CancellationToken, Task>>(), Arg.Any<CancellationToken>())
+             .ThrowsAsync(new IOException("disk on fire"));
+
+        int jobId = SeedJob(
+            JobType.MoveFile, JobState.Pending, intraVolume: false,
+            srcVol: Vol1Id, tgtVol: Vol2Id, tgtPath: @"Backup\report.txt", totalBytes: 1_000,
+            items:
+            [
+                new OperationJobItem
+                {
+                    SourceRelativePath = @"Docs\report.txt",
+                    TargetRelativePath = @"Backup\report.txt",
+                    State = JobItemState.Pending,
+                    SizeBytes = 1_000,
+                    CreatedUtc = DateTime.UtcNow,
+                    UpdatedUtc = DateTime.UtcNow,
+                },
+            ]);
+
+        // Must not throw: the processor keeps going with the next job.
+        await MakeEngine(mover).ExecuteJobAsync(jobId, None);
+
+        (await ReadState(jobId)).Should().Be(JobState.Failed);
+
+        await using var db = _harness.CreateContext();
+        var notification = await db.Notifications.SingleAsync();
+        notification.Severity.Should().Be(NotificationSeverity.Error);
+        notification.Message.Should().Contain("disk on fire");
+        notification.VolumeId.Should().Be(Vol2Id);
+    }
+
+    [Fact]
+    public async Task Blocked_job_for_insufficient_space_writes_a_Warning_notification()
+    {
+        var mover = DefaultMover();
+        int jobId = SeedJob(
+            JobType.MoveFile, JobState.Pending, intraVolume: false,
+            srcVol: Vol1Id, tgtVol: Vol2Id, tgtPath: @"Backup\big.bin", totalBytes: 60_000,
+            items:
+            [
+                new OperationJobItem
+                {
+                    SourceRelativePath = @"Docs\big.bin",
+                    TargetRelativePath = @"Backup\big.bin",
+                    State = JobItemState.Pending,
+                    SizeBytes = 60_000,
+                    CreatedUtc = DateTime.UtcNow,
+                    UpdatedUtc = DateTime.UtcNow,
+                },
+            ]);
+
+        await MakeEngine(mover).ExecuteJobAsync(jobId, None);
+
+        (await ReadState(jobId)).Should().Be(JobState.Blocked);
+
+        await using var db = _harness.CreateContext();
+        var notification = await db.Notifications.SingleAsync();
+        notification.Severity.Should().Be(NotificationSeverity.Warning);
+        notification.Message.Should().Contain("Insufficient space");
+        notification.VolumeId.Should().Be(Vol2Id);
+    }
+
     // ── MoveFile cross-volume — name collision ────────────────────────────────
 
     [Fact]
@@ -465,5 +538,11 @@ public sealed class JobExecutionEngineTests : IDisposable
         (await ReadState(jobId)).Should().Be(JobState.Blocked);
         (await ReadBlockReason(jobId)).Should().Be(JobBlockReason.NameCollision);
         mover.DidNotReceive().DeleteToRecycleBin(Arg.Any<string>(), Arg.Any<string>());
+
+        // FIX #10: the block must surface in Notifications, not just in the log.
+        await using var db = _harness.CreateContext();
+        var notification = await db.Notifications.SingleAsync();
+        notification.Severity.Should().Be(NotificationSeverity.Warning);
+        notification.Message.Should().Contain(@"Backup\report.txt");
     }
 }
