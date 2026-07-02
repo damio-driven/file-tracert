@@ -82,6 +82,47 @@ public sealed class QueueService : IQueueService
             excludeJobId: null, sequenceOrder: null, ct);
     }
 
+    public async Task<FeasibilityResult> PreviewBatchAsync(
+        IReadOnlyList<CreateJobRequest> requests, CancellationToken ct)
+    {
+        // Aggregate the demand per target volume — the batch weighs on the ledger as a
+        // whole, so it must be evaluated as a whole (previewing one file would lie).
+        var demandByVolume = new Dictionary<int, long>();
+        foreach (var request in requests)
+        {
+            var (targetVolumeId, totalBytes) = await ResolvePreviewMetaAsync(request, ct);
+            if (targetVolumeId is null || totalBytes == 0)
+                continue;
+            demandByVolume[targetVolumeId.Value] =
+                demandByVolume.GetValueOrDefault(targetVolumeId.Value) + totalBytes;
+        }
+
+        if (demandByVolume.Count == 0)
+            return new FeasibilityResult(0, 0, long.MaxValue, 0, true, null, true);
+
+        // Evaluate each involved volume; report the tightest one (smallest available−required
+        // margin — for infeasible volumes that is the largest deficit).
+        FeasibilityResult? tightest = null;
+        foreach (var (volumeId, requiredBytes) in demandByVolume)
+        {
+            var vol = await _db.Volumes.AsNoTracking()
+                .FirstOrDefaultAsync(v => v.Id == volumeId, ct)
+                ?? throw new InvalidOperationException($"Target volume {volumeId} not found.");
+
+            var f = await _ledger.ComputeFeasibilityAsync(
+                vol.Id, vol.FreeBytesLastKnown, vol.IsOnline, requiredBytes,
+                excludeJobId: null, sequenceOrder: null, ct);
+
+            if (tightest is null ||
+                f.AvailableEstimateBytes - f.RequiredBytes < tightest.AvailableEstimateBytes - tightest.RequiredBytes)
+            {
+                tightest = f;
+            }
+        }
+
+        return tightest!;
+    }
+
     public async Task CancelAsync(int jobId, CancellationToken ct)
     {
         var job = await _db.OperationJobs.FindAsync([jobId], ct)

@@ -17,6 +17,15 @@ public interface IQueueService
     /// </summary>
     Task<FeasibilityResult> PreviewAsync(CreateJobRequest request, CancellationToken ct);
 
+    /// <summary>
+    /// Computes feasibility for a whole batch of operations as ONE aggregated demand:
+    /// required bytes are summed per target volume and evaluated against the ledger once,
+    /// matching how the batch will weigh on the queue when enqueued. Returns the result
+    /// of the tightest volume (largest deficit / smallest margin) so the UI never shows
+    /// a green light computed on a single file of the batch.
+    /// </summary>
+    Task<FeasibilityResult> PreviewBatchAsync(IReadOnlyList<CreateJobRequest> requests, CancellationToken ct);
+
     /// <summary>Cancels a non-terminal job and releases its ledger entries.</summary>
     Task CancelAsync(int jobId, CancellationToken ct);
 

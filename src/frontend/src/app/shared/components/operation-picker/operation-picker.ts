@@ -154,22 +154,24 @@ export class OperationPicker implements OnInit {
 
   protected async runPreview(): Promise<void> {
     if (!this.canSubmit) return;
-    const first = this.files()[0];
     const folder = this.targetFolder;
 
     this.previewing.set(true);
     this.preview.set(null);
     this.error.set(null);
     try {
-      // Send the destination folder only — the backend appends the file name.
-      const result = await firstValueFrom(this.api.preview({
-        type: 'MoveFile',
-        sourceFileId: first.fileId,
-        sourceDirectoryId: null,
-        targetVolumeId: this.targetVolumeId!,
-        targetRelativePath: folder,
-        newName: null,
-      }));
+      // Whole batch, one request per file: the backend aggregates the demand and
+      // evaluates the ledger once, so the verdict covers the entire selection.
+      const result = await firstValueFrom(this.api.previewBatch(
+        this.files().map(file => ({
+          type: 'MoveFile' as const,
+          sourceFileId: file.fileId,
+          sourceDirectoryId: null,
+          targetVolumeId: this.targetVolumeId!,
+          targetRelativePath: folder,
+          newName: null,
+        })),
+      ));
       this.preview.set(result);
     } catch (e) {
       this.error.set((e as Error).message);

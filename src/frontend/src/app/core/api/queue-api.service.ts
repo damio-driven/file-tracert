@@ -27,6 +27,11 @@ export class QueueApi {
     return this.http.post<FeasibilityResult>(`${this.base}/preview`, req);
   }
 
+  /** Feasibility of a whole batch, evaluated by the backend as one aggregated demand. */
+  previewBatch(reqs: CreateJobRequest[]): Observable<FeasibilityResult> {
+    return this.http.post<FeasibilityResult>(`${this.base}/preview-batch`, reqs);
+  }
+
   cancel(id: number): Observable<void> {
     return this.http.delete<void>(`${this.base}/${id}`);
   }

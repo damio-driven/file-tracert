@@ -80,6 +80,30 @@ public sealed class OperationsController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// Computes feasibility for a whole batch of operations as one aggregated demand
+    /// (required bytes summed per target volume). The UI confirm dialog uses this so the
+    /// verdict reflects the entire selection, not just the first file.
+    /// </summary>
+    [HttpPost("preview-batch")]
+    public async Task<ActionResult<FeasibilityResult>> PreviewBatch(
+        [FromBody] List<CreateJobRequest> reqs,
+        CancellationToken ct)
+    {
+        try
+        {
+            return Ok(await _queue.PreviewBatchAsync(reqs, ct));
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
     /// <summary>Cancels a non-terminal job and releases its ledger reservation.</summary>
     [HttpDelete("{id:int}")]
     public async Task<IActionResult> Cancel(int id, CancellationToken ct)

@@ -383,6 +383,53 @@ public sealed class QueueServiceTests : IDisposable
         after.Feasible.Should().BeTrue(); // 5000 ≥ 4500
     }
 
+    // ── FIX #5: batch preview evaluates the TOTAL demand, not just the first file ──
+
+    [Fact]
+    public async Task PreviewBatch_reports_the_deficit_of_the_whole_batch()
+    {
+        // Vol2 effectively has 400 bytes available (5 000 free − 4 600 reserved).
+        await _ledger.ReserveAsync(999, 0, Vol2Id, 4_600, null, 0, None);
+
+        // File1 (1 000) + File2 (2 000) = 3 000 total. Previewing only the first file
+        // would report deficit 600 — the real batch deficit is 2 600.
+        var f = await Svc().PreviewBatchAsync(
+        [
+            new CreateJobRequest { Type = JobType.MoveFile, SourceFileId = File1Id, TargetVolumeId = Vol2Id, TargetRelativePath = "Backup" },
+            new CreateJobRequest { Type = JobType.MoveFile, SourceFileId = File2Id, TargetVolumeId = Vol2Id, TargetRelativePath = "Backup" },
+        ], None);
+
+        f.Feasible.Should().BeFalse();
+        f.RequiredBytes.Should().Be(3_000);
+        f.DeficitBytes.Should().Be(2_600);
+        f.BlockingVolumeId.Should().Be(Vol2Id);
+    }
+
+    [Fact]
+    public async Task PreviewBatch_is_feasible_when_the_whole_batch_fits()
+    {
+        var f = await Svc().PreviewBatchAsync(
+        [
+            new CreateJobRequest { Type = JobType.MoveFile, SourceFileId = File1Id, TargetVolumeId = Vol2Id, TargetRelativePath = "Backup" },
+            new CreateJobRequest { Type = JobType.MoveFile, SourceFileId = File2Id, TargetVolumeId = Vol2Id, TargetRelativePath = "Backup" },
+        ], None);
+
+        f.Feasible.Should().BeTrue();
+        f.RequiredBytes.Should().Be(3_000); // aggregated, not just the first file
+    }
+
+    [Fact]
+    public async Task PreviewBatch_with_only_intra_volume_moves_is_trivially_feasible()
+    {
+        var f = await Svc().PreviewBatchAsync(
+        [
+            new CreateJobRequest { Type = JobType.MoveFile, SourceFileId = File1Id, TargetVolumeId = Vol1Id, TargetRelativePath = "Elsewhere" },
+        ], None);
+
+        f.Feasible.Should().BeTrue();
+        f.RequiredBytes.Should().Be(0);
+    }
+
     [Fact]
     public async Task Cancel_throws_when_job_is_already_terminal()
     {

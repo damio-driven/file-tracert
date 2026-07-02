@@ -40,7 +40,7 @@ function childrenResult(directories: CatalogDirDto[]): CatalogChildrenDto {
 
 function setup() {
   const enqueue = vi.fn((_req: CreateJobRequest) => of({} as never));
-  const preview = vi.fn((_req: CreateJobRequest) => of(feasibility));
+  const previewBatch = vi.fn((_reqs: CreateJobRequest[]) => of(feasibility));
   const children = vi.fn((_volumeId: number, dirId: number | null) => {
     if (dirId === null) return of(childrenResult([dir(10, 'Documenti'), dir(11, 'Archivio')]));
     if (dirId === 10) return of(childrenResult([dir(20, 'Foto')]));
@@ -50,7 +50,7 @@ function setup() {
   TestBed.configureTestingModule({
     providers: [
       provideZonelessChangeDetection(),
-      { provide: QueueApi, useValue: { enqueue, preview } },
+      { provide: QueueApi, useValue: { enqueue, previewBatch } },
       { provide: CatalogApi, useValue: { children } },
       { provide: VolumesApi, useValue: { list: () => of([]) } },
       { provide: Router, useValue: { navigate: () => Promise.resolve(true) } },
@@ -79,7 +79,7 @@ function setup() {
   };
   cmp.targetVolumeId = 1;
 
-  return { enqueue, preview, children, cmp };
+  return { enqueue, previewBatch, children, cmp };
 }
 
 describe('OperationPicker target path', () => {
@@ -165,14 +165,18 @@ describe('OperationPicker target path', () => {
     expect(enqueue.mock.calls[1][0].targetRelativePath).toBe('Archivio');
   });
 
-  it('preview sends the derived folder only, without appending the file name', async () => {
-    const { preview, cmp } = setup();
+  // FIX #5 — the preview must evaluate the WHOLE batch, not just the first file.
+  it('preview sends one request per selected file, all with the derived folder', async () => {
+    const { previewBatch, cmp } = setup();
 
     await cmp.openDirectory(dir(11, 'Archivio'));
     await cmp.runPreview();
 
-    expect(preview).toHaveBeenCalledTimes(1);
-    expect(preview.mock.calls[0][0].targetRelativePath).toBe('Archivio');
+    expect(previewBatch).toHaveBeenCalledTimes(1);
+    const batch = previewBatch.mock.calls[0][0];
+    expect(batch).toHaveLength(2);
+    expect(batch.map(r => r.sourceFileId)).toEqual([1, 2]);
+    expect(batch.every(r => r.targetRelativePath === 'Archivio')).toBe(true);
   });
 
   it('a stale fetch error is cleared once a subsequent navigation succeeds', async () => {
