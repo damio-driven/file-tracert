@@ -5,7 +5,7 @@ import { firstValueFrom } from 'rxjs';
 import { SearchApi } from '../../core/api/search-api.service';
 import {
   FileCategory, PagedResult, SearchRequest,
-  SearchResultDto, SearchScope, SearchSort,
+  SearchResultDto, SearchScope, SearchSort, SelectedFile,
 } from '../../core/models/catalog.models';
 
 interface SearchFilters {
@@ -30,7 +30,12 @@ interface SearchState {
   error: string | null;
   currentSkip: number;
   take: number;
-  selectedFileIds: number[];
+  /**
+   * Full SelectedFile objects, not bare ids: the selection survives paging and the
+   * picker always has name/size/volume for every picked file, even when it is no
+   * longer on the visible page (fix #6).
+   */
+  selectedFiles: SelectedFile[];
 }
 
 const defaultFilters: SearchFilters = {
@@ -55,8 +60,17 @@ const initial: SearchState = {
   error: null,
   currentSkip: 0,
   take: 50,
-  selectedFileIds: [],
+  selectedFiles: [],
 };
+
+function toSelectedFile(result: SearchResultDto): SelectedFile {
+  return {
+    fileId: result.fileId,
+    name: result.name,
+    sizeBytes: result.sizeBytes,
+    volumeId: result.volumeId,
+  };
+}
 
 export const SearchStore = signalStore(
   { providedIn: 'root' },
@@ -65,13 +79,14 @@ export const SearchStore = signalStore(
     hasResults: computed(() => (store.results()?.totalCount ?? 0) > 0),
     totalCount: computed(() => store.results()?.totalCount ?? 0),
     isCapped: computed(() => store.results()?.totalCount === 10000),
-    selectionCount: computed(() => store.selectedFileIds().length),
-    hasSelection: computed(() => store.selectedFileIds().length > 0),
+    selectedFileIds: computed(() => store.selectedFiles().map(f => f.fileId)),
+    selectionCount: computed(() => store.selectedFiles().length),
+    hasSelection: computed(() => store.selectedFiles().length > 0),
     allPageSelected: computed(() => {
       const items = store.results()?.items ?? [];
       if (items.length === 0) return false;
-      const sel = store.selectedFileIds();
-      return items.every(f => sel.includes(f.fileId));
+      const sel = new Set(store.selectedFiles().map(f => f.fileId));
+      return items.every(f => sel.has(f.fileId));
     }),
   })),
   withMethods((store, api = inject(SearchApi)) => {
@@ -123,27 +138,29 @@ export const SearchStore = signalStore(
         await doSearch(skip);
       },
       clear(): void {
-        patchState(store, { text: '', results: null, error: null, currentSkip: 0, selectedFileIds: [] });
+        patchState(store, { text: '', results: null, error: null, currentSkip: 0, selectedFiles: [] });
       },
-      toggleSelection(fileId: number): void {
-        const ids = store.selectedFileIds();
+      toggleSelection(result: SearchResultDto): void {
+        const sel = store.selectedFiles();
         patchState(store, {
-          selectedFileIds: ids.includes(fileId) ? ids.filter(x => x !== fileId) : [...ids, fileId],
+          selectedFiles: sel.some(s => s.fileId === result.fileId)
+            ? sel.filter(s => s.fileId !== result.fileId)
+            : [...sel, toSelectedFile(result)],
         });
       },
       selectPage(): void {
         const items = store.results()?.items ?? [];
-        const existing = store.selectedFileIds();
-        const pageIds = items.map(f => f.fileId);
-        const merged = [...new Set([...existing, ...pageIds])];
-        patchState(store, { selectedFileIds: merged });
+        const existing = store.selectedFiles();
+        const existingIds = new Set(existing.map(f => f.fileId));
+        const added = items.filter(f => !existingIds.has(f.fileId)).map(toSelectedFile);
+        patchState(store, { selectedFiles: [...existing, ...added] });
       },
       deselectPage(): void {
         const pageIds = new Set((store.results()?.items ?? []).map(f => f.fileId));
-        patchState(store, { selectedFileIds: store.selectedFileIds().filter(id => !pageIds.has(id)) });
+        patchState(store, { selectedFiles: store.selectedFiles().filter(f => !pageIds.has(f.fileId)) });
       },
       clearSelection(): void {
-        patchState(store, { selectedFileIds: [] });
+        patchState(store, { selectedFiles: [] });
       },
     };
   }),

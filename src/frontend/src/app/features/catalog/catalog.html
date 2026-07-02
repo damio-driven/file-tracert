@@ -241,13 +241,13 @@
                       <tbody>
                         @for (file of children.files.items; track file.id) {
                           <tr class="file-row" [class.file-row--selected]="isSelected(file.id)"
-                              (click)="toggleSelect(file.id)">
+                              (click)="toggleSelect(file)">
                             <td class="col-check" (click)="$event.stopPropagation()">
                               <input
                                 type="checkbox"
                                 class="row-check"
                                 [checked]="isSelected(file.id)"
-                                (change)="toggleSelect(file.id)"
+                                (change)="toggleSelect(file)"
                                 [attr.aria-label]="'Seleziona ' + file.name"
                               />
                             </td>

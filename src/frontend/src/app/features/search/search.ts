@@ -27,17 +27,9 @@ export class Search implements OnInit {
   protected queryText = '';
   protected pickerOpen = false;
 
-  protected readonly pickerFiles = computed<SelectedFile[]>(() => {
-    const sel = new Set(this.store.selectedFileIds());
-    return (this.store.results()?.items ?? [])
-      .filter((f: SearchResultDto) => sel.has(f.fileId))
-      .map((f: SearchResultDto) => ({
-        fileId: f.fileId,
-        name: f.name,
-        sizeBytes: f.sizeBytes,
-        volumeId: f.volumeId,
-      }));
-  });
+  // The store keeps full SelectedFile objects, so the picker gets the whole selection
+  // even when it spans results pages that are no longer visible (fix #6).
+  protected readonly pickerFiles = computed<SelectedFile[]>(() => this.store.selectedFiles());
 
   protected readonly CATEGORIES: { value: FileCategory; label: string; icon: string }[] = [
     { value: 'Image', label: 'Immagini', icon: 'IMG' },
@@ -119,8 +111,8 @@ export class Search implements OnInit {
     return r.skip + r.take;
   }
 
-  protected toggleSelect(fileId: number): void {
-    this.store.toggleSelection(fileId);
+  protected toggleSelect(result: SearchResultDto): void {
+    this.store.toggleSelection(result);
   }
 
   protected toggleSelectAll(): void {

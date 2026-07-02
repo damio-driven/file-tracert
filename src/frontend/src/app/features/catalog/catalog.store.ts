@@ -3,7 +3,7 @@ import { patchState, signalStore, withComputed, withMethods, withState } from '@
 import { firstValueFrom } from 'rxjs';
 
 import { CatalogApi } from '../../core/api/catalog-api.service';
-import { CatalogChildrenDto, VolumeDto } from '../../core/models/catalog.models';
+import { CatalogChildrenDto, CatalogFileDto, SelectedFile, VolumeDto } from '../../core/models/catalog.models';
 
 interface Breadcrumb {
   id: number;
@@ -19,7 +19,12 @@ interface CatalogState {
   error: string | null;
   fileSkip: number;
   fileTake: number;
-  selectedFileIds: number[];
+  /**
+   * Full SelectedFile objects, not bare ids: the selection survives folder/page
+   * navigation and the picker always has name/size/volume for every picked file,
+   * even when it is no longer on the visible page (fix #6).
+   */
+  selectedFiles: SelectedFile[];
 }
 
 const initial: CatalogState = {
@@ -30,8 +35,12 @@ const initial: CatalogState = {
   error: null,
   fileSkip: 0,
   fileTake: 50,
-  selectedFileIds: [],
+  selectedFiles: [],
 };
+
+function toSelectedFile(file: CatalogFileDto, volumeId: number): SelectedFile {
+  return { fileId: file.id, name: file.name, sizeBytes: file.sizeBytes, volumeId };
+}
 
 export const CatalogStore = signalStore(
   { providedIn: 'root' },
@@ -44,13 +53,14 @@ export const CatalogStore = signalStore(
     volumeIsOnline: computed(() => store.children()?.volumeIsOnline ?? false),
     totalFiles: computed(() => store.children()?.files.totalCount ?? 0),
     canGoUp: computed(() => store.breadcrumbs().length > 0),
-    selectionCount: computed(() => store.selectedFileIds().length),
-    hasSelection: computed(() => store.selectedFileIds().length > 0),
+    selectedFileIds: computed(() => store.selectedFiles().map(f => f.fileId)),
+    selectionCount: computed(() => store.selectedFiles().length),
+    hasSelection: computed(() => store.selectedFiles().length > 0),
     allPageSelected: computed(() => {
       const items = store.children()?.files.items ?? [];
       if (items.length === 0) return false;
-      const sel = store.selectedFileIds();
-      return items.every(f => sel.includes(f.id));
+      const sel = new Set(store.selectedFiles().map(f => f.fileId));
+      return items.every(f => sel.has(f.id));
     }),
   })),
   withMethods((store, api = inject(CatalogApi)) => {
@@ -73,7 +83,7 @@ export const CatalogStore = signalStore(
           breadcrumbs: [],
           children: null,
           fileSkip: 0,
-          selectedFileIds: [],
+          selectedFiles: [],
         });
         await loadChildren(null, 0);
       },
@@ -103,24 +113,31 @@ export const CatalogStore = signalStore(
       clear(): void {
         patchState(store, { ...initial });
       },
-      toggleSelection(fileId: number): void {
-        const ids = store.selectedFileIds();
+      toggleSelection(file: CatalogFileDto): void {
+        const vol = store.selectedVolume();
+        if (!vol) return;
+        const sel = store.selectedFiles();
         patchState(store, {
-          selectedFileIds: ids.includes(fileId) ? ids.filter(x => x !== fileId) : [...ids, fileId],
+          selectedFiles: sel.some(s => s.fileId === file.id)
+            ? sel.filter(s => s.fileId !== file.id)
+            : [...sel, toSelectedFile(file, vol.id)],
         });
       },
       selectPage(): void {
+        const vol = store.selectedVolume();
+        if (!vol) return;
         const items = store.children()?.files.items ?? [];
-        const existing = store.selectedFileIds();
-        const pageIds = items.map(f => f.id);
-        patchState(store, { selectedFileIds: [...new Set([...existing, ...pageIds])] });
+        const existing = store.selectedFiles();
+        const existingIds = new Set(existing.map(f => f.fileId));
+        const added = items.filter(f => !existingIds.has(f.id)).map(f => toSelectedFile(f, vol.id));
+        patchState(store, { selectedFiles: [...existing, ...added] });
       },
       deselectPage(): void {
         const pageIds = new Set((store.children()?.files.items ?? []).map(f => f.id));
-        patchState(store, { selectedFileIds: store.selectedFileIds().filter(id => !pageIds.has(id)) });
+        patchState(store, { selectedFiles: store.selectedFiles().filter(f => !pageIds.has(f.fileId)) });
       },
       clearSelection(): void {
-        patchState(store, { selectedFileIds: [] });
+        patchState(store, { selectedFiles: [] });
       },
     };
   }),

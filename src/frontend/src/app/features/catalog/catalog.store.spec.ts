@@ -134,39 +134,44 @@ describe('CatalogStore', () => {
 
   // ── file selection ────────────────────────────────────────────────────────
 
-  it('toggleSelection adds file id to selectedFileIds', async () => {
+  const beachFile = photoChildren.files.items[0];
+
+  it('toggleSelection adds the full file to selectedFiles', async () => {
     const { store } = setup((_v, dirId) => dirId === 10 ? photoChildren : rootChildren);
     await store.selectVolume(mockVolume);
     await store.openDirectory(10, 'Photos', 'Photos');
 
-    store.toggleSelection(1);
+    store.toggleSelection(beachFile);
 
     expect(store.selectedFileIds()).toContain(1);
     expect(store.hasSelection()).toBe(true);
     expect(store.selectionCount()).toBe(1);
+    expect(store.selectedFiles()).toEqual([
+      { fileId: 1, name: 'beach.jpg', sizeBytes: 2048, volumeId: 1 },
+    ]);
   });
 
-  it('toggleSelection removes already-selected file id', async () => {
+  it('toggleSelection removes an already-selected file', async () => {
     const { store } = setup((_v, dirId) => dirId === 10 ? photoChildren : rootChildren);
     await store.selectVolume(mockVolume);
     await store.openDirectory(10, 'Photos', 'Photos');
 
-    store.toggleSelection(1);
-    store.toggleSelection(1);
+    store.toggleSelection(beachFile);
+    store.toggleSelection(beachFile);
 
     expect(store.selectedFileIds()).not.toContain(1);
     expect(store.hasSelection()).toBe(false);
   });
 
-  it('clearSelection empties selectedFileIds', async () => {
+  it('clearSelection empties selectedFiles', async () => {
     const { store } = setup((_v, dirId) => dirId === 10 ? photoChildren : rootChildren);
     await store.selectVolume(mockVolume);
     await store.openDirectory(10, 'Photos', 'Photos');
 
-    store.toggleSelection(1);
+    store.toggleSelection(beachFile);
     store.clearSelection();
 
-    expect(store.selectedFileIds()).toHaveLength(0);
+    expect(store.selectedFiles()).toHaveLength(0);
   });
 
   it('selectPage selects all files on current page', async () => {
@@ -180,7 +185,7 @@ describe('CatalogStore', () => {
     expect(store.allPageSelected()).toBe(true);
   });
 
-  it('deselectPage removes page file ids', async () => {
+  it('deselectPage removes page files', async () => {
     const { store } = setup((_v, dirId) => dirId === 10 ? photoChildren : rootChildren);
     await store.selectVolume(mockVolume);
     await store.openDirectory(10, 'Photos', 'Photos');
@@ -191,14 +196,42 @@ describe('CatalogStore', () => {
     expect(store.selectedFileIds()).not.toContain(1);
   });
 
-  it('selectVolume resets selectedFileIds', async () => {
+  it('selectVolume resets selectedFiles', async () => {
     const { store } = setup((_v, dirId) => dirId === 10 ? photoChildren : rootChildren);
     await store.selectVolume(mockVolume);
     await store.openDirectory(10, 'Photos', 'Photos');
-    store.toggleSelection(1);
+    store.toggleSelection(beachFile);
 
     await store.selectVolume(mockVolume);
 
-    expect(store.selectedFileIds()).toHaveLength(0);
+    expect(store.selectedFiles()).toHaveLength(0);
+  });
+
+  // FIX #6 — the selection must survive navigation WITH its full data: files picked in
+  // folder A must reach the picker even while folder B is the one on screen.
+  it('selection made in one folder keeps full file data after navigating to another', async () => {
+    const { store } = setup((_v, dirId) => dirId === 10 ? photoChildren : rootChildren);
+    await store.selectVolume(mockVolume);
+    await store.openDirectory(10, 'Photos', 'Photos');
+
+    store.toggleSelection(beachFile);
+    await store.navigateTo(-1); // back to root: beach.jpg is no longer on the visible page
+
+    expect(store.selectionCount()).toBe(1);
+    expect(store.selectedFiles()).toEqual([
+      { fileId: 1, name: 'beach.jpg', sizeBytes: 2048, volumeId: 1 },
+    ]);
+  });
+
+  it('deselectPage only removes files of the visible page, not cross-folder picks', async () => {
+    const { store } = setup((_v, dirId) => dirId === 10 ? photoChildren : rootChildren);
+    await store.selectVolume(mockVolume);
+    await store.openDirectory(10, 'Photos', 'Photos');
+    store.toggleSelection(beachFile);
+    await store.navigateTo(-1); // root has no files
+
+    store.deselectPage();
+
+    expect(store.selectionCount()).toBe(1);
   });
 });

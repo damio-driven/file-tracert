@@ -34,19 +34,9 @@ export class Catalog implements OnInit {
 
   protected pickerOpen = false;
 
-  protected readonly pickerFiles = computed<SelectedFile[]>(() => {
-    const sel = new Set(this.store.selectedFileIds());
-    const vol = this.store.selectedVolume();
-    if (!vol) return [];
-    return (this.store.children()?.files.items ?? [])
-      .filter((f: CatalogFileDto) => sel.has(f.id))
-      .map((f: CatalogFileDto) => ({
-        fileId: f.id,
-        name: f.name,
-        sizeBytes: f.sizeBytes,
-        volumeId: vol.id,
-      }));
-  });
+  // The store keeps full SelectedFile objects, so the picker gets the whole selection
+  // even when it spans folders/pages that are no longer visible (fix #6).
+  protected readonly pickerFiles = computed<SelectedFile[]>(() => this.store.selectedFiles());
 
   ngOnInit(): void {
     void this.volumes.loadList();
@@ -98,8 +88,8 @@ export class Catalog implements OnInit {
     return f.skip + f.take;
   }
 
-  protected toggleSelect(fileId: number): void {
-    this.store.toggleSelection(fileId);
+  protected toggleSelect(file: CatalogFileDto): void {
+    this.store.toggleSelection(file);
   }
 
   protected toggleSelectAll(): void {

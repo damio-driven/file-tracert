@@ -100,33 +100,66 @@ describe('SearchStore', () => {
 
   // ── selection ────────────────────────────────────────────────────────────
 
-  it('toggleSelection adds fileId', async () => {
+  const photoResult = mockResult.items[0];
+
+  it('toggleSelection adds the full file', async () => {
     const store = setup();
     store.setQuery('photo');
     await store.search();
-    store.toggleSelection(1);
+    store.toggleSelection(photoResult);
     expect(store.selectedFileIds()).toContain(1);
     expect(store.hasSelection()).toBe(true);
     expect(store.selectionCount()).toBe(1);
+    expect(store.selectedFiles()).toEqual([
+      { fileId: 1, name: 'photo.jpg', sizeBytes: 1024, volumeId: 1 },
+    ]);
   });
 
-  it('toggleSelection removes already-selected fileId', async () => {
+  it('toggleSelection removes an already-selected file', async () => {
     const store = setup();
     store.setQuery('photo');
     await store.search();
-    store.toggleSelection(1);
-    store.toggleSelection(1);
+    store.toggleSelection(photoResult);
+    store.toggleSelection(photoResult);
     expect(store.selectedFileIds()).not.toContain(1);
     expect(store.hasSelection()).toBe(false);
   });
 
-  it('clearSelection empties selectedFileIds', async () => {
+  it('clearSelection empties selectedFiles', async () => {
     const store = setup();
     store.setQuery('photo');
     await store.search();
-    store.toggleSelection(1);
+    store.toggleSelection(photoResult);
     store.clearSelection();
-    expect(store.selectedFileIds()).toHaveLength(0);
+    expect(store.selectedFiles()).toHaveLength(0);
+  });
+
+  // FIX #6 — selection made on one results page must keep its full data after paging
+  // to another page (the picker enqueues from selectedFiles, not from the visible page).
+  it('selection keeps full file data after loading a different page', async () => {
+    const page2: PagedResult<SearchResultDto> = {
+      ...mockResult,
+      items: [{
+        fileId: 2, name: 'clip.mp4', relativePath: 'Videos\\clip.mp4',
+        volumeId: 2, volumeLabel: 'Disk', volumeLetter: 'E:', volumeIsOnline: true,
+        sizeBytes: 5000, modifiedUtc: '2026-01-01T00:00:00Z',
+        category: 'Video', projectedState: 'None',
+      }],
+      totalCount: 2,
+      skip: 1,
+    };
+    const searchSpy = vi.fn((req: { skip: number }) => of(req.skip === 0 ? mockResult : page2));
+    const store = setup({ search: searchSpy as unknown as SearchApi['search'] });
+    store.setQuery('x');
+    await store.search();
+
+    store.toggleSelection(photoResult);
+    await store.loadPage(1); // photo.jpg is no longer on the visible page
+
+    expect(store.selectionCount()).toBe(1);
+    expect(store.selectedFiles()).toEqual([
+      { fileId: 1, name: 'photo.jpg', sizeBytes: 1024, volumeId: 1 },
+    ]);
   });
 
   it('selectPage adds all page file IDs', async () => {
@@ -165,7 +198,7 @@ describe('SearchStore', () => {
     const store = setup({ search: vi.fn(() => of(twoItems)) });
     store.setQuery('x');
     await store.search();
-    store.toggleSelection(1);
+    store.toggleSelection(photoResult);
     expect(store.allPageSelected()).toBe(false);
   });
 
@@ -173,7 +206,7 @@ describe('SearchStore', () => {
     const store = setup();
     store.setQuery('photo');
     await store.search();
-    store.toggleSelection(1);
+    store.toggleSelection(photoResult);
     store.clear();
     expect(store.selectedFileIds()).toHaveLength(0);
   });
