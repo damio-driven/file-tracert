@@ -25,7 +25,7 @@ public sealed class SpaceLedger : ISpaceLedger
     private readonly Dictionary<int, HashSet<int>> _jobVolumeMap = new();
     private readonly SemaphoreSlim _lock = new(1, 1);
 
-    private sealed record LedgerRecord(int JobId, long Delta);
+    private sealed record LedgerRecord(int JobId, int SequenceOrder, long Delta);
 
     public SpaceLedger(IServiceScopeFactory scopeFactory, ILogger<SpaceLedger> logger)
     {
@@ -37,18 +37,20 @@ public sealed class SpaceLedger : ISpaceLedger
 
     public async Task<FeasibilityResult> ComputeFeasibilityAsync(
         int targetVolumeId, long freeBytesLastKnown, bool isOnline,
-        long requiredBytes, CancellationToken ct)
+        long requiredBytes, int? excludeJobId, int? sequenceOrder, CancellationToken ct)
     {
         await _lock.WaitAsync(ct);
         try
         {
-            return Compute(targetVolumeId, freeBytesLastKnown, isOnline, requiredBytes);
+            return Compute(targetVolumeId, freeBytesLastKnown, isOnline, requiredBytes,
+                excludeJobId, sequenceOrder);
         }
         finally { _lock.Release(); }
     }
 
-    public async Task ReserveAsync(int jobId, int targetVolumeId, long requiredBytes,
-                                   int? sourceVolumeId, long freedBytes, CancellationToken ct)
+    public async Task ReserveAsync(int jobId, int sequenceOrder, int targetVolumeId,
+                                   long requiredBytes, int? sourceVolumeId, long freedBytes,
+                                   CancellationToken ct)
     {
         // Write to DB before mutating in-memory: if the DB write fails the in-memory state stays clean.
         using (var scope = _scopeFactory.CreateScope())
@@ -76,10 +78,10 @@ public sealed class SpaceLedger : ISpaceLedger
         try
         {
             if (requiredBytes > 0)
-                AddToMemory(targetVolumeId, jobId, +requiredBytes);
+                AddToMemory(targetVolumeId, jobId, sequenceOrder, +requiredBytes);
 
             if (sourceVolumeId.HasValue && freedBytes > 0)
-                AddToMemory(sourceVolumeId.Value, jobId, -freedBytes);
+                AddToMemory(sourceVolumeId.Value, jobId, sequenceOrder, -freedBytes);
         }
         finally { _lock.Release(); }
 
@@ -109,14 +111,19 @@ public sealed class SpaceLedger : ISpaceLedger
 
     public async Task RebuildFromDbAsync(CancellationToken ct)
     {
-        List<SpaceLedgerEntry> entries;
+        // SequenceOrder lives on the job, not on the entry — join it back in so the
+        // rebuilt mirror keeps the FIFO ordering information.
+        List<(int VolumeId, int JobId, int SequenceOrder, long DeltaBytes)> entries;
         using (var scope = _scopeFactory.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<FileTracertDbContext>();
-            entries = await db.SpaceLedgerEntries
+            entries = (await db.SpaceLedgerEntries
                 .Where(e => e.IsActive)
+                .Select(e => new { e.VolumeId, e.JobId, e.Job.SequenceOrder, e.DeltaBytes })
                 .AsNoTracking()
-                .ToListAsync(ct);
+                .ToListAsync(ct))
+                .Select(e => (e.VolumeId, e.JobId, e.SequenceOrder, e.DeltaBytes))
+                .ToList();
         }
 
         await _lock.WaitAsync(ct);
@@ -125,7 +132,7 @@ public sealed class SpaceLedger : ISpaceLedger
             _state.Clear();
             _jobVolumeMap.Clear();
             foreach (var e in entries)
-                AddToMemory(e.VolumeId, e.JobId, e.DeltaBytes);
+                AddToMemory(e.VolumeId, e.JobId, e.SequenceOrder, e.DeltaBytes);
         }
         finally { _lock.Release(); }
 
@@ -135,7 +142,8 @@ public sealed class SpaceLedger : ISpaceLedger
     // ── private helpers (always called within _lock) ──────────────────────────
 
     private FeasibilityResult Compute(int targetVolumeId, long freeBytesLastKnown,
-                                      bool isOnline, long requiredBytes)
+                                      bool isOnline, long requiredBytes,
+                                      int? excludeJobId, int? sequenceOrder)
     {
         long netDelta = 0;
         long reserved = 0;
@@ -144,6 +152,12 @@ public sealed class SpaceLedger : ISpaceLedger
         {
             foreach (var e in entries)
             {
+                // FIFO semantics (§4 of the brief): the evaluated job sees only the effect
+                // of jobs ahead of it in the queue, and never its own reservation — counting
+                // that would demand ~2× the space and wrongly block a job that fits.
+                if (e.JobId == excludeJobId) continue;
+                if (sequenceOrder is not null && e.SequenceOrder > sequenceOrder.Value) continue;
+
                 netDelta += e.Delta;
                 if (e.Delta > 0) reserved += e.Delta;
             }
@@ -165,11 +179,11 @@ public sealed class SpaceLedger : ISpaceLedger
             Feasible: feasible);
     }
 
-    private void AddToMemory(int volumeId, int jobId, long delta)
+    private void AddToMemory(int volumeId, int jobId, int sequenceOrder, long delta)
     {
         if (!_state.TryGetValue(volumeId, out var list))
             _state[volumeId] = list = [];
-        list.Add(new LedgerRecord(jobId, delta));
+        list.Add(new LedgerRecord(jobId, sequenceOrder, delta));
 
         if (!_jobVolumeMap.TryGetValue(jobId, out var vols))
             _jobVolumeMap[jobId] = vols = [];

@@ -148,8 +148,11 @@ public sealed class JobExecutionEngine
         {
             // Hard space check before we commit to copying.
             var tgtVol = job.TargetVolume!;
+            // Exclude this job's own enqueue reservation and anything enqueued after it:
+            // the re-check answers "does it fit NOW, given what still precedes me in FIFO".
             var feasibility = await _ledger.ComputeFeasibilityAsync(
-                tgtVol.Id, tgtVol.FreeBytesLastKnown, tgtVol.IsOnline, job.RequiredBytesTarget, ct);
+                tgtVol.Id, tgtVol.FreeBytesLastKnown, tgtVol.IsOnline, job.RequiredBytesTarget,
+                excludeJobId: job.Id, sequenceOrder: job.SequenceOrder, ct);
 
             if (!feasibility.Feasible)
             {

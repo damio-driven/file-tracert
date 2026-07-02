@@ -53,6 +53,7 @@ public sealed class QueueService : IQueueService
         {
             await _ledger.ReserveAsync(
                 job.Id,
+                job.SequenceOrder,
                 job.TargetVolumeId!.Value,
                 job.RequiredBytesTarget,
                 job.SourceVolumeId,
@@ -75,8 +76,10 @@ public sealed class QueueService : IQueueService
             .FirstOrDefaultAsync(v => v.Id == targetVolumeId.Value, ct)
             ?? throw new InvalidOperationException($"Target volume {targetVolumeId} not found.");
 
+        // Prospective job: it would land at the end of the queue, so all active deltas apply.
         return await _ledger.ComputeFeasibilityAsync(
-            vol.Id, vol.FreeBytesLastKnown, vol.IsOnline, totalBytes, ct);
+            vol.Id, vol.FreeBytesLastKnown, vol.IsOnline, totalBytes,
+            excludeJobId: null, sequenceOrder: null, ct);
     }
 
     public async Task CancelAsync(int jobId, CancellationToken ct)
@@ -124,6 +127,8 @@ public sealed class QueueService : IQueueService
                     job.TargetVolume.FreeBytesLastKnown,
                     job.TargetVolume.IsOnline,
                     job.RequiredBytesTarget,
+                    excludeJobId: job.Id,
+                    sequenceOrder: job.SequenceOrder,
                     ct);
             }
             dtos.Add(MapToDto(job, [.. job.Items], feasibility));
@@ -285,7 +290,8 @@ public sealed class QueueService : IQueueService
             job.FreedBytesSource = file.SizeBytes;
 
             var f = await _ledger.ComputeFeasibilityAsync(
-                targetVol.Id, targetVol.FreeBytesLastKnown, targetVol.IsOnline, file.SizeBytes, ct);
+                targetVol.Id, targetVol.FreeBytesLastKnown, targetVol.IsOnline, file.SizeBytes,
+                excludeJobId: null, sequenceOrder: null, ct);
 
             job.EstimateIsLive = f.EstimateIsLive;
             if (!f.Feasible)
@@ -355,7 +361,8 @@ public sealed class QueueService : IQueueService
         if (total > 0)
         {
             var f = await _ledger.ComputeFeasibilityAsync(
-                targetVol.Id, targetVol.FreeBytesLastKnown, targetVol.IsOnline, total, ct);
+                targetVol.Id, targetVol.FreeBytesLastKnown, targetVol.IsOnline, total,
+                excludeJobId: null, sequenceOrder: null, ct);
 
             job.EstimateIsLive = f.EstimateIsLive;
             if (!f.Feasible)

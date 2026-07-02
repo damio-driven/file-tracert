@@ -208,7 +208,7 @@ public sealed class QueueServiceTests : IDisposable
 
         // Ledger must reflect the reservation: 5000 free − 1000 reserved = 4000 available.
         // Asking for 4500 should now be infeasible.
-        var f = await _ledger.ComputeFeasibilityAsync(Vol2Id, 5_000, true, 4_500, None);
+        var f = await _ledger.ComputeFeasibilityAsync(Vol2Id, 5_000, true, 4_500, null, null, None);
         f.Feasible.Should().BeFalse();
         f.AvailableEstimateBytes.Should().Be(4_000);
     }
@@ -219,7 +219,7 @@ public sealed class QueueServiceTests : IDisposable
     public async Task MoveFile_cross_volume_infeasible_creates_blocked_job()
     {
         // Pre-fill the ledger so vol2 effectively has only 400 bytes available.
-        await _ledger.ReserveAsync(999, Vol2Id, 4_600, null, 0, None);
+        await _ledger.ReserveAsync(999, 0, Vol2Id, 4_600, null, 0, None);
 
         var dto = await Svc().EnqueueAsync(new CreateJobRequest
         {
@@ -373,13 +373,13 @@ public sealed class QueueServiceTests : IDisposable
         }, None);
 
         // Ledger has a reservation before cancel.
-        var before = await _ledger.ComputeFeasibilityAsync(Vol2Id, 5_000, true, 4_500, None);
+        var before = await _ledger.ComputeFeasibilityAsync(Vol2Id, 5_000, true, 4_500, null, null, None);
         before.Feasible.Should().BeFalse(); // 5000 - 1000 = 4000 < 4500
 
         await Svc().CancelAsync(dto.Id, None);
 
         // After cancel the reservation is released.
-        var after = await _ledger.ComputeFeasibilityAsync(Vol2Id, 5_000, true, 4_500, None);
+        var after = await _ledger.ComputeFeasibilityAsync(Vol2Id, 5_000, true, 4_500, null, null, None);
         after.Feasible.Should().BeTrue(); // 5000 ≥ 4500
     }
 
@@ -451,7 +451,7 @@ public sealed class QueueServiceTests : IDisposable
     public async Task List_attaches_feasibility_for_blocked_jobs()
     {
         // Fill vol2 so the next move is infeasible.
-        await _ledger.ReserveAsync(998, Vol2Id, 4_600, null, 0, None);
+        await _ledger.ReserveAsync(998, 0, Vol2Id, 4_600, null, 0, None);
 
         var dto = await Svc().EnqueueAsync(new CreateJobRequest
         {
@@ -531,7 +531,7 @@ public sealed class QueueServiceTests : IDisposable
         txtItem.TargetRelativePath.Should().Be(@"Archive\Docs\report.txt");
 
         // Ledger must hold the 3 000-byte reservation on vol2.
-        var f = await _ledger.ComputeFeasibilityAsync(Vol2Id, 5_000, true, 2_500, None);
+        var f = await _ledger.ComputeFeasibilityAsync(Vol2Id, 5_000, true, 2_500, null, null, None);
         f.AvailableEstimateBytes.Should().Be(2_000);
     }
 }

@@ -7,6 +7,7 @@ using FileTracert.Data.Entities;
 using FileTracert.Tests.Data;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using NSubstitute.Core;
@@ -16,8 +17,9 @@ namespace FileTracert.Tests.Business;
 
 /// <summary>
 /// State-machine tests for <see cref="JobExecutionEngine"/>. Uses a real in-memory
-/// SQLite DB for persistence, NSubstitute for <see cref="IFileMover"/> and
-/// <see cref="ISpaceLedger"/>, and a no-op FTS index so the IndexUpdater stays fast.
+/// SQLite DB for persistence, NSubstitute for <see cref="IFileMover"/> only, the REAL
+/// <see cref="SpaceLedger"/> (a ledger substitute previously masked the double-count bug),
+/// and a no-op FTS index so the IndexUpdater stays fast.
 /// </summary>
 public sealed class JobExecutionEngineTests : IDisposable
 {
@@ -29,13 +31,24 @@ public sealed class JobExecutionEngineTests : IDisposable
     private const string Vol2Guid = @"\\?\Volume{bbb-2}\";
 
     private readonly SqliteInMemoryContext _harness;
+    private readonly SpaceLedger _ledger;
 
     public JobExecutionEngineTests()
     {
         _harness = new SqliteInMemoryContext();
-        using var setup = _harness.CreateContext();
-        setup.Database.ExecuteSqlRaw("PRAGMA foreign_keys = OFF");
-        SeedBase(setup);
+        using (var setup = _harness.CreateContext())
+        {
+            setup.Database.ExecuteSqlRaw("PRAGMA foreign_keys = OFF");
+            SeedBase(setup);
+        }
+        _ledger = new SpaceLedger(CreateScopeFactory(_harness), NullLogger<SpaceLedger>.Instance);
+    }
+
+    private static IServiceScopeFactory CreateScopeFactory(SqliteInMemoryContext harness)
+    {
+        var services = new ServiceCollection();
+        services.AddScoped<FileTracertDbContext>(_ => harness.CreateContext());
+        return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
     }
 
     public void Dispose() => _harness.Dispose();
@@ -110,22 +123,21 @@ public sealed class JobExecutionEngineTests : IDisposable
         return job.Id;
     }
 
-    private JobExecutionEngine MakeEngine(IFileMover mover, bool feasible = true, TimeProvider? timeProvider = null)
+    private JobExecutionEngine MakeEngine(IFileMover mover, TimeProvider? timeProvider = null)
     {
-        var ledger = Substitute.For<ISpaceLedger>();
-        var feasibilityResult = feasible
-            ? new FeasibilityResult(1_000, 0, 50_000, 0, true, null, Feasible: true)
-            : new FeasibilityResult(1_000, 0, 0, 1_000, true, Vol2Id, Feasible: false);
-        ledger.ComputeFeasibilityAsync(default, default, default, default, default)
-              .ReturnsForAnyArgs(Task.FromResult(feasibilityResult));
-        ledger.ReleaseAsync(default, default).ReturnsForAnyArgs(Task.CompletedTask);
-
         var db = _harness.CreateContext();
         var fts = new FakeFileSearchIndex();
         var indexUpdater = new IndexUpdater(db, fts, NullLogger<IndexUpdater>.Instance);
 
         return new JobExecutionEngine(
-            db, mover, ledger, indexUpdater, timeProvider ?? TimeProvider.System, NullLogger<JobExecutionEngine>.Instance);
+            db, mover, _ledger, indexUpdater, timeProvider ?? TimeProvider.System, NullLogger<JobExecutionEngine>.Instance);
+    }
+
+    private void SetVolumeFreeBytes(int volumeId, long freeBytes)
+    {
+        using var db = _harness.CreateContext();
+        db.Volumes.Single(v => v.Id == volumeId).FreeBytesLastKnown = freeBytes;
+        db.SaveChanges();
     }
 
     private IFileMover DefaultMover()
@@ -266,7 +278,7 @@ public sealed class JobExecutionEngineTests : IDisposable
                 },
             ]);
 
-        await MakeEngine(mover, feasible: true).ExecuteJobAsync(jobId, None);
+        await MakeEngine(mover).ExecuteJobAsync(jobId, None);
 
         (await ReadState(jobId)).Should().Be(JobState.Completed);
 
@@ -295,6 +307,7 @@ public sealed class JobExecutionEngineTests : IDisposable
     public async Task MoveFile_cross_volume_persists_BytesProcessed_mid_copy_once_throttle_interval_elapses()
     {
         var timeProvider = new ManualTimeProvider();
+        SetVolumeFreeBytes(Vol2Id, 2_000_000); // the real ledger must see room for the 1 MB move
 
         int jobId = SeedJob(
             JobType.MoveFile, JobState.Pending, intraVolume: false,
@@ -343,7 +356,7 @@ public sealed class JobExecutionEngineTests : IDisposable
                 Arg.Any<Func<long, CancellationToken, Task>>(), Arg.Any<CancellationToken>())
              .Returns(callInfo => RunProgressTicksAsync(callInfo));
 
-        await MakeEngine(mover, feasible: true, timeProvider).ExecuteJobAsync(jobId, None);
+        await MakeEngine(mover, timeProvider).ExecuteJobAsync(jobId, None);
 
         bytesProcessedMidCopy.Should().Be(900_000,
             "the 3rd tick crossed the 1s throttle and should have persisted mid-copy, before the item finished");
@@ -355,6 +368,47 @@ public sealed class JobExecutionEngineTests : IDisposable
     [Fact]
     public async Task MoveFile_cross_volume_insufficient_space_blocks_job()
     {
+        var mover = DefaultMover();
+        // Vol2 has 50 000 bytes free — a 60 000-byte move genuinely does not fit.
+        int jobId = SeedJob(
+            JobType.MoveFile, JobState.Pending, intraVolume: false,
+            srcVol: Vol1Id, tgtVol: Vol2Id, tgtPath: @"Backup\report.txt", totalBytes: 60_000,
+            items:
+            [
+                new OperationJobItem
+                {
+                    SourceRelativePath = @"Docs\report.txt",
+                    TargetRelativePath = @"Backup\report.txt",
+                    State = JobItemState.Pending,
+                    SizeBytes = 60_000,
+                    CreatedUtc = DateTime.UtcNow,
+                    UpdatedUtc = DateTime.UtcNow,
+                },
+            ]);
+
+        await MakeEngine(mover).ExecuteJobAsync(jobId, None);
+
+        (await ReadState(jobId)).Should().Be(JobState.Blocked);
+        (await ReadBlockReason(jobId)).Should().Be(JobBlockReason.InsufficientSpace);
+#pragma warning disable CS4014
+        mover.DidNotReceive().CopyFileAsync(
+            Arg.Any<string>(), Arg.Any<string>(),
+            Arg.Any<string>(), Arg.Any<string>(),
+            Arg.Any<Func<long, CancellationToken, Task>>(), Arg.Any<CancellationToken>());
+#pragma warning restore CS4014
+    }
+
+    // ── FIX #2 — the job's own enqueue reservation must not double-count ──────
+
+    [Fact]
+    public async Task MoveFile_feasible_at_enqueue_stays_feasible_at_execution_despite_own_reservation()
+    {
+        // 1 000-byte move, 1 500 bytes free on the target: feasible at enqueue.
+        // The enqueue reserves +1 000 in the ledger. At execution the hard re-check must
+        // NOT count that same reservation again (1 000 required + 1 000 reserved > 1 500
+        // would wrongly block a job that fits).
+        SetVolumeFreeBytes(Vol2Id, 1_500);
+
         var mover = DefaultMover();
         int jobId = SeedJob(
             JobType.MoveFile, JobState.Pending, intraVolume: false,
@@ -372,16 +426,13 @@ public sealed class JobExecutionEngineTests : IDisposable
                 },
             ]);
 
-        await MakeEngine(mover, feasible: false).ExecuteJobAsync(jobId, None);
+        // Same reservation the QueueService writes at enqueue.
+        await _ledger.ReserveAsync(jobId, sequenceOrder: 1, Vol2Id, 1_000, Vol1Id, 1_000, None);
 
-        (await ReadState(jobId)).Should().Be(JobState.Blocked);
-        (await ReadBlockReason(jobId)).Should().Be(JobBlockReason.InsufficientSpace);
-#pragma warning disable CS4014
-        mover.DidNotReceive().CopyFileAsync(
-            Arg.Any<string>(), Arg.Any<string>(),
-            Arg.Any<string>(), Arg.Any<string>(),
-            Arg.Any<Func<long, CancellationToken, Task>>(), Arg.Any<CancellationToken>());
-#pragma warning restore CS4014
+        await MakeEngine(mover).ExecuteJobAsync(jobId, None);
+
+        (await ReadState(jobId)).Should().Be(JobState.Completed,
+            "the job's own ledger reservation must be excluded from the execution-time re-check");
     }
 
     // ── MoveFile cross-volume — name collision ────────────────────────────────
@@ -409,7 +460,7 @@ public sealed class JobExecutionEngineTests : IDisposable
                 },
             ]);
 
-        await MakeEngine(mover, feasible: true).ExecuteJobAsync(jobId, None);
+        await MakeEngine(mover).ExecuteJobAsync(jobId, None);
 
         (await ReadState(jobId)).Should().Be(JobState.Blocked);
         (await ReadBlockReason(jobId)).Should().Be(JobBlockReason.NameCollision);

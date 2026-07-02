@@ -42,14 +42,35 @@ public sealed class SpaceLedgerTests : IDisposable
         return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
     }
 
-    private Task<FeasibilityResult> Compute(int volId, long free, long required, bool online = true) =>
-        _ledger.ComputeFeasibilityAsync(volId, free, online, required, CancellationToken.None);
+    private Task<FeasibilityResult> Compute(int volId, long free, long required, bool online = true,
+                                            int? excludeJobId = null, int? sequenceOrder = null) =>
+        _ledger.ComputeFeasibilityAsync(volId, free, online, required, excludeJobId, sequenceOrder,
+            CancellationToken.None);
 
-    private Task Reserve(int jobId, int targetVol, long required, int? srcVol = null, long freed = 0) =>
-        _ledger.ReserveAsync(jobId, targetVol, required, srcVol, freed, CancellationToken.None);
+    // SequenceOrder defaults to the job id — tests that care about FIFO pass it explicitly.
+    private Task Reserve(int jobId, int targetVol, long required, int? srcVol = null, long freed = 0,
+                         int? sequenceOrder = null) =>
+        _ledger.ReserveAsync(jobId, sequenceOrder ?? jobId, targetVol, required, srcVol, freed,
+            CancellationToken.None);
 
     private Task Release(int jobId) =>
         _ledger.ReleaseAsync(jobId, CancellationToken.None);
+
+    /// <summary>RebuildFromDbAsync joins SequenceOrder back from OperationJobs — seed the row.</summary>
+    private void SeedJobRow(int jobId, int sequenceOrder)
+    {
+        using var db = _harness.CreateContext();
+        db.OperationJobs.Add(new FileTracert.Data.Entities.OperationJob
+        {
+            Id = jobId,
+            Type = FileTracert.Contracts.Enums.JobType.MoveFile,
+            State = FileTracert.Contracts.Enums.JobState.Pending,
+            SequenceOrder = sequenceOrder,
+            CreatedUtc = DateTime.UtcNow,
+            UpdatedUtc = DateTime.UtcNow,
+        });
+        db.SaveChanges();
+    }
 
     // ── no entries ───────────────────────────────────────────────────────────
 
@@ -189,6 +210,90 @@ public sealed class SpaceLedgerTests : IDisposable
         r.AvailableEstimateBytes.Should().Be(800);
     }
 
+    // ── FIX #2: excludeJobId — a job's own reservation must not count against it ──
+
+    [Fact]
+    public async Task Own_reservation_is_excluded_when_rechecking_an_enqueued_job()
+    {
+        // 800 required, 1000 free: feasible at enqueue. The enqueue writes +800.
+        await Reserve(jobId: 1, targetVol: 1, required: 800, sequenceOrder: 1);
+
+        // Without the exclusion the recheck would see available = 1000-800 = 200 < 800.
+        var r = await Compute(volId: 1, free: 1000, required: 800, excludeJobId: 1, sequenceOrder: 1);
+
+        r.Feasible.Should().BeTrue("the job's own reservation must not be double-counted");
+        r.AvailableEstimateBytes.Should().Be(1000);
+        r.ReservedBytes.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Exclusion_removes_both_own_reservation_and_own_liberation()
+    {
+        // Job 1 moves 500 from vol 2 to vol 1: +500 on vol 1, -500 on vol 2.
+        await Reserve(jobId: 1, targetVol: 1, required: 500, srcVol: 2, freed: 500, sequenceOrder: 1);
+
+        // Evaluating job 1 itself on its SOURCE volume must not credit its own liberation.
+        var r = await Compute(volId: 2, free: 100, required: 400, excludeJobId: 1, sequenceOrder: 1);
+
+        r.AvailableEstimateBytes.Should().Be(100);
+        r.Feasible.Should().BeFalse();
+    }
+
+    // ── FIFO order: only jobs that PRECEDE in the queue contribute ────────────
+
+    [Fact]
+    public async Task Earlier_liberation_unblocks_a_later_job()
+    {
+        // Job 1 (seq 1) moves 300 OFF vol 1 → liberation -300 on vol 1.
+        await Reserve(jobId: 1, targetVol: 2, required: 300, srcVol: 1, freed: 300, sequenceOrder: 1);
+
+        // Job 2 (seq 2) needs 350 on vol 1 with only 100 free: job 1's liberation counts.
+        var r = await Compute(volId: 1, free: 100, required: 350, excludeJobId: 2, sequenceOrder: 2);
+
+        r.Feasible.Should().BeTrue("the preceding job frees 300 before job 2 runs");
+        r.AvailableEstimateBytes.Should().Be(400); // 100 − (−300)
+    }
+
+    [Fact]
+    public async Task Later_liberation_is_not_credited_to_an_earlier_job()
+    {
+        // Job 3 (seq 3) will free 300 on vol 1 — but it runs AFTER job 2.
+        await Reserve(jobId: 3, targetVol: 2, required: 300, srcVol: 1, freed: 300, sequenceOrder: 3);
+
+        // Job 2 (seq 2) needs 350 on vol 1 with 100 free: job 3's liberation must NOT count.
+        var r = await Compute(volId: 1, free: 100, required: 350, excludeJobId: 2, sequenceOrder: 2);
+
+        r.Feasible.Should().BeFalse("a job enqueued later cannot free space for an earlier one");
+        r.AvailableEstimateBytes.Should().Be(100);
+        r.DeficitBytes.Should().Be(250);
+    }
+
+    [Fact]
+    public async Task Later_reservation_does_not_reduce_availability_for_an_earlier_job()
+    {
+        // Job 3 (seq 3) reserves 800 on vol 1 — irrelevant to job 2 (seq 2), which runs first.
+        await Reserve(jobId: 3, targetVol: 1, required: 800, sequenceOrder: 3);
+
+        var r = await Compute(volId: 1, free: 1000, required: 900, excludeJobId: 2, sequenceOrder: 2);
+
+        r.Feasible.Should().BeTrue();
+        r.AvailableEstimateBytes.Should().Be(1000);
+    }
+
+    [Fact]
+    public async Task Prospective_job_with_no_order_sees_all_active_deltas()
+    {
+        // Preview/enqueue path (null/null): the new job lands at the end of the queue,
+        // so every active entry precedes it.
+        await Reserve(jobId: 1, targetVol: 1, required: 400, sequenceOrder: 1);
+        await Reserve(jobId: 2, targetVol: 1, required: 300, sequenceOrder: 2);
+
+        var r = await Compute(volId: 1, free: 1000, required: 400);
+
+        r.Feasible.Should().BeFalse();
+        r.AvailableEstimateBytes.Should().Be(300);
+    }
+
     // ── EstimateIsLive ────────────────────────────────────────────────────────
 
     [Fact]
@@ -248,7 +353,8 @@ public sealed class SpaceLedgerTests : IDisposable
     [Fact]
     public async Task RebuildFromDb_restores_in_memory_state_from_active_entries()
     {
-        // Persist via the original ledger
+        // Persist via the original ledger (rebuild joins SequenceOrder from the job row)
+        SeedJobRow(jobId: 1, sequenceOrder: 1);
         await Reserve(jobId: 1, targetVol: 1, required: 600);
 
         // Create a fresh ledger instance pointing to the same DB
@@ -256,14 +362,32 @@ public sealed class SpaceLedgerTests : IDisposable
         await newLedger.RebuildFromDbAsync(CancellationToken.None);
 
         // Should see the 600-byte reservation from the DB
-        var r = await newLedger.ComputeFeasibilityAsync(1, 1000, true, 500, CancellationToken.None);
+        var r = await newLedger.ComputeFeasibilityAsync(1, 1000, true, 500, null, null, CancellationToken.None);
         r.AvailableEstimateBytes.Should().Be(400);
         r.Feasible.Should().BeFalse();
     }
 
     [Fact]
+    public async Task RebuildFromDb_preserves_FIFO_order_information()
+    {
+        // Job 2 (seq 2) reserves 600 on vol 1. After a restart+rebuild, evaluating job 1
+        // (seq 1, ahead of job 2) must NOT see job 2's later reservation.
+        SeedJobRow(jobId: 2, sequenceOrder: 2);
+        await Reserve(jobId: 2, targetVol: 1, required: 600, sequenceOrder: 2);
+
+        var newLedger = new SpaceLedger(CreateScopeFactory(_harness), NullLogger<SpaceLedger>.Instance);
+        await newLedger.RebuildFromDbAsync(CancellationToken.None);
+
+        var r = await newLedger.ComputeFeasibilityAsync(1, 1000, true, 900,
+            excludeJobId: 1, sequenceOrder: 1, ct: CancellationToken.None);
+        r.Feasible.Should().BeTrue("job 2's reservation comes later in the queue");
+        r.AvailableEstimateBytes.Should().Be(1000);
+    }
+
+    [Fact]
     public async Task RebuildFromDb_ignores_inactive_entries()
     {
+        SeedJobRow(jobId: 1, sequenceOrder: 1);
         await Reserve(jobId: 1, targetVol: 1, required: 600);
         await Release(jobId: 1); // marks entries inactive in DB
 
@@ -271,7 +395,7 @@ public sealed class SpaceLedgerTests : IDisposable
         await newLedger.RebuildFromDbAsync(CancellationToken.None);
 
         // Inactive entries must not be loaded
-        var r = await newLedger.ComputeFeasibilityAsync(1, 1000, true, 999, CancellationToken.None);
+        var r = await newLedger.ComputeFeasibilityAsync(1, 1000, true, 999, null, null, CancellationToken.None);
         r.Feasible.Should().BeTrue();
         r.AvailableEstimateBytes.Should().Be(1000);
     }
