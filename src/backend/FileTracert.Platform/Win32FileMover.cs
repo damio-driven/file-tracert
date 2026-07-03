@@ -162,17 +162,9 @@ internal sealed class Win32FileMover : IFileMover
         var mountFull = Path.GetFullPath(mount);
         var full = Path.GetFullPath(Path.Combine(mountFull, relativePath));
 
-        // Defense in depth: confirm the resolved path is still under the mount. Compare with a
-        // trailing separator so a sibling ("C:\Mount2") is not accepted for mount "C:\Mount".
-        var boundary = mountFull.EndsWith(Path.DirectorySeparatorChar)
-            ? mountFull
-            : mountFull + Path.DirectorySeparatorChar;
-
-        bool within =
-            full.Equals(boundary.TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase) ||
-            full.StartsWith(boundary, StringComparison.OrdinalIgnoreCase);
-
-        if (!within)
+        // Defense in depth: confirm the resolved path is still under the mount (same
+        // trailing-separator containment reused by the smoke harness's guard-rails).
+        if (!PathBoundary.IsWithin(mountFull, full))
             throw new InvalidOperationException(
                 $"Resolved path '{full}' escapes the volume mount '{mountFull}'.");
 

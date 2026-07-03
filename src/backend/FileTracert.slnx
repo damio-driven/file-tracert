@@ -3,6 +3,7 @@
   <Project Path="FileTracert.Business/FileTracert.Business.csproj" />
   <Project Path="FileTracert.Contracts/FileTracert.Contracts.csproj" />
   <Project Path="FileTracert.Data/FileTracert.Data.csproj" />
+  <Project Path="FileTracert.HardwareSmoke/FileTracert.HardwareSmoke.csproj" />
   <Project Path="FileTracert.Host/FileTracert.Host.csproj" />
   <Project Path="FileTracert.Platform/FileTracert.Platform.csproj" />
 </Solution>

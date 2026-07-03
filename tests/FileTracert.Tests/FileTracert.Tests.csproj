@@ -26,6 +26,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\backend\FileTracert.Contracts\FileTracert.Contracts.csproj" />
     <ProjectReference Include="..\..\src\backend\FileTracert.Data\FileTracert.Data.csproj" />
+    <ProjectReference Include="..\..\src\backend\FileTracert.HardwareSmoke\FileTracert.HardwareSmoke.csproj" />
     <ProjectReference Include="..\..\src\backend\FileTracert.Platform\FileTracert.Platform.csproj" />
     <ProjectReference Include="..\..\src\backend\FileTracert.Business\FileTracert.Business.csproj" />
     <ProjectReference Include="..\..\src\backend\FileTracert.Host\FileTracert.Host.csproj" />
