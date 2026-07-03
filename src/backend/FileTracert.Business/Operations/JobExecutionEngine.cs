@@ -154,9 +154,12 @@ public sealed class JobExecutionEngine
             var tgtVol = job.TargetVolume!;
             // Exclude this job's own enqueue reservation and anything enqueued after it:
             // the re-check answers "does it fit NOW, given what still precedes me in FIFO".
+            // HARD view (includeQueuedLiberations: false): a liberation promised by a preceding
+            // job that has not completed yet is not physical space — never copy on its strength.
             var feasibility = await _ledger.ComputeFeasibilityAsync(
                 tgtVol.Id, tgtVol.FreeBytesLastKnown, tgtVol.IsOnline, job.RequiredBytesTarget,
-                excludeJobId: job.Id, sequenceOrder: job.SequenceOrder, ct);
+                excludeJobId: job.Id, sequenceOrder: job.SequenceOrder,
+                includeQueuedLiberations: false, ct);
 
             if (!feasibility.Feasible)
             {
@@ -390,6 +393,21 @@ public sealed class JobExecutionEngine
     {
         job.State = JobState.Completed;
         job.CompletedUtc = DateTime.UtcNow;
+
+        // Fold the job's now-materialized space effect into the volumes' last-known free bytes
+        // BEFORE releasing its ledger entries: releasing alone would make the target look
+        // roomier (reservation gone, stale free unchanged) and the source liberation would
+        // vanish without ever reaching FreeBytesLastKnown — blocking jobs that now fit until
+        // the next volume probe. Estimate bookkeeping only; the periodic sync overwrites it.
+        if (!job.IsIntraVolume)
+        {
+            if (job.TargetVolume is not null && job.RequiredBytesTarget > 0)
+                job.TargetVolume.FreeBytesLastKnown =
+                    Math.Max(0, job.TargetVolume.FreeBytesLastKnown - job.RequiredBytesTarget);
+            if (job.SourceVolume is not null && job.FreedBytesSource > 0)
+                job.SourceVolume.FreeBytesLastKnown += job.FreedBytesSource;
+        }
+
         await _db.SaveChangesAsync(ct);
         await _ledger.ReleaseAsync(job.Id, ct);
         _logger.LogInformation("Job {Id} completed.", job.Id);

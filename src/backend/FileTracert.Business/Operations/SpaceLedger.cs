@@ -37,13 +37,14 @@ public sealed class SpaceLedger : ISpaceLedger
 
     public async Task<FeasibilityResult> ComputeFeasibilityAsync(
         int targetVolumeId, long freeBytesLastKnown, bool isOnline,
-        long requiredBytes, int? excludeJobId, int? sequenceOrder, CancellationToken ct)
+        long requiredBytes, int? excludeJobId, int? sequenceOrder,
+        bool includeQueuedLiberations, CancellationToken ct)
     {
         await _lock.WaitAsync(ct);
         try
         {
             return Compute(targetVolumeId, freeBytesLastKnown, isOnline, requiredBytes,
-                excludeJobId, sequenceOrder);
+                excludeJobId, sequenceOrder, includeQueuedLiberations);
         }
         finally { _lock.Release(); }
     }
@@ -143,7 +144,8 @@ public sealed class SpaceLedger : ISpaceLedger
 
     private FeasibilityResult Compute(int targetVolumeId, long freeBytesLastKnown,
                                       bool isOnline, long requiredBytes,
-                                      int? excludeJobId, int? sequenceOrder)
+                                      int? excludeJobId, int? sequenceOrder,
+                                      bool includeQueuedLiberations)
     {
         long netDelta = 0;
         long reserved = 0;
@@ -157,6 +159,10 @@ public sealed class SpaceLedger : ISpaceLedger
                 // that would demand ~2× the space and wrongly block a job that fits.
                 if (e.JobId == excludeJobId) continue;
                 if (sequenceOrder is not null && e.SequenceOrder > sequenceOrder.Value) continue;
+                // HARD view: an active negative delta is a liberation not yet materialized
+                // (entries are released when the freeing job completes) — planning may credit
+                // it, an execution re-check must not (never copy on a promise).
+                if (!includeQueuedLiberations && e.Delta < 0) continue;
 
                 netDelta += e.Delta;
                 if (e.Delta > 0) reserved += e.Delta;

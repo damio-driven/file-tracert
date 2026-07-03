@@ -43,9 +43,10 @@ public sealed class SpaceLedgerTests : IDisposable
     }
 
     private Task<FeasibilityResult> Compute(int volId, long free, long required, bool online = true,
-                                            int? excludeJobId = null, int? sequenceOrder = null) =>
+                                            int? excludeJobId = null, int? sequenceOrder = null,
+                                            bool includeQueuedLiberations = true) =>
         _ledger.ComputeFeasibilityAsync(volId, free, online, required, excludeJobId, sequenceOrder,
-            CancellationToken.None);
+            includeQueuedLiberations, CancellationToken.None);
 
     // SequenceOrder defaults to the job id — tests that care about FIFO pass it explicitly.
     private Task Reserve(int jobId, int targetVol, long required, int? srcVol = null, long freed = 0,
@@ -152,6 +153,33 @@ public sealed class SpaceLedgerTests : IDisposable
         var r = await Compute(volId: 2, free: 500, required: 750);
         r.Feasible.Should().BeTrue();
         r.AvailableEstimateBytes.Should().Be(800); // 500 − (−300) = 800
+    }
+
+    // FIX #2-FIFO: planning view credits promised liberations, the hard view must not.
+    [Fact]
+    public async Task Hard_view_ignores_unmaterialized_liberations_but_keeps_reservations()
+    {
+        // Job 1 (seq 1): move 300 bytes FROM vol 2 → TO vol 1: +300 on vol 1, −300 on vol 2.
+        await Reserve(jobId: 1, targetVol: 1, required: 300, srcVol: 2, freed: 300);
+
+        // Planning (enqueue/preview): vol 2 can count on the future liberation.
+        var planning = await Compute(volId: 2, free: 500, required: 750,
+            excludeJobId: 9, sequenceOrder: 9, includeQueuedLiberations: true);
+        planning.Feasible.Should().BeTrue();
+        planning.AvailableEstimateBytes.Should().Be(800);
+
+        // Hard (execution re-check): the 300 bytes are not on disk until job 1 completes.
+        var hard = await Compute(volId: 2, free: 500, required: 750,
+            excludeJobId: 9, sequenceOrder: 9, includeQueuedLiberations: false);
+        hard.Feasible.Should().BeFalse("a liberation is a promise, not physical space");
+        hard.AvailableEstimateBytes.Should().Be(500);
+        hard.DeficitBytes.Should().Be(250);
+
+        // Reservations (positive deltas) still count in the hard view.
+        var hardTarget = await Compute(volId: 1, free: 1000, required: 800,
+            excludeJobId: 9, sequenceOrder: 9, includeQueuedLiberations: false);
+        hardTarget.Feasible.Should().BeFalse();
+        hardTarget.AvailableEstimateBytes.Should().Be(700);
     }
 
     [Fact]
@@ -362,7 +390,7 @@ public sealed class SpaceLedgerTests : IDisposable
         await newLedger.RebuildFromDbAsync(CancellationToken.None);
 
         // Should see the 600-byte reservation from the DB
-        var r = await newLedger.ComputeFeasibilityAsync(1, 1000, true, 500, null, null, CancellationToken.None);
+        var r = await newLedger.ComputeFeasibilityAsync(1, 1000, true, 500, null, null, true, CancellationToken.None);
         r.AvailableEstimateBytes.Should().Be(400);
         r.Feasible.Should().BeFalse();
     }
@@ -379,7 +407,7 @@ public sealed class SpaceLedgerTests : IDisposable
         await newLedger.RebuildFromDbAsync(CancellationToken.None);
 
         var r = await newLedger.ComputeFeasibilityAsync(1, 1000, true, 900,
-            excludeJobId: 1, sequenceOrder: 1, ct: CancellationToken.None);
+            excludeJobId: 1, sequenceOrder: 1, includeQueuedLiberations: true, ct: CancellationToken.None);
         r.Feasible.Should().BeTrue("job 2's reservation comes later in the queue");
         r.AvailableEstimateBytes.Should().Be(1000);
     }
@@ -395,7 +423,7 @@ public sealed class SpaceLedgerTests : IDisposable
         await newLedger.RebuildFromDbAsync(CancellationToken.None);
 
         // Inactive entries must not be loaded
-        var r = await newLedger.ComputeFeasibilityAsync(1, 1000, true, 999, null, null, CancellationToken.None);
+        var r = await newLedger.ComputeFeasibilityAsync(1, 1000, true, 999, null, null, true, CancellationToken.None);
         r.Feasible.Should().BeTrue();
         r.AvailableEstimateBytes.Should().Be(1000);
     }

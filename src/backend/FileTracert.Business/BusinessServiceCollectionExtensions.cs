@@ -41,6 +41,9 @@ public static class BusinessServiceCollectionExtensions
         services.AddScoped<IndexUpdater>();
         services.AddScoped<JobExecutionEngine>();
 
+        // Revaluator runs after every completed job to wake Blocked(InsufficientSpace) jobs.
+        services.AddScoped<BlockedJobRevaluator>();
+
         // Real wall clock for the engine's copy-progress throttle; tests substitute a fake.
         services.AddSingleton(TimeProvider.System);
         return services;

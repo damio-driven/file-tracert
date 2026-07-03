@@ -24,6 +24,13 @@ public interface ISpaceLedger
     /// queue apply — a liberation from a job enqueued later cannot be credited).
     /// Pass null/null for a prospective job not yet in the queue (preview, enqueue check):
     /// it would land at the end, so every active delta precedes it.
+    ///
+    /// <paramref name="includeQueuedLiberations"/> selects the view:
+    ///   true  → PLANNING view (enqueue/preview): promised liberations (negative deltas) of
+    ///           preceding jobs count as available — the queue will materialize them in order.
+    ///   false → HARD view (execution re-check, Blocked revaluation): a liberation is only a
+    ///           promise until the freeing job completes; never copy on its strength. Only
+    ///           reservations (positive deltas) of preceding jobs are subtracted.
     /// </summary>
     Task<FeasibilityResult> ComputeFeasibilityAsync(
         int targetVolumeId,
@@ -32,6 +39,7 @@ public interface ISpaceLedger
         long requiredBytes,
         int? excludeJobId,
         int? sequenceOrder,
+        bool includeQueuedLiberations,
         CancellationToken ct);
 
     /// <summary>

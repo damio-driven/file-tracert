@@ -1,6 +1,7 @@
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Operations;
 using FileTracert.Contracts.Paging;
+using FileTracert.Contracts.Platform;
 using FileTracert.Data;
 using FileTracert.Data.Entities;
 using Microsoft.EntityFrameworkCore;
@@ -20,17 +21,20 @@ public sealed class QueueService : IQueueService
     private readonly FileTracertDbContext _db;
     private readonly ISpaceLedger _ledger;
     private readonly IJobCancellationRegistry _cancellation;
+    private readonly IFileMover _mover;
     private readonly ILogger<QueueService> _logger;
 
     public QueueService(
         FileTracertDbContext db,
         ISpaceLedger ledger,
         IJobCancellationRegistry cancellation,
+        IFileMover mover,
         ILogger<QueueService> logger)
     {
         _db = db;
         _ledger = ledger;
         _cancellation = cancellation;
+        _mover = mover;
         _logger = logger;
     }
 
@@ -76,10 +80,11 @@ public sealed class QueueService : IQueueService
             .FirstOrDefaultAsync(v => v.Id == targetVolumeId.Value, ct)
             ?? throw new InvalidOperationException($"Target volume {targetVolumeId} not found.");
 
-        // Prospective job: it would land at the end of the queue, so all active deltas apply.
+        // Prospective job: it would land at the end of the queue, so all active deltas apply
+        // (planning view — promised liberations count, the queue materializes them in order).
         return await _ledger.ComputeFeasibilityAsync(
             vol.Id, vol.FreeBytesLastKnown, vol.IsOnline, totalBytes,
-            excludeJobId: null, sequenceOrder: null, ct);
+            excludeJobId: null, sequenceOrder: null, includeQueuedLiberations: true, ct);
     }
 
     public async Task<FeasibilityResult> PreviewBatchAsync(
@@ -111,7 +116,7 @@ public sealed class QueueService : IQueueService
 
             var f = await _ledger.ComputeFeasibilityAsync(
                 vol.Id, vol.FreeBytesLastKnown, vol.IsOnline, requiredBytes,
-                excludeJobId: null, sequenceOrder: null, ct);
+                excludeJobId: null, sequenceOrder: null, includeQueuedLiberations: true, ct);
 
             if (tightest is null ||
                 f.AvailableEstimateBytes - f.RequiredBytes < tightest.AvailableEstimateBytes - tightest.RequiredBytes)
@@ -163,6 +168,8 @@ public sealed class QueueService : IQueueService
             FeasibilityResult? feasibility = null;
             if (job.State == JobState.Blocked && job.TargetVolumeId.HasValue && job.TargetVolume is not null)
             {
+                // Hard view: the deficit shown for a Blocked job must explain the block,
+                // i.e. match the engine's execution-time re-check, not the planning estimate.
                 feasibility = await _ledger.ComputeFeasibilityAsync(
                     job.TargetVolumeId.Value,
                     job.TargetVolume.FreeBytesLastKnown,
@@ -170,6 +177,7 @@ public sealed class QueueService : IQueueService
                     job.RequiredBytesTarget,
                     excludeJobId: job.Id,
                     sequenceOrder: job.SequenceOrder,
+                    includeQueuedLiberations: false,
                     ct);
             }
             dtos.Add(MapToDto(job, [.. job.Items], feasibility));
@@ -332,7 +340,7 @@ public sealed class QueueService : IQueueService
 
             var f = await _ledger.ComputeFeasibilityAsync(
                 targetVol.Id, targetVol.FreeBytesLastKnown, targetVol.IsOnline, file.SizeBytes,
-                excludeJobId: null, sequenceOrder: null, ct);
+                excludeJobId: null, sequenceOrder: null, includeQueuedLiberations: true, ct);
 
             job.EstimateIsLive = f.EstimateIsLive;
             if (!f.Feasible)
@@ -403,7 +411,7 @@ public sealed class QueueService : IQueueService
         {
             var f = await _ledger.ComputeFeasibilityAsync(
                 targetVol.Id, targetVol.FreeBytesLastKnown, targetVol.IsOnline, total,
-                excludeJobId: null, sequenceOrder: null, ct);
+                excludeJobId: null, sequenceOrder: null, includeQueuedLiberations: true, ct);
 
             job.EstimateIsLive = f.EstimateIsLive;
             if (!f.Feasible)

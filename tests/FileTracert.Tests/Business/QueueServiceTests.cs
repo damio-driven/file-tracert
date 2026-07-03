@@ -55,7 +55,9 @@ public sealed class QueueServiceTests : IDisposable
     private readonly JobCancellationRegistry _cancellation = new();
 
     private QueueService Svc() =>
-        new(_harness.CreateContext(), _ledger, _cancellation, NullLogger<QueueService>.Instance);
+        new(_harness.CreateContext(), _ledger, _cancellation,
+            NSubstitute.Substitute.For<FileTracert.Contracts.Platform.IFileMover>(),
+            NullLogger<QueueService>.Instance);
 
     private void Seed()
     {
@@ -208,7 +210,7 @@ public sealed class QueueServiceTests : IDisposable
 
         // Ledger must reflect the reservation: 5000 free − 1000 reserved = 4000 available.
         // Asking for 4500 should now be infeasible.
-        var f = await _ledger.ComputeFeasibilityAsync(Vol2Id, 5_000, true, 4_500, null, null, None);
+        var f = await _ledger.ComputeFeasibilityAsync(Vol2Id, 5_000, true, 4_500, null, null, true, None);
         f.Feasible.Should().BeFalse();
         f.AvailableEstimateBytes.Should().Be(4_000);
     }
@@ -373,13 +375,13 @@ public sealed class QueueServiceTests : IDisposable
         }, None);
 
         // Ledger has a reservation before cancel.
-        var before = await _ledger.ComputeFeasibilityAsync(Vol2Id, 5_000, true, 4_500, null, null, None);
+        var before = await _ledger.ComputeFeasibilityAsync(Vol2Id, 5_000, true, 4_500, null, null, true, None);
         before.Feasible.Should().BeFalse(); // 5000 - 1000 = 4000 < 4500
 
         await Svc().CancelAsync(dto.Id, None);
 
         // After cancel the reservation is released.
-        var after = await _ledger.ComputeFeasibilityAsync(Vol2Id, 5_000, true, 4_500, null, null, None);
+        var after = await _ledger.ComputeFeasibilityAsync(Vol2Id, 5_000, true, 4_500, null, null, true, None);
         after.Feasible.Should().BeTrue(); // 5000 ≥ 4500
     }
 
@@ -578,7 +580,7 @@ public sealed class QueueServiceTests : IDisposable
         txtItem.TargetRelativePath.Should().Be(@"Archive\Docs\report.txt");
 
         // Ledger must hold the 3 000-byte reservation on vol2.
-        var f = await _ledger.ComputeFeasibilityAsync(Vol2Id, 5_000, true, 2_500, null, null, None);
+        var f = await _ledger.ComputeFeasibilityAsync(Vol2Id, 5_000, true, 2_500, null, null, true, None);
         f.AvailableEstimateBytes.Should().Be(2_000);
     }
 }

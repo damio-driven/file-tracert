@@ -48,19 +48,32 @@ public sealed class QueueProcessorWorker : BackgroundService
                     continue;
                 }
 
-                using var scope = _services.CreateScope();
-                var engine = scope.ServiceProvider.GetRequiredService<JobExecutionEngine>();
+                using (var scope = _services.CreateScope())
+                {
+                    var engine = scope.ServiceProvider.GetRequiredService<JobExecutionEngine>();
 
-                // Run under a per-job token so a Cancel request from the API can interrupt this
-                // job specifically; linked to stoppingToken so shutdown still cancels it.
-                var jobToken = _cancellation.Register(jobId.Value, stoppingToken);
-                try
-                {
-                    await engine.ExecuteJobAsync(jobId.Value, jobToken);
+                    // Run under a per-job token so a Cancel request from the API can interrupt this
+                    // job specifically; linked to stoppingToken so shutdown still cancels it.
+                    var jobToken = _cancellation.Register(jobId.Value, stoppingToken);
+                    try
+                    {
+                        await engine.ExecuteJobAsync(jobId.Value, jobToken);
+                    }
+                    finally
+                    {
+                        _cancellation.Remove(jobId.Value);
+                    }
                 }
-                finally
+
+                // §4 revaluation cycle: a completed job may have materialized the space a
+                // Blocked(InsufficientSpace) job is waiting for — wake those up so they
+                // restart on their own (fresh scope: the engine's scope is already spent).
+                if (await IsCompletedAsync(jobId.Value, stoppingToken))
                 {
-                    _cancellation.Remove(jobId.Value);
+                    using var revalScope = _services.CreateScope();
+                    await revalScope.ServiceProvider
+                        .GetRequiredService<BlockedJobRevaluator>()
+                        .RevaluateAsync(stoppingToken);
                 }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -75,6 +88,16 @@ public sealed class QueueProcessorWorker : BackgroundService
         }
 
         _logger.LogInformation("QueueProcessorWorker stopping.");
+    }
+
+    private async Task<bool> IsCompletedAsync(int jobId, CancellationToken ct)
+    {
+        using var scope = _services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<FileTracertDbContext>();
+        return await db.OperationJobs
+            .Where(j => j.Id == jobId)
+            .Select(j => j.State)
+            .FirstOrDefaultAsync(ct) == JobState.Completed;
     }
 
     private async Task<int?> PeekNextRunnableJobAsync(CancellationToken ct)
