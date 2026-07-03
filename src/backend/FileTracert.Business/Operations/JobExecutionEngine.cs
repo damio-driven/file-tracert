@@ -183,7 +183,9 @@ public sealed class JobExecutionEngine
             // A Cancel may have committed (from the API's DbContext) without cancelling our token
             // — re-read before advancing so we don't march on to the destructive steps.
             if (await AbortIfCancelledAsync(job)) return;
-            if (job.Items.All(i => i.State is JobItemState.Copied or JobItemState.Done))
+            // Verified counts as "copy complete": a retried job can carry items already
+            // finalized by the previous attempt — they must not hold the gate forever.
+            if (job.Items.All(i => i.State is JobItemState.Copied or JobItemState.Verified or JobItemState.Done))
                 await TransitionAsync(job, JobState.Verifying, ct);
         }
 
@@ -339,9 +341,13 @@ public sealed class JobExecutionEngine
 
         if (job.Type == JobType.MoveFile)
         {
-            var item = job.Items.First(i => i.State == JobItemState.Verified);
-            _mover.DeleteToRecycleBin(srcGuid, item.SourceRelativePath);
-            item.State = JobItemState.Done;
+            // FirstOrDefault: on a resume/retry the single item may already be Done.
+            var item = job.Items.FirstOrDefault(i => i.State == JobItemState.Verified);
+            if (item is not null)
+            {
+                _mover.DeleteToRecycleBin(srcGuid, item.SourceRelativePath);
+                item.State = JobItemState.Done;
+            }
         }
         else
         {

@@ -104,6 +104,27 @@ public sealed class OperationsController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// Puts a Blocked or Failed job back in queue for another attempt (Riprova).
+    /// Returns 400 for non-retryable states (Completed, Cancelled, already queued/running).
+    /// </summary>
+    [HttpPost("{id:int}/retry")]
+    public async Task<ActionResult<OperationJobDto>> Retry(int id, CancellationToken ct)
+    {
+        try
+        {
+            return Ok(await _queue.RetryAsync(id, ct));
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("not found"))
+        {
+            return NotFound(new { error = ex.Message });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
     /// <summary>Cancels a non-terminal job and releases its ledger reservation.</summary>
     [HttpDelete("{id:int}")]
     public async Task<IActionResult> Cancel(int id, CancellationToken ct)

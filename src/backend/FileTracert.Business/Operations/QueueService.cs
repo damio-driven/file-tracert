@@ -159,6 +159,55 @@ public sealed class QueueService : IQueueService
         _logger.LogInformation("Cancelled job {Id}.", jobId);
     }
 
+    public async Task<OperationJobDto> RetryAsync(int jobId, CancellationToken ct)
+    {
+        var job = await _db.OperationJobs
+            .Include(j => j.Items)
+            .Include(j => j.SourceVolume)
+            .Include(j => j.TargetVolume)
+            .FirstOrDefaultAsync(j => j.Id == jobId, ct)
+            ?? throw new InvalidOperationException($"Job {jobId} not found.");
+
+        if (job.State is not (JobState.Blocked or JobState.Failed))
+            throw new InvalidOperationException(
+                $"Job {jobId} is not retryable in state {job.State} (only Blocked or Failed).");
+
+        // Leftover partials are garbage: the retry re-copies from scratch (fix #10).
+        CleanupPartials(job);
+
+        // Reset every item whose copy did not reach finalization. Verified items keep their
+        // finalized target file; Done items already lost their source — both must NOT re-copy.
+        foreach (var item in job.Items.Where(i =>
+                     i.State is JobItemState.Pending or JobItemState.Copying
+                               or JobItemState.Copied or JobItemState.Failed))
+        {
+            item.State = JobItemState.Pending;
+            item.BytesCopied = 0;
+            item.ErrorMessage = null;
+        }
+
+        job.State = JobState.Pending;
+        job.BlockReason = JobBlockReason.None;
+        job.ErrorMessage = null;
+        job.CompletedUtc = null;
+        job.RetryCount++;
+        await _db.SaveChangesAsync(ct);
+
+        // Ledger coherence (same principle as the atomic enqueue, fix #2): a Failed job
+        // released its reservation, an engine-Blocked one kept it, an enqueue-Blocked one
+        // never had it — release-then-reserve normalizes all three to exactly one set.
+        if (!job.IsIntraVolume && job.RequiredBytesTarget > 0 && job.TargetVolumeId.HasValue)
+        {
+            await _ledger.ReleaseAsync(job.Id, ct);
+            await _ledger.ReserveAsync(
+                job.Id, job.SequenceOrder, job.TargetVolumeId.Value,
+                job.RequiredBytesTarget, job.SourceVolumeId, job.FreedBytesSource, ct);
+        }
+
+        _logger.LogInformation("Job {Id} manually retried (attempt {N}).", job.Id, job.RetryCount);
+        return MapToDto(job, [.. job.Items], null);
+    }
+
     private void CleanupPartials(OperationJob job)
     {
         var tgtGuid = job.TargetVolume?.VolumeGuid;

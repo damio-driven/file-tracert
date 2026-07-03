@@ -151,8 +151,9 @@
   }
 
   .col-actions {
-    width: 80px;
+    width: 130px; // fits Riprova + Annulla side by side
     text-align: right;
+    white-space: nowrap;
   }
 }
 
@@ -309,6 +310,16 @@
   justify-content: center;
   font-size: 13px;
   border-radius: var(--r-ctl);
+}
+
+.retry-btn {
+  height: 28px;
+  padding: 0 var(--sp-2);
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  border-radius: var(--r-ctl);
+  margin-right: var(--sp-1);
 }
 
 .done-time {

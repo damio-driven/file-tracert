@@ -35,4 +35,9 @@ export class QueueApi {
   cancel(id: number): Observable<void> {
     return this.http.delete<void>(`${this.base}/${id}`);
   }
+
+  /** Puts a Blocked/Failed job back in queue for another attempt. */
+  retry(id: number): Observable<OperationJobDto> {
+    return this.http.post<OperationJobDto>(`${this.base}/${id}/retry`, null);
+  }
 }

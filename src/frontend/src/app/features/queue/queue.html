@@ -182,6 +182,14 @@
 
               <!-- Actions -->
               <td class="col-actions">
+                @if (canRetry(job.state)) {
+                  <button class="ft-btn ft-btn--ghost retry-btn"
+                          [disabled]="isRetrying(job.id)"
+                          (click)="retry(job.id)"
+                          title="Riprova operazione">
+                    {{ isRetrying(job.id) ? '…' : 'Riprova' }}
+                  </button>
+                }
                 @if (!isTerminal(job.state)) {
                   <button class="ft-btn ft-btn--danger-ghost cancel-btn"
                           [disabled]="isCancelling(job.id)"

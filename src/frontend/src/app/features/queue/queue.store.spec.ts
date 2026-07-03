@@ -48,6 +48,7 @@ function setup(apiMock: Partial<QueueApi> = {}) {
         useValue: {
           list: vi.fn(() => of(pagedResult([]))),
           cancel: vi.fn(() => of(undefined)),
+          retry: vi.fn(() => of(makeJob(1, 'Pending'))),
           enqueue: vi.fn(() => of(makeJob(1, 'Pending'))),
           preview: vi.fn(() => of({})),
           ...apiMock,
@@ -145,6 +146,37 @@ describe('QueueStore', () => {
     const store = setup();
     await store.cancel(99);
     expect(store.cancellingIds()).not.toContain(99);
+  });
+
+  // FEATURE Riprova — manual retry of Blocked/Failed jobs.
+  it('retry calls API and refreshes list', async () => {
+    const retrySpy = vi.fn(() => of(makeJob(1, 'Pending')));
+    const listSpy = vi.fn()
+      .mockReturnValueOnce(of(pagedResult([makeJob(1, 'Failed')])))
+      .mockReturnValueOnce(of(pagedResult([makeJob(1, 'Pending')])));
+
+    const store = setup({ list: listSpy, retry: retrySpy });
+    await store.load();
+    expect(store.jobs()[0].state).toBe('Failed');
+
+    await store.retry(1);
+
+    expect(retrySpy).toHaveBeenCalledWith(1);
+    expect(store.jobs()[0].state).toBe('Pending');
+  });
+
+  it('retry removes id from retryingIds after completion', async () => {
+    const store = setup();
+    await store.retry(99);
+    expect(store.retryingIds()).not.toContain(99);
+  });
+
+  it('error state set on retry failure', async () => {
+    const store = setup({
+      retry: vi.fn(() => throwError(() => new Error('Cannot retry'))),
+    });
+    await store.retry(1);
+    expect(store.error()).toBe('Cannot retry');
   });
 
   it('error state set on load failure', async () => {

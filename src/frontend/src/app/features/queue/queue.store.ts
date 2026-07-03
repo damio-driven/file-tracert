@@ -12,6 +12,7 @@ interface QueueState {
   skip: number;
   take: number;
   cancellingIds: number[];
+  retryingIds: number[];
 }
 
 const initial: QueueState = {
@@ -21,6 +22,7 @@ const initial: QueueState = {
   skip: 0,
   take: 50,
   cancellingIds: [],
+  retryingIds: [],
 };
 
 const ACTIVE_STATES = new Set(['Copying', 'Verifying', 'DeletingSource']);
@@ -78,6 +80,18 @@ export const QueueStore = signalStore(
           patchState(store, { error: (e as Error).message });
         } finally {
           patchState(store, { cancellingIds: store.cancellingIds().filter(x => x !== id) });
+        }
+      },
+      /** Riprova: puts a Blocked/Failed job back in queue and reloads. */
+      async retry(id: number): Promise<void> {
+        patchState(store, { retryingIds: [...store.retryingIds(), id] });
+        try {
+          await firstValueFrom(api.retry(id));
+          await doLoad(store.skip(), store.take());
+        } catch (e) {
+          patchState(store, { error: (e as Error).message });
+        } finally {
+          patchState(store, { retryingIds: store.retryingIds().filter(x => x !== id) });
         }
       },
     };

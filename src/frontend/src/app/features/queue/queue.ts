@@ -110,6 +110,19 @@ export class Queue implements OnInit, OnDestroy {
     this.store.cancel(id);
   }
 
+  /** Riprova is offered only for Blocked/Failed jobs (the backend rejects the rest). */
+  protected canRetry(state: JobState): boolean {
+    return state === 'Blocked' || state === 'Failed';
+  }
+
+  protected isRetrying(id: number): boolean {
+    return this.store.retryingIds().includes(id);
+  }
+
+  protected retry(id: number): void {
+    this.store.retry(id);
+  }
+
   protected refresh(): void {
     this.store.refresh();
   }

@@ -29,6 +29,14 @@ public interface IQueueService
     /// <summary>Cancels a non-terminal job and releases its ledger entries.</summary>
     Task CancelAsync(int jobId, CancellationToken ct);
 
+    /// <summary>
+    /// Puts a Blocked or Failed job back in queue (Pending) for another attempt: cleans
+    /// leftover <c>.fadit-partial</c> files, resets non-finalized items for a re-copy from
+    /// scratch and normalizes the ledger reservation. Rejects any other state
+    /// (Completed/Cancelled are terminal by user intent; runnable states are already queued).
+    /// </summary>
+    Task<OperationJobDto> RetryAsync(int jobId, CancellationToken ct);
+
     /// <summary>Returns all jobs ordered by SequenceOrder. Feasibility is attached for Blocked jobs.</summary>
     Task<PagedResult<OperationJobDto>> ListAsync(int skip, int take, CancellationToken ct);
 }
