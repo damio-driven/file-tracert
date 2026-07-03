@@ -44,6 +44,9 @@ public interface IFileMover
     /// <summary>Sends a file or directory to the Recycle Bin (never hard-deletes).</summary>
     void DeleteToRecycleBin(string volGuid, string relativePath);
 
+    /// <summary>Returns <c>true</c> when a file or directory exists at the volume-relative path.</summary>
+    bool Exists(string volGuid, string relativePath);
+
     /// <summary>Creates all directories in <paramref name="relativePath"/> that do not yet exist.</summary>
     void EnsureTargetDirectory(string volGuid, string relativePath);
 }

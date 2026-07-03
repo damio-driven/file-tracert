@@ -116,6 +116,12 @@ internal sealed class Win32FileMover : IFileMover
         Directory.CreateDirectory(full);
     }
 
+    public bool Exists(string volGuid, string relativePath)
+    {
+        var full = Resolve(volGuid, relativePath);
+        return File.Exists(full) || Directory.Exists(full);
+    }
+
     // ── private helpers ─────────────────────────────────────────────────────
 
     private static string Resolve(string volumeGuid, string relativePath)

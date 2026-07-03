@@ -88,7 +88,7 @@ public sealed class JobExecutionEngine
             if (await IsCancelledInDbAsync(job.Id))
             {
                 _logger.LogInformation("Job {Id}: cancelled during execution — cleaning partials.", job.Id);
-                CleanupPartials(job);
+                await CleanupPartialsAsync(job);
                 return;
             }
             throw;
@@ -439,6 +439,11 @@ public sealed class JobExecutionEngine
         job.CompletedUtc = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
         await _ledger.ReleaseAsync(job.Id, ct);
+
+        // FIX #10-partial: a Failed job's .fadit-partial files are discardable garbage
+        // (a retry re-copies from scratch) — never leave them on the target.
+        await CleanupPartialsAsync(job);
+
         _logger.LogError("Job {Id} failed: {Msg}.", job.Id, message);
 
         // Resilience, not silence: the processor moves on to the next job, but the
@@ -481,23 +486,41 @@ public sealed class JobExecutionEngine
 
         _logger.LogInformation(
             "Job {Id}: cancellation detected — aborting before the next step; source left untouched.", job.Id);
-        CleanupPartials(job);
+        await CleanupPartialsAsync(job);
         return true;
     }
 
-    private void CleanupPartials(OperationJob job)
+    /// <summary>
+    /// Deletes every item's <c>.fadit-partial</c> from the target and clears its
+    /// <c>TempPath</c> pointer (persisted with <see cref="CancellationToken.None"/> —
+    /// cleanup runs on failure/cancel paths where the job token may already be tripped).
+    /// A partial that cannot be removed keeps its TempPath so a later pass can retry.
+    /// </summary>
+    private async Task CleanupPartialsAsync(OperationJob job)
     {
         var tgtGuid = job.TargetVolume?.VolumeGuid;
         if (tgtGuid is null) return;
 
+        bool anyCleared = false;
         foreach (var item in job.Items.Where(i => !string.IsNullOrEmpty(i.TempPath)))
         {
-            try { _mover.DeleteToRecycleBin(tgtGuid, item.TempPath!); }
+            try
+            {
+                // A partial that never hit the disk (copy aborted before creating it) is
+                // already clean — recycling a missing path would throw and leave the pointer.
+                if (_mover.Exists(tgtGuid, item.TempPath!))
+                    _mover.DeleteToRecycleBin(tgtGuid, item.TempPath!);
+                item.TempPath = null;
+                anyCleared = true;
+            }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Job {Id}: could not remove orphan partial '{Path}'.", job.Id, item.TempPath);
             }
         }
+
+        if (anyCleared)
+            await _db.SaveChangesAsync(CancellationToken.None);
     }
 
     // ── path utilities ────────────────────────────────────────────────────────

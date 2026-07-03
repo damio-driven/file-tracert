@@ -130,7 +130,10 @@ public sealed class QueueService : IQueueService
 
     public async Task CancelAsync(int jobId, CancellationToken ct)
     {
-        var job = await _db.OperationJobs.FindAsync([jobId], ct)
+        var job = await _db.OperationJobs
+            .Include(j => j.Items)
+            .Include(j => j.TargetVolume)
+            .FirstOrDefaultAsync(j => j.Id == jobId, ct)
             ?? throw new InvalidOperationException($"Job {jobId} not found.");
 
         if (TerminalStates.Contains(job.State))
@@ -145,7 +148,38 @@ public sealed class QueueService : IQueueService
         _cancellation.Cancel(jobId);
 
         await _ledger.ReleaseAsync(jobId, ct);
+
+        // FIX #10-partial: a job cancelled while NOT running (e.g. checkpointed in Copying
+        // after a shutdown, or Blocked with copied items) has orphan .fadit-partial files no
+        // engine pass will ever sweep. A running job's engine does its own cleanup; here a
+        // locked partial just logs and stays for the engine to remove.
+        CleanupPartials(job);
+        await _db.SaveChangesAsync(ct);
+
         _logger.LogInformation("Cancelled job {Id}.", jobId);
+    }
+
+    private void CleanupPartials(OperationJob job)
+    {
+        var tgtGuid = job.TargetVolume?.VolumeGuid;
+        if (tgtGuid is null) return;
+
+        foreach (var item in job.Items.Where(i => !string.IsNullOrEmpty(i.TempPath)))
+        {
+            try
+            {
+                if (_mover.Exists(tgtGuid, item.TempPath!))
+                    _mover.DeleteToRecycleBin(tgtGuid, item.TempPath!);
+                item.TempPath = null;
+            }
+            catch (Exception ex)
+            {
+                // Not silent: logged in full; the partial is garbage on a terminal job, the
+                // user's action (cancel) still succeeded — no need to fail the request.
+                _logger.LogWarning(ex, "Job {Id}: could not remove orphan partial '{Path}'.",
+                    job.Id, item.TempPath);
+            }
+        }
     }
 
     public async Task<PagedResult<OperationJobDto>> ListAsync(int skip, int take, CancellationToken ct)

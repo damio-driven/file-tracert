@@ -174,6 +174,7 @@ public sealed class JobCancellationTests : IDisposable
             => _inner.CopyFileAsync(sv, sr, dv, dpr, p, ct);
         public void FinalizePartial(string v, string p, string f) => _inner.FinalizePartial(v, p, f);
         public void DeleteToRecycleBin(string v, string r) => _inner.DeleteToRecycleBin(v, r);
+        public bool Exists(string v, string r) => _inner.Exists(v, r);
         public void EnsureTargetDirectory(string v, string r) => _inner.EnsureTargetDirectory(v, r);
     }
 }
