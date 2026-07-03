@@ -108,8 +108,13 @@ export class Catalog implements OnInit {
     this.pickerOpen = true;
   }
 
+  /** Closing the picker (Annulla/backdrop) must not lose the selection (UX fix). */
   protected closePicker(): void {
     this.pickerOpen = false;
+  }
+
+  /** Only a successful enqueue consumes the selection. */
+  protected onPickerCompleted(): void {
     this.store.clearSelection();
   }
 }

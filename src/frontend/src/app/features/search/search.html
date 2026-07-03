@@ -296,5 +296,5 @@
 </section>
 
 @if (pickerOpen) {
-  <ft-operation-picker [files]="pickerFiles()" (closed)="closePicker()" />
+  <ft-operation-picker [files]="pickerFiles()" (closed)="closePicker()" (completed)="onPickerCompleted()" />
 }

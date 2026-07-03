@@ -59,6 +59,7 @@ function setup() {
 
   const fixture = TestBed.createComponent(OperationPicker);
   fixture.componentRef.setInput('files', files);
+  // (fixture exposed for output subscriptions in the UX tests)
   const cmp = fixture.componentInstance as unknown as {
     targetVolumeId: number | null;
     canSubmit: boolean;
@@ -79,7 +80,7 @@ function setup() {
   };
   cmp.targetVolumeId = 1;
 
-  return { enqueue, previewBatch, children, cmp };
+  return { enqueue, previewBatch, children, cmp, fixture };
 }
 
 describe('OperationPicker target path', () => {
@@ -177,6 +178,36 @@ describe('OperationPicker target path', () => {
     expect(batch).toHaveLength(2);
     expect(batch.map(r => r.sourceFileId)).toEqual([1, 2]);
     expect(batch.every(r => r.targetRelativePath === 'Archivio')).toBe(true);
+  });
+
+  // UX — "Annulla" must not wipe the selection: the picker signals a successful enqueue
+  // via `completed`; a plain close emits only `closed`, and the parent keeps the selection.
+  it('a successful enqueue emits completed; a plain close does not', async () => {
+    const { cmp, fixture } = setup();
+
+    const completed = vi.fn();
+    const closed = vi.fn();
+    fixture.componentInstance.completed.subscribe(completed);
+    fixture.componentInstance.closed.subscribe(closed);
+
+    (cmp as unknown as { close(): void }).close();
+    expect(closed).toHaveBeenCalledTimes(1);
+    expect(completed).not.toHaveBeenCalled();
+
+    await cmp.enqueue();
+    expect(completed).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failed enqueue does not emit completed', async () => {
+    const { cmp, fixture, enqueue } = setup();
+    enqueue.mockImplementationOnce(() => throwError(() => new Error('boom')));
+
+    const completed = vi.fn();
+    fixture.componentInstance.completed.subscribe(completed);
+
+    await cmp.enqueue();
+
+    expect(completed).not.toHaveBeenCalled();
   });
 
   it('a stale fetch error is cleared once a subsequent navigation succeeds', async () => {

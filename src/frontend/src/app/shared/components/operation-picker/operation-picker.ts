@@ -30,7 +30,10 @@ interface FolderCrumb {
 })
 export class OperationPicker implements OnInit {
   readonly files = input.required<SelectedFile[]>();
+  /** Popup dismissed (Annulla, backdrop, X). The parent must NOT clear the selection. */
   readonly closed = output<void>();
+  /** Whole batch enqueued successfully — the only event that consumes the selection. */
+  readonly completed = output<void>();
 
   protected readonly volumes = inject(VolumesStore);
   private readonly api = inject(QueueApi);
@@ -202,6 +205,7 @@ export class OperationPicker implements OnInit {
       }
       this.enqueuedCount.set(count);
       this.enqueued.set(true);
+      this.completed.emit();
     } catch (e) {
       this.error.set((e as Error).message);
     } finally {
