@@ -17,5 +17,9 @@ public sealed class OperationJobItemConfiguration : IEntityTypeConfiguration<Ope
 
         // Job FK relationship configured on the OperationJob side (Cascade).
         builder.HasIndex(x => x.JobId);
+
+        // Every enqueue's per-file guard filters OperationJobItems by FileId on a table that grows
+        // without bound; without this index that is a full scan (C4).
+        builder.HasIndex(x => x.FileId);
     }
 }

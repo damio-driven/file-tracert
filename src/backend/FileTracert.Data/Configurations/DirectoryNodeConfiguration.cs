@@ -35,5 +35,9 @@ public sealed class DirectoryNodeConfiguration : IEntityTypeConfiguration<Direct
             .OnDelete(DeleteBehavior.Restrict);
 
         builder.HasIndex(x => new { x.VolumeId, x.ParentId });
+
+        // Subtree queries (move-folder expansion, overlap guard, source-subtree delete) filter on
+        // MaterializedPath with prefix/StartsWith predicates — index it so those are seeks, not scans (C4).
+        builder.HasIndex(x => x.MaterializedPath);
     }
 }
