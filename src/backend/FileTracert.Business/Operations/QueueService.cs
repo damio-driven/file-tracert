@@ -22,6 +22,7 @@ public sealed class QueueService : IQueueService
     private readonly ISpaceLedger _ledger;
     private readonly IJobCancellationRegistry _cancellation;
     private readonly IFileMover _mover;
+    private readonly IQueueSignal _signal;
     private readonly ILogger<QueueService> _logger;
 
     public QueueService(
@@ -29,12 +30,14 @@ public sealed class QueueService : IQueueService
         ISpaceLedger ledger,
         IJobCancellationRegistry cancellation,
         IFileMover mover,
+        IQueueSignal signal,
         ILogger<QueueService> logger)
     {
         _db = db;
         _ledger = ledger;
         _cancellation = cancellation;
         _mover = mover;
+        _signal = signal;
         _logger = logger;
     }
 
@@ -203,6 +206,9 @@ public sealed class QueueService : IQueueService
                 job.Id, job.SequenceOrder, job.TargetVolumeId.Value,
                 job.RequiredBytesTarget, job.SourceVolumeId, job.FreedBytesSource, ct);
         }
+
+        // A retried job is runnable again — wake the processor.
+        _signal.Signal();
 
         _logger.LogInformation("Job {Id} manually retried (attempt {N}).", job.Id, job.RetryCount);
         return MapToDto(job, [.. job.Items], null);

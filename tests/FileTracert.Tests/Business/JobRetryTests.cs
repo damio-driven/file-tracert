@@ -72,7 +72,7 @@ public sealed class JobRetryTests : IDisposable
 
     private QueueService MakeQueue() =>
         new(_harness.CreateContext(), _ledger, new JobCancellationRegistry(), _mover,
-            NullLogger<QueueService>.Instance);
+            new QueueSignal(), NullLogger<QueueService>.Instance);
 
     private JobExecutionEngine MakeEngine()
     {

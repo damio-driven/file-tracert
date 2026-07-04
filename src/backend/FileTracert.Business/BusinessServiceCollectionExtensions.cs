@@ -34,6 +34,10 @@ public static class BusinessServiceCollectionExtensions
         // is running the job under, across two different DbContexts.
         services.AddSingleton<IJobCancellationRegistry, JobCancellationRegistry>();
 
+        // Queue signal is a singleton: enqueue/retry (API threads) wake the processor worker so it
+        // idles on a signal instead of polling the DB on a fixed interval.
+        services.AddSingleton<IQueueSignal, QueueSignal>();
+
         // Queue service is scoped: each API request gets its own DbContext.
         services.AddScoped<IQueueService, QueueService>();
 

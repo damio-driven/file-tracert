@@ -88,7 +88,7 @@ public sealed class QueueFifoRecoveryTests : IDisposable
     // ── wiring (real services, fresh DbContext each) ──────────────────────────
 
     private QueueService MakeQueueService(FileTracertDbContext db) =>
-        new(db, _ledger, _cancellation, Substitute.For<IFileMover>(), NullLogger<QueueService>.Instance);
+        new(db, _ledger, _cancellation, Substitute.For<IFileMover>(), new QueueSignal(), NullLogger<QueueService>.Instance);
 
     private JobExecutionEngine MakeEngine(IFileMover mover, FileTracertDbContext db)
     {

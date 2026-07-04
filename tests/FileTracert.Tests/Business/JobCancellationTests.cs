@@ -83,7 +83,7 @@ public sealed class JobCancellationTests : IDisposable
 
     private QueueService MakeQueue() =>
         new(_harness.CreateContext(), NoopLedger(), _registry, Substitute.For<IFileMover>(),
-            NullLogger<QueueService>.Instance);
+            new QueueSignal(), NullLogger<QueueService>.Instance);
 
     [Fact]
     public async Task Cancel_during_execution_never_recycles_the_source()

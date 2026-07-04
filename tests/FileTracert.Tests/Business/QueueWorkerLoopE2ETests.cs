@@ -103,7 +103,7 @@ public sealed class QueueWorkerLoopE2ETests : IDisposable
     }
 
     private QueueService MakeQueue(FileTracertDbContext db) =>
-        new(db, _ledger, _cancellation, _mover, NullLogger<QueueService>.Instance);
+        new(db, _ledger, _cancellation, _mover, new QueueSignal(), NullLogger<QueueService>.Instance);
 
     private JobExecutionEngine MakeEngine(FileTracertDbContext db)
     {

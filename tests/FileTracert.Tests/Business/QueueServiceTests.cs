@@ -57,7 +57,7 @@ public sealed class QueueServiceTests : IDisposable
     private QueueService Svc() =>
         new(_harness.CreateContext(), _ledger, _cancellation,
             NSubstitute.Substitute.For<FileTracert.Contracts.Platform.IFileMover>(),
-            NullLogger<QueueService>.Instance);
+            new QueueSignal(), NullLogger<QueueService>.Instance);
 
     private void Seed()
     {

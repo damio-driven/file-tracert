@@ -13,20 +13,30 @@ namespace FileTracert.Host.Workers;
 /// </summary>
 public sealed class QueueProcessorWorker : BackgroundService
 {
+    /// <summary>
+    /// Low-frequency safety poll: the worker normally wakes on <see cref="IQueueSignal"/>, but a
+    /// timeout still re-checks the DB so a missed wake source (e.g. a volume-mount event wired in a
+    /// later step) can never leave a runnable job stuck forever.
+    /// </summary>
+    private static readonly TimeSpan SafetyPollInterval = TimeSpan.FromSeconds(30);
+
     private readonly IServiceProvider _services;
     private readonly ISpaceLedger _ledger;
     private readonly IJobCancellationRegistry _cancellation;
+    private readonly IQueueSignal _signal;
     private readonly ILogger<QueueProcessorWorker> _logger;
 
     public QueueProcessorWorker(
         IServiceProvider services,
         ISpaceLedger ledger,
         IJobCancellationRegistry cancellation,
+        IQueueSignal signal,
         ILogger<QueueProcessorWorker> logger)
     {
         _services = services;
         _ledger = ledger;
         _cancellation = cancellation;
+        _signal = signal;
         _logger = logger;
     }
 
@@ -44,7 +54,9 @@ public sealed class QueueProcessorWorker : BackgroundService
 
                 if (jobId is null)
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(3), stoppingToken);
+                    // Idle: wait for an enqueue/retry signal instead of busy-polling; the safety
+                    // interval bounds how long a missed wake source can delay a runnable job.
+                    await _signal.WaitAsync(SafetyPollInterval, stoppingToken);
                     continue;
                 }
 
