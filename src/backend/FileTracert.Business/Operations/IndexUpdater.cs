@@ -1,3 +1,4 @@
+using FileTracert.Business.Scanning;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Search;
 using FileTracert.Data;
@@ -139,20 +140,41 @@ public sealed class IndexUpdater
         if (job.TargetVolumeId is null) return;
         var targetVolumeId = job.TargetVolumeId.Value;
 
-        foreach (var item in job.Items.Where(i => i.FileId.HasValue))
-        {
-            var file = await _db.Files.FirstOrDefaultAsync(f => f.Id == item.FileId!.Value, ct);
-            if (file is null) continue;
+        var fileItems = job.Items.Where(i => i.FileId.HasValue).ToList();
+        if (fileItems.Count == 0) return;
 
-            var targetDirPath = DirPath(item.TargetRelativePath);
-            var targetDir = await FindOrCreateDirAsync(targetVolumeId, targetDirPath, ct);
+        // Load every affected file up front instead of one query per item.
+        var fileIds = fileItems.Select(i => i.FileId!.Value).ToList();
+        var files = await _db.Files
+            .Where(f => fileIds.Contains(f.Id))
+            .ToDictionaryAsync(f => f.Id, ct);
+
+        // Resolve each distinct target directory once (a big folder move lands thousands of files
+        // into a handful of directories).
+        var dirCache = new Dictionary<string, DirectoryNode>(StringComparer.OrdinalIgnoreCase);
+        var ftsUpserts = new List<(int Id, string Name, string Path)>(fileItems.Count);
+
+        foreach (var item in fileItems)
+        {
+            if (!files.TryGetValue(item.FileId!.Value, out var file)) continue;
+
+            var targetDirPath = ScanPath.Parent(item.TargetRelativePath);
+            if (!dirCache.TryGetValue(targetDirPath, out var targetDir))
+            {
+                targetDir = await FindOrCreateDirAsync(targetVolumeId, targetDirPath, ct);
+                dirCache[targetDirPath] = targetDir;
+            }
 
             file.VolumeId = targetVolumeId;
             file.DirectoryId = targetDir.Id;
-            await _db.SaveChangesAsync(ct);
-
-            await _fts.UpsertAsync(file.Id, file.Name, item.TargetRelativePath, ct);
+            ftsUpserts.Add((file.Id, file.Name, item.TargetRelativePath));
         }
+
+        // C5: one round-trip for the whole batch of file re-points, not one SaveChanges per file.
+        await _db.SaveChangesAsync(ct);
+
+        foreach (var (id, name, path) in ftsUpserts)
+            await _fts.UpsertAsync(id, name, path, ct);
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────
