@@ -304,6 +304,73 @@ public sealed class QueueServiceTests : IDisposable
         dto2.State.Should().Be("Pending");
     }
 
+    // ── C2: overlap guard (ancestor / descendant), not just exact match ───────
+
+    [Fact]
+    public async Task Guard_blocks_op_on_a_descendant_of_a_pending_directory()
+    {
+        // Pending op on "Docs" (Dir1) must block an op on its child "Docs\Sub" (Dir2).
+        await Svc().EnqueueAsync(new CreateJobRequest
+        {
+            Type = JobType.RenameFolder, SourceDirectoryId = Dir1Id, NewName = "Documents"
+        }, None);
+
+        var act = async () => await Svc().EnqueueAsync(new CreateJobRequest
+        {
+            Type = JobType.MoveFolder, SourceDirectoryId = Dir2Id,
+            TargetVolumeId = Vol1Id, TargetRelativePath = "Archive"
+        }, None);
+
+        await act.Should().ThrowAsync<EntityAlreadyPendingException>()
+            .Where(e => e.EntityType == "Directory" && e.EntityId == Dir2Id);
+    }
+
+    [Fact]
+    public async Task Guard_blocks_op_on_an_ancestor_of_a_pending_directory()
+    {
+        // Reverse direction: a pending op on the child "Docs\Sub" must block an op on "Docs".
+        await Svc().EnqueueAsync(new CreateJobRequest
+        {
+            Type = JobType.RenameFolder, SourceDirectoryId = Dir2Id, NewName = "SubRenamed"
+        }, None);
+
+        var act = async () => await Svc().EnqueueAsync(new CreateJobRequest
+        {
+            Type = JobType.RenameFolder, SourceDirectoryId = Dir1Id, NewName = "Documents"
+        }, None);
+
+        await act.Should().ThrowAsync<EntityAlreadyPendingException>()
+            .Where(e => e.EntityType == "Directory" && e.EntityId == Dir1Id);
+    }
+
+    [Fact]
+    public async Task Guard_allows_op_on_a_non_overlapping_sibling_directory()
+    {
+        const int Dir3Id = 3;
+        using (var db = _harness.CreateContext())
+        {
+            db.Directories.Add(new DirectoryNode
+            {
+                Id = Dir3Id, VolumeId = Vol1Id, Name = "Media",
+                MaterializedPath = "Media", IsMaterialized = true
+            });
+            db.SaveChanges();
+        }
+
+        // Pending op on "Docs" must NOT block an op on the unrelated sibling "Media".
+        await Svc().EnqueueAsync(new CreateJobRequest
+        {
+            Type = JobType.RenameFolder, SourceDirectoryId = Dir1Id, NewName = "Documents"
+        }, None);
+
+        var dto = await Svc().EnqueueAsync(new CreateJobRequest
+        {
+            Type = JobType.RenameFolder, SourceDirectoryId = Dir3Id, NewName = "Pictures"
+        }, None);
+
+        dto.State.Should().Be("Pending");
+    }
+
     // ── Preview ────────────────────────────────────────────────────────────────
 
     [Fact]

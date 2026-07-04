@@ -567,12 +567,39 @@ public sealed class QueueService : IQueueService
     private async Task GuardDirectoryAsync(int directoryId, string materializedPath,
         int volumeId, CancellationToken ct)
     {
+        // Overlap, not just exact match: a pending op on an ancestor OR a descendant of this
+        // directory makes the two operations touch the same subtree, which must be serialized
+        // (MVP: one op per subtree). Two cases, both segment-boundary aware so "Docs" never
+        // matches "Documents":
+        //   • an existing op sits on this dir or one of its ANCESTORS  → its path ∈ our ancestor set
+        //   • an existing op sits on one of our DESCENDANTS            → its path starts with "us\"
+        var ancestors = AncestorPaths(materializedPath);
+        var descendantPrefix = materializedPath + "\\";
+
         bool busy = await _db.OperationJobItems
-            .AnyAsync(i => i.SourceRelativePath == materializedPath &&
-                           i.Job.SourceVolumeId == volumeId &&
-                           !TerminalStates.Contains(i.Job.State), ct);
+            .AnyAsync(i => i.Job.SourceVolumeId == volumeId &&
+                           !TerminalStates.Contains(i.Job.State) &&
+                           (ancestors.Contains(i.SourceRelativePath) ||
+                            i.SourceRelativePath.StartsWith(descendantPrefix)), ct);
         if (busy)
             throw new EntityAlreadyPendingException("Directory", directoryId);
+    }
+
+    /// <summary>
+    /// Every path from <paramref name="path"/> up to (and including) the volume root, e.g.
+    /// <c>A\B\C</c> → <c>[A\B\C, A\B, A]</c>. Used to detect an ancestor op in a single SQL <c>IN</c>.
+    /// </summary>
+    private static List<string> AncestorPaths(string path)
+    {
+        var result = new List<string>();
+        var current = path;
+        while (!string.IsNullOrEmpty(current))
+        {
+            result.Add(current);
+            var idx = current.LastIndexOf('\\');
+            current = idx < 0 ? string.Empty : current[..idx];
+        }
+        return result;
     }
 
     // ── private: preview meta (no guards, no side effects) ────────────────────
