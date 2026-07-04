@@ -337,11 +337,14 @@ public sealed class QueueService : IQueueService
         if (req.TargetVolumeId is null || req.TargetRelativePath is null)
             throw new ArgumentException("CreateFolder requires TargetVolumeId and TargetRelativePath.");
 
+        if (!OperationName.TryValidatePath(req.TargetRelativePath, allowRoot: false, out var folderPath, out var pathError))
+            throw new ArgumentException(pathError);
+
         if (!await _db.Volumes.AnyAsync(v => v.Id == req.TargetVolumeId.Value, ct))
             throw new InvalidOperationException($"Volume {req.TargetVolumeId} not found.");
 
         job.TargetVolumeId = req.TargetVolumeId;
-        job.TargetRelativePath = req.TargetRelativePath;
+        job.TargetRelativePath = folderPath;
         job.IsIntraVolume = true;
     }
 
@@ -350,6 +353,9 @@ public sealed class QueueService : IQueueService
     {
         if (req.SourceFileId is null || req.NewName is null)
             throw new ArgumentException("RenameFile requires SourceFileId and NewName.");
+
+        if (!OperationName.TryValidateLeaf(req.NewName, out var nameError))
+            throw new ArgumentException(nameError);
 
         await GuardFileAsync(req.SourceFileId.Value, ct);
 
@@ -383,6 +389,9 @@ public sealed class QueueService : IQueueService
         if (req.SourceDirectoryId is null || req.NewName is null)
             throw new ArgumentException("RenameFolder requires SourceDirectoryId and NewName.");
 
+        if (!OperationName.TryValidateLeaf(req.NewName, out var nameError))
+            throw new ArgumentException(nameError);
+
         var dir = await _db.Directories.AsNoTracking()
             .FirstOrDefaultAsync(d => d.Id == req.SourceDirectoryId.Value, ct)
             ?? throw new InvalidOperationException($"Directory {req.SourceDirectoryId} not found.");
@@ -412,6 +421,9 @@ public sealed class QueueService : IQueueService
         if (req.SourceFileId is null || req.TargetVolumeId is null || req.TargetRelativePath is null)
             throw new ArgumentException("MoveFile requires SourceFileId, TargetVolumeId and TargetRelativePath.");
 
+        if (!OperationName.TryValidatePath(req.TargetRelativePath, allowRoot: true, out var targetPath, out var pathError))
+            throw new ArgumentException(pathError);
+
         await GuardFileAsync(req.SourceFileId.Value, ct);
 
         var file = await _db.Files
@@ -426,7 +438,7 @@ public sealed class QueueService : IQueueService
 
         bool intra = file.VolumeId == targetVol.Id;
         var srcPath = ScanPath.Join(file.Directory.MaterializedPath, file.Name);
-        var dstPath = ScanPath.Join(req.TargetRelativePath, file.Name);
+        var dstPath = ScanPath.Join(targetPath, file.Name);
 
         job.SourceVolumeId = file.VolumeId;
         job.TargetVolumeId = targetVol.Id;
@@ -469,6 +481,9 @@ public sealed class QueueService : IQueueService
         if (req.SourceDirectoryId is null || req.TargetVolumeId is null || req.TargetRelativePath is null)
             throw new ArgumentException("MoveFolder requires SourceDirectoryId, TargetVolumeId and TargetRelativePath.");
 
+        if (!OperationName.TryValidatePath(req.TargetRelativePath, allowRoot: true, out var targetPath, out var pathError))
+            throw new ArgumentException(pathError);
+
         var dir = await _db.Directories.AsNoTracking()
             .FirstOrDefaultAsync(d => d.Id == req.SourceDirectoryId.Value, ct)
             ?? throw new InvalidOperationException($"Directory {req.SourceDirectoryId} not found.");
@@ -480,7 +495,7 @@ public sealed class QueueService : IQueueService
             ?? throw new InvalidOperationException($"Volume {req.TargetVolumeId} not found.");
 
         bool intra = dir.VolumeId == targetVol.Id;
-        var dstDirPath = ScanPath.Join(req.TargetRelativePath, dir.Name);
+        var dstDirPath = ScanPath.Join(targetPath, dir.Name);
 
         job.SourceVolumeId = dir.VolumeId;
         job.TargetVolumeId = targetVol.Id;

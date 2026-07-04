@@ -683,4 +683,99 @@ public sealed class QueueServiceTests : IDisposable
         var f = await _ledger.ComputeFeasibilityAsync(Vol2Id, 5_000, true, 2_500, null, null, true, None);
         f.AvailableEstimateBytes.Should().Be(2_000);
     }
+
+    [Fact]
+    public async Task Preview_MoveFolder_cross_volume_uses_subtree_size_not_zero()
+    {
+        // Docs subtree = report.txt (1000) + data.csv (2000) = 3000 bytes.
+        // Vol2 has 5000 free → feasible, and requiredBytes must be the subtree weight.
+        var f = await Svc().PreviewAsync(new CreateJobRequest
+        {
+            Type = JobType.MoveFolder,
+            SourceDirectoryId = Dir1Id,
+            TargetVolumeId = Vol2Id,
+            TargetRelativePath = "Archive"
+        }, None);
+
+        f.RequiredBytes.Should().Be(3_000);
+        f.Feasible.Should().BeTrue();
+
+        // Preview must not write anything.
+        using var db = _harness.CreateContext();
+        (await db.OperationJobs.CountAsync(None)).Should().Be(0);
+    }
+
+    // ── name / path validation (folder ops) ────────────────────────────────────
+
+    [Theory]
+    [InlineData(@"a\b")]   // separator
+    [InlineData("a/b")]    // forward separator
+    [InlineData("..")]     // traversal
+    [InlineData(".")]      // current
+    [InlineData("C:")]     // drive
+    [InlineData("")]       // empty
+    [InlineData("   ")]    // whitespace
+    public async Task RenameFolder_rejects_invalid_name(string badName)
+    {
+        var act = async () => await Svc().EnqueueAsync(new CreateJobRequest
+        {
+            Type = JobType.RenameFolder,
+            SourceDirectoryId = Dir1Id,
+            NewName = badName
+        }, None);
+
+        await act.Should().ThrowAsync<ArgumentException>();
+
+        using var db = _harness.CreateContext();
+        (await db.OperationJobs.CountAsync(None)).Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData(@"a\b")]
+    [InlineData("..")]
+    [InlineData("")]
+    public async Task RenameFile_rejects_invalid_name(string badName)
+    {
+        var act = async () => await Svc().EnqueueAsync(new CreateJobRequest
+        {
+            Type = JobType.RenameFile,
+            SourceFileId = File1Id,
+            NewName = badName
+        }, None);
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Theory]
+    [InlineData(@"Foo\..\Bar")]  // traversal in the middle
+    [InlineData(@"C:\Foo")]      // rooted / drive
+    [InlineData("")]             // empty → must name a folder
+    public async Task CreateFolder_rejects_invalid_path(string badPath)
+    {
+        var act = async () => await Svc().EnqueueAsync(new CreateJobRequest
+        {
+            Type = JobType.CreateFolder,
+            TargetVolumeId = Vol1Id,
+            TargetRelativePath = badPath
+        }, None);
+
+        await act.Should().ThrowAsync<ArgumentException>();
+
+        using var db = _harness.CreateContext();
+        (await db.OperationJobs.CountAsync(None)).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task CreateFolder_accepts_nested_valid_path()
+    {
+        var dto = await Svc().EnqueueAsync(new CreateJobRequest
+        {
+            Type = JobType.CreateFolder,
+            TargetVolumeId = Vol1Id,
+            TargetRelativePath = @"Docs\New Album"
+        }, None);
+
+        dto.State.Should().Be("Pending");
+        dto.TargetPath.Should().Be(@"Docs\New Album");
+    }
 }
