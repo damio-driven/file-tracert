@@ -1,0 +1,144 @@
+// Shared building blocks for the data-view features (Catalog + Search). These class
+// definitions were byte-for-byte duplicated in catalog.scss and search.scss; hoisting them
+// into the design system keeps the two feature stylesheets lean (C8) and guarantees the file
+// row, selection bar, category tag and error block look identical wherever they appear.
+// Component-specific tweaks (column widths, per-table skeleton sizing, empty-state spacing)
+// stay in the feature stylesheets.
+
+// ---- Multi-select action bar ----
+.selection-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--teal-dim);
+  border: 1px solid color-mix(in srgb, var(--teal) 35%, transparent);
+  border-radius: var(--r-panel);
+  margin-bottom: var(--sp-2);
+}
+
+.selection-count {
+  font-size: 13px;
+  color: var(--txt);
+
+  strong {
+    color: var(--teal);
+    font-weight: 700;
+  }
+}
+
+// ---- Row checkbox ----
+.row-check {
+  cursor: pointer;
+  accent-color: var(--teal);
+  width: 14px;
+  height: 14px;
+}
+
+// ---- File name cell + projected-state badge ----
+.file-name-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.file-name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 500;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.proj-badge {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  padding: 1px 6px;
+  border-radius: var(--r-tag);
+  background: var(--wait-bg);
+  color: var(--amber);
+  text-transform: uppercase;
+}
+
+// ---- Category tag ----
+.cat-tag {
+  display: inline-block;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  padding: 2px 6px;
+  border-radius: var(--r-tag);
+  background: var(--panel-3);
+  color: var(--txt-faint);
+
+  &--image {
+    background: var(--on-bg);
+    color: var(--lime);
+  }
+
+  &--video {
+    background: var(--run-bg);
+    color: var(--blue);
+  }
+
+  &--audio {
+    background: var(--wait-bg);
+    color: var(--amber);
+  }
+
+  &--document {
+    background: var(--teal-dim);
+    color: var(--teal);
+  }
+
+  &--archive {
+    background: var(--block-bg);
+    color: var(--red);
+  }
+
+  &--other {
+    background: var(--panel-3);
+    color: var(--txt-faint);
+  }
+}
+
+// ---- Pagination page counter ----
+.page-num {
+  font-size: 12px;
+}
+
+// ---- Empty-state title ----
+.empty-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--txt-dim);
+}
+
+// ---- Error block ----
+.error-icon {
+  font-size: 18px;
+  color: var(--red);
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.error-title {
+  font-weight: 600;
+  font-size: 13.5px;
+  color: var(--red);
+  margin-bottom: 4px;
+}
+
+.error-msg {
+  font-size: 12px;
+  color: var(--txt-dim);
+}
