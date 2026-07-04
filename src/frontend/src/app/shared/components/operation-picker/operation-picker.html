@@ -4,7 +4,7 @@
     <!-- Header -->
     <div class="picker-header">
       <div class="picker-title">
-        Sposta {{ files().length === 1 ? '1 file' : files().length + ' file' }}
+        Sposta {{ items().length }} {{ items().length === 1 ? 'elemento' : 'elementi' }}
       </div>
       <button class="picker-close" type="button" (click)="close()" aria-label="Chiudi">✕</button>
     </div>
@@ -30,18 +30,23 @@
 
       <div class="picker-body">
 
-        <!-- File summary -->
+        <!-- Selection summary -->
         <div class="file-summary">
           <div class="file-summary-names">
-            @for (f of files().slice(0, 3); track f.fileId) {
-              <span class="file-chip mono">{{ f.name }}</span>
+            @for (i of items().slice(0, 3); track i.kind + ':' + i.id) {
+              <span class="file-chip mono">
+                @if (i.kind === 'Folder') { <span aria-hidden="true">▤</span> } {{ i.name }}
+              </span>
             }
-            @if (files().length > 3) {
-              <span class="file-chip-more txt-faint">+{{ files().length - 3 }} altri</span>
+            @if (items().length > 3) {
+              <span class="file-chip-more txt-faint">+{{ items().length - 3 }} altri</span>
             }
           </div>
           <div class="file-summary-size txt-faint">
-            Totale: <span class="mono">{{ totalBytes | bytes }}</span>
+            Totale file: <span class="mono">{{ totalBytes | bytes }}</span>
+            @if (folderCount > 0) {
+              <span class="txt-faint"> · dimensione cartelle calcolata alla verifica</span>
+            }
           </div>
         </div>
 

@@ -11,8 +11,9 @@ import { VolumesStore } from '../../../features/volumes/volumes.store';
 import { BytesPipe } from '../../pipes/bytes.pipe';
 import { RelativeTimePipe } from '../../pipes/relative-time.pipe';
 import { FtPill } from '../ft-pill/ft-pill';
+import { operationErrorMessage } from '../../api/operation-error';
 import {
-  CatalogDirDto, FeasibilityResult, SelectedFile, VolumeDto,
+  CatalogDirDto, CreateJobRequest, FeasibilityResult, SelectedItem, VolumeDto,
 } from '../../../core/models/catalog.models';
 
 interface FolderCrumb {
@@ -29,7 +30,7 @@ interface FolderCrumb {
   styleUrl: './operation-picker.scss',
 })
 export class OperationPicker implements OnInit {
-  readonly files = input.required<SelectedFile[]>();
+  readonly items = input.required<SelectedItem[]>();
   /** Popup dismissed (Annulla, backdrop, X). The parent must NOT clear the selection. */
   readonly closed = output<void>();
   /** Whole batch enqueued successfully — the only event that consumes the selection. */
@@ -66,7 +67,18 @@ export class OperationPicker implements OnInit {
   }
 
   protected get totalBytes(): number {
-    return this.files().reduce((s, f) => s + f.sizeBytes, 0);
+    return this.items().reduce((s, f) => s + f.sizeBytes, 0);
+  }
+
+  protected get folderCount(): number {
+    return this.items().filter(i => i.kind === 'Folder').length;
+  }
+
+  /** Move request for one selected item: MoveFile for files, MoveFolder for folders. */
+  private toMoveRequest(item: SelectedItem, folder: string): CreateJobRequest {
+    return item.kind === 'Folder'
+      ? { type: 'MoveFolder', sourceFileId: null, sourceDirectoryId: item.id, targetVolumeId: this.targetVolumeId!, targetRelativePath: folder, newName: null }
+      : { type: 'MoveFile', sourceFileId: item.id, sourceDirectoryId: null, targetVolumeId: this.targetVolumeId!, targetRelativePath: folder, newName: null };
   }
 
   protected get targetVolume(): VolumeDto | undefined {
@@ -163,21 +175,15 @@ export class OperationPicker implements OnInit {
     this.preview.set(null);
     this.error.set(null);
     try {
-      // Whole batch, one request per file: the backend aggregates the demand and
-      // evaluates the ledger once, so the verdict covers the entire selection.
+      // Whole batch, one request per item: the backend aggregates the demand and
+      // evaluates the ledger once (weighing each folder's subtree), so the verdict
+      // covers the entire selection.
       const result = await firstValueFrom(this.api.previewBatch(
-        this.files().map(file => ({
-          type: 'MoveFile' as const,
-          sourceFileId: file.fileId,
-          sourceDirectoryId: null,
-          targetVolumeId: this.targetVolumeId!,
-          targetRelativePath: folder,
-          newName: null,
-        })),
+        this.items().map(item => this.toMoveRequest(item, folder)),
       ));
       this.preview.set(result);
     } catch (e) {
-      this.error.set((e as Error).message);
+      this.error.set(operationErrorMessage(e));
     } finally {
       this.previewing.set(false);
     }
@@ -191,23 +197,16 @@ export class OperationPicker implements OnInit {
     this.error.set(null);
     let count = 0;
     try {
-      for (const file of this.files()) {
-        // Send the destination folder only — the backend appends the file name.
-        await firstValueFrom(this.api.enqueue({
-          type: 'MoveFile',
-          sourceFileId: file.fileId,
-          sourceDirectoryId: null,
-          targetVolumeId: this.targetVolumeId!,
-          targetRelativePath: folder,
-          newName: null,
-        }));
+      for (const item of this.items()) {
+        // Send the destination folder only — the backend appends the entity name.
+        await firstValueFrom(this.api.enqueue(this.toMoveRequest(item, folder)));
         count++;
       }
       this.enqueuedCount.set(count);
       this.enqueued.set(true);
       this.completed.emit();
     } catch (e) {
-      this.error.set((e as Error).message);
+      this.error.set(operationErrorMessage(e));
     } finally {
       this.enqueueing.set(false);
     }

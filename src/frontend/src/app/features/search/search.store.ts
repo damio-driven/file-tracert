@@ -5,7 +5,7 @@ import { firstValueFrom } from 'rxjs';
 import { SearchApi } from '../../core/api/search-api.service';
 import {
   FileCategory, PagedResult, SearchRequest,
-  SearchResultDto, SearchScope, SearchSort, SelectedFile,
+  SearchResultDto, SearchScope, SearchSort, SelectedItem,
 } from '../../core/models/catalog.models';
 import {
   addPageToSelection, isPageFullySelected, removePageFromSelection, toggleSelected,
@@ -34,11 +34,11 @@ interface SearchState {
   currentSkip: number;
   take: number;
   /**
-   * Full SelectedFile objects, not bare ids: the selection survives paging and the
+   * Full SelectedItem objects, not bare ids: the selection survives paging and the
    * picker always has name/size/volume for every picked file, even when it is no
-   * longer on the visible page (fix #6).
+   * longer on the visible page (fix #6). Search selects files only (kind = 'File').
    */
-  selectedFiles: SelectedFile[];
+  selectedItems: SelectedItem[];
 }
 
 const defaultFilters: SearchFilters = {
@@ -63,15 +63,17 @@ const initial: SearchState = {
   error: null,
   currentSkip: 0,
   take: 50,
-  selectedFiles: [],
+  selectedItems: [],
 };
 
-function toSelectedFile(result: SearchResultDto): SelectedFile {
+function toSelectedItem(result: SearchResultDto): SelectedItem {
   return {
-    fileId: result.fileId,
+    kind: 'File',
+    id: result.fileId,
     name: result.name,
     sizeBytes: result.sizeBytes,
     volumeId: result.volumeId,
+    relativePath: result.relativePath,
   };
 }
 
@@ -82,11 +84,12 @@ export const SearchStore = signalStore(
     hasResults: computed(() => (store.results()?.totalCount ?? 0) > 0),
     totalCount: computed(() => store.results()?.totalCount ?? 0),
     isCapped: computed(() => store.results()?.totalCount === 10000),
-    selectedFileIds: computed(() => store.selectedFiles().map(f => f.fileId)),
-    selectionCount: computed(() => store.selectedFiles().length),
-    hasSelection: computed(() => store.selectedFiles().length > 0),
+    selectedFileIds: computed(() => store.selectedItems().map(i => i.id)),
+    selectionCount: computed(() => store.selectedItems().length),
+    hasSelection: computed(() => store.selectedItems().length > 0),
     allPageSelected: computed(() =>
-      isPageFullySelected((store.results()?.items ?? []).map(f => f.fileId), store.selectedFiles())),
+      isPageFullySelected(
+        (store.results()?.items ?? []).map(f => `File:${f.fileId}`), store.selectedItems())),
   })),
   withMethods((store, api = inject(SearchApi)) => {
     function buildRequest(skip: number): SearchRequest {
@@ -137,23 +140,23 @@ export const SearchStore = signalStore(
         await doSearch(skip);
       },
       clear(): void {
-        patchState(store, { text: '', results: null, error: null, currentSkip: 0, selectedFiles: [] });
+        patchState(store, { text: '', results: null, error: null, currentSkip: 0, selectedItems: [] });
       },
       toggleSelection(result: SearchResultDto): void {
         patchState(store, {
-          selectedFiles: toggleSelected(store.selectedFiles(), toSelectedFile(result)),
+          selectedItems: toggleSelected(store.selectedItems(), toSelectedItem(result)),
         });
       },
       selectPage(): void {
-        const pageFiles = (store.results()?.items ?? []).map(toSelectedFile);
-        patchState(store, { selectedFiles: addPageToSelection(store.selectedFiles(), pageFiles) });
+        const pageFiles = (store.results()?.items ?? []).map(toSelectedItem);
+        patchState(store, { selectedItems: addPageToSelection(store.selectedItems(), pageFiles) });
       },
       deselectPage(): void {
-        const pageIds = (store.results()?.items ?? []).map(f => f.fileId);
-        patchState(store, { selectedFiles: removePageFromSelection(store.selectedFiles(), pageIds) });
+        const pageKeys = (store.results()?.items ?? []).map(f => `File:${f.fileId}`);
+        patchState(store, { selectedItems: removePageFromSelection(store.selectedItems(), pageKeys) });
       },
       clearSelection(): void {
-        patchState(store, { selectedFiles: [] });
+        patchState(store, { selectedItems: [] });
       },
     };
   }),

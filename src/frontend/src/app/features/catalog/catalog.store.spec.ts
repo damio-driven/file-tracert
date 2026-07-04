@@ -132,23 +132,64 @@ describe('CatalogStore', () => {
     expect(store.breadcrumbs()).toHaveLength(0);
   });
 
-  // ── file selection ────────────────────────────────────────────────────────
+  // ── mixed file + folder selection ───────────────────────────────────────────
 
   const beachFile = photoChildren.files.items[0];
+  const photosDir = rootChildren.directories[0]; // { id: 10, name: 'Photos', materializedPath: 'Photos' }
 
-  it('toggleSelection adds the full file to selectedFiles', async () => {
+  it('toggleSelection adds the full file (kind File, path from current dir) to selectedItems', async () => {
     const { store } = setup((_v, dirId) => dirId === 10 ? photoChildren : rootChildren);
     await store.selectVolume(mockVolume);
     await store.openDirectory(10, 'Photos', 'Photos');
 
     store.toggleSelection(beachFile);
 
-    expect(store.selectedFileIds()).toContain(1);
     expect(store.hasSelection()).toBe(true);
     expect(store.selectionCount()).toBe(1);
-    expect(store.selectedFiles()).toEqual([
-      { fileId: 1, name: 'beach.jpg', sizeBytes: 2048, volumeId: 1 },
+    expect(store.selectedItems()).toEqual([
+      { kind: 'File', id: 1, name: 'beach.jpg', sizeBytes: 2048, volumeId: 1, relativePath: 'Photos\\beach.jpg' },
     ]);
+    expect(store.selectedKeys().has('File:1')).toBe(true);
+  });
+
+  it('toggleDirSelection adds the folder (kind Folder, 0 bytes, its own path)', async () => {
+    const { store } = setup();
+    await store.selectVolume(mockVolume);
+
+    store.toggleDirSelection(photosDir);
+
+    expect(store.selectionCount()).toBe(1);
+    expect(store.folderSelectionCount()).toBe(1);
+    expect(store.selectedItems()).toEqual([
+      { kind: 'Folder', id: 10, name: 'Photos', sizeBytes: 0, volumeId: 1, relativePath: 'Photos' },
+    ]);
+    expect(store.selectedKeys().has('Folder:10')).toBe(true);
+  });
+
+  it('a file and a folder that share an id are selected independently (keyed by kind+id)', async () => {
+    const { store } = setup((_v, dirId) => dirId === 10 ? photoChildren : rootChildren);
+    await store.selectVolume(mockVolume);
+    // Select folder id=10, then a file that also has id... beachFile is id=1; craft a clash:
+    store.toggleDirSelection({ id: 1, name: 'Clash', materializedPath: 'Clash', childDirectoryCount: 0, fileCount: 0 });
+    await store.openDirectory(10, 'Photos', 'Photos');
+    store.toggleSelection(beachFile); // file id=1
+
+    expect(store.selectionCount()).toBe(2);
+    expect(store.selectedKeys().has('Folder:1')).toBe(true);
+    expect(store.selectedKeys().has('File:1')).toBe(true);
+  });
+
+  it('singleSelection is the one pick, null when zero or many', async () => {
+    const { store } = setup((_v, dirId) => dirId === 10 ? photoChildren : rootChildren);
+    await store.selectVolume(mockVolume);
+    expect(store.singleSelection()).toBeNull();
+
+    store.toggleDirSelection(photosDir);
+    expect(store.singleSelection()?.kind).toBe('Folder');
+
+    await store.openDirectory(10, 'Photos', 'Photos');
+    store.toggleSelection(beachFile);
+    expect(store.singleSelection()).toBeNull();
   });
 
   it('toggleSelection removes an already-selected file', async () => {
@@ -159,11 +200,11 @@ describe('CatalogStore', () => {
     store.toggleSelection(beachFile);
     store.toggleSelection(beachFile);
 
-    expect(store.selectedFileIds()).not.toContain(1);
+    expect(store.selectedKeys().has('File:1')).toBe(false);
     expect(store.hasSelection()).toBe(false);
   });
 
-  it('clearSelection empties selectedFiles', async () => {
+  it('clearSelection empties selectedItems', async () => {
     const { store } = setup((_v, dirId) => dirId === 10 ? photoChildren : rootChildren);
     await store.selectVolume(mockVolume);
     await store.openDirectory(10, 'Photos', 'Photos');
@@ -171,7 +212,7 @@ describe('CatalogStore', () => {
     store.toggleSelection(beachFile);
     store.clearSelection();
 
-    expect(store.selectedFiles()).toHaveLength(0);
+    expect(store.selectedItems()).toHaveLength(0);
   });
 
   it('selectPage selects all files on current page', async () => {
@@ -181,7 +222,7 @@ describe('CatalogStore', () => {
 
     store.selectPage();
 
-    expect(store.selectedFileIds()).toContain(1);
+    expect(store.selectedKeys().has('File:1')).toBe(true);
     expect(store.allPageSelected()).toBe(true);
   });
 
@@ -193,10 +234,10 @@ describe('CatalogStore', () => {
     store.selectPage();
     store.deselectPage();
 
-    expect(store.selectedFileIds()).not.toContain(1);
+    expect(store.selectedKeys().has('File:1')).toBe(false);
   });
 
-  it('selectVolume resets selectedFiles', async () => {
+  it('selectVolume resets selectedItems', async () => {
     const { store } = setup((_v, dirId) => dirId === 10 ? photoChildren : rootChildren);
     await store.selectVolume(mockVolume);
     await store.openDirectory(10, 'Photos', 'Photos');
@@ -204,7 +245,7 @@ describe('CatalogStore', () => {
 
     await store.selectVolume(mockVolume);
 
-    expect(store.selectedFiles()).toHaveLength(0);
+    expect(store.selectedItems()).toHaveLength(0);
   });
 
   // FIX #6 — the selection must survive navigation WITH its full data: files picked in
@@ -218,8 +259,8 @@ describe('CatalogStore', () => {
     await store.navigateTo(-1); // back to root: beach.jpg is no longer on the visible page
 
     expect(store.selectionCount()).toBe(1);
-    expect(store.selectedFiles()).toEqual([
-      { fileId: 1, name: 'beach.jpg', sizeBytes: 2048, volumeId: 1 },
+    expect(store.selectedItems()).toEqual([
+      { kind: 'File', id: 1, name: 'beach.jpg', sizeBytes: 2048, volumeId: 1, relativePath: 'Photos\\beach.jpg' },
     ]);
   });
 

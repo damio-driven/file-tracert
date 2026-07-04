@@ -157,35 +157,73 @@
             </div>
           } @else {
 
+            <!-- Catalog actions + selection bar (span folders and files) -->
+            <div class="cat-actions">
+              <button type="button" class="ft-btn ft-btn--ghost" (click)="openNewFolder()">
+                + Nuova cartella
+              </button>
+            </div>
+
+            @if (store.hasSelection()) {
+              <div class="selection-bar">
+                <span class="selection-count">
+                  <strong>{{ store.selectionCount() }}</strong>
+                  {{ selectionLabel() }}
+                </span>
+                <div class="flex gap-2">
+                  @if (store.singleSelection(); as one) {
+                    <button type="button" class="ft-btn ft-btn--ghost" (click)="openRename(one)">
+                      Rinomina
+                    </button>
+                  }
+                  <button type="button" class="ft-btn ft-btn--primary" (click)="openPicker()">
+                    Sposta selezionati…
+                  </button>
+                  <button type="button" class="ft-btn ft-btn--ghost" (click)="store.clearSelection()">
+                    Deseleziona
+                  </button>
+                </div>
+              </div>
+            }
+
             <!-- Directories grid -->
             @if (children.directories.length > 0) {
               <div class="dir-section">
                 <div class="section-label">Cartelle</div>
                 <div class="dir-grid">
                   @for (dir of children.directories; track dir.id) {
-                    <button
-                      type="button"
-                      class="dir-card"
-                      (click)="openDir(dir.id, dir.name, dir.materializedPath)"
-                      [title]="dir.materializedPath"
-                    >
-                      <div class="dir-icon" aria-hidden="true">▤</div>
-                      <div class="dir-name" [title]="dir.name">{{ dir.name }}</div>
-                      <div class="dir-counts mono txt-faint">
-                        @if (dir.childDirectoryCount > 0) {
-                          <span>{{ dir.childDirectoryCount }} cartelle</span>
-                          @if (dir.fileCount > 0) {
-                            <span class="dir-counts-sep">·</span>
+                    <div class="dir-card" [class.dir-card--selected]="isDirSelected(dir.id)">
+                      <input
+                        type="checkbox"
+                        class="row-check dir-check"
+                        [checked]="isDirSelected(dir.id)"
+                        (change)="toggleSelectDir(dir)"
+                        [attr.aria-label]="'Seleziona cartella ' + dir.name"
+                      />
+                      <button
+                        type="button"
+                        class="dir-card-open"
+                        (click)="openDir(dir.id, dir.name, dir.materializedPath)"
+                        [title]="dir.materializedPath"
+                      >
+                        <div class="dir-icon" aria-hidden="true">▤</div>
+                        <div class="dir-name" [title]="dir.name">{{ dir.name }}</div>
+                        <div class="dir-counts mono txt-faint">
+                          @if (dir.childDirectoryCount > 0) {
+                            <span>{{ dir.childDirectoryCount }} cartelle</span>
+                            @if (dir.fileCount > 0) {
+                              <span class="dir-counts-sep">·</span>
+                            }
                           }
-                        }
-                        @if (dir.fileCount > 0) {
-                          <span>{{ dir.fileCount.toLocaleString('it-IT') }} file</span>
-                        }
-                        @if (dir.childDirectoryCount === 0 && dir.fileCount === 0) {
-                          <span>Vuota</span>
-                        }
-                      </div>
-                    </button>
+                          @if (dir.fileCount > 0) {
+                            <span>{{ dir.fileCount.toLocaleString('it-IT') }} file</span>
+                          }
+                          @if (dir.childDirectoryCount === 0 && dir.fileCount === 0) {
+                            <span>Vuota</span>
+                          }
+                        </div>
+                      </button>
+                    </div>
                   }
                 </div>
               </div>
@@ -200,24 +238,6 @@
                     ({{ children.files.totalCount.toLocaleString('it-IT') }})
                   </span>
                 </div>
-
-                <!-- Selection bar -->
-                @if (store.hasSelection()) {
-                  <div class="selection-bar">
-                    <span class="selection-count">
-                      <strong>{{ store.selectionCount() }}</strong>
-                      {{ store.selectionCount() === 1 ? 'file selezionato' : 'file selezionati' }}
-                    </span>
-                    <div class="flex gap-2">
-                      <button type="button" class="ft-btn ft-btn--primary" (click)="openPicker()">
-                        Sposta selezionati…
-                      </button>
-                      <button type="button" class="ft-btn ft-btn--ghost" (click)="store.clearSelection()">
-                        Deseleziona
-                      </button>
-                    </div>
-                  </div>
-                }
 
                 <ft-panel>
                   <cdk-virtual-scroll-viewport itemSize="40" class="file-scroll-viewport">
@@ -240,13 +260,13 @@
                       </thead>
                       <tbody>
                         @for (file of children.files.items; track file.id) {
-                          <tr class="file-row" [class.file-row--selected]="isSelected(file.id)"
+                          <tr class="file-row" [class.file-row--selected]="isFileSelected(file.id)"
                               (click)="toggleSelect(file)">
                             <td class="col-check" (click)="$event.stopPropagation()">
                               <input
                                 type="checkbox"
                                 class="row-check"
-                                [checked]="isSelected(file.id)"
+                                [checked]="isFileSelected(file.id)"
                                 (change)="toggleSelect(file)"
                                 [attr.aria-label]="'Seleziona ' + file.name"
                               />
@@ -315,5 +335,25 @@
 </section>
 
 @if (pickerOpen) {
-  <ft-operation-picker [files]="pickerFiles()" (closed)="closePicker()" (completed)="onPickerCompleted()" />
+  <ft-operation-picker [items]="pickerItems()" (closed)="closePicker()" (completed)="onPickerCompleted()" />
+}
+
+@if (renameTarget(); as target) {
+  <ft-name-dialog
+    mode="rename"
+    [item]="target"
+    (closed)="closeRename()"
+    (completed)="onDialogCompleted()"
+  />
+}
+
+@if (newFolderOpen() && store.selectedVolume(); as vol) {
+  <ft-name-dialog
+    mode="create"
+    subjectKind="Folder"
+    [volumeId]="vol.id"
+    [parentPath]="store.currentDirPath()"
+    (closed)="closeNewFolder()"
+    (completed)="onDialogCompleted()"
+  />
 }

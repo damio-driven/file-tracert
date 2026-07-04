@@ -249,6 +249,13 @@
 
 // ── Directory grid ───────────────────────────────────────────────────────────
 
+.cat-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-3);
+}
+
 .dir-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
@@ -256,16 +263,10 @@
 }
 
 .dir-card {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--sp-1);
-  padding: var(--sp-3);
+  position: relative;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--r-panel);
-  cursor: pointer;
-  text-align: left;
   transition: background var(--t-fast), border-color var(--t-fast), transform var(--t-fast);
 
   &:hover {
@@ -277,6 +278,35 @@
   &:active {
     transform: translateY(0);
   }
+
+  &--selected {
+    background: var(--teal-dim);
+    border-color: color-mix(in srgb, var(--teal) 45%, transparent);
+  }
+}
+
+// The whole card body opens the folder; the checkbox (top-right) selects it.
+.dir-card-open {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-1);
+  width: 100%;
+  padding: var(--sp-3);
+  padding-right: calc(var(--sp-3) + 20px);
+  background: transparent;
+  border: none;
+  border-radius: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.dir-check {
+  position: absolute;
+  top: var(--sp-3);
+  right: var(--sp-3);
+  z-index: 1;
 }
 
 .dir-icon {

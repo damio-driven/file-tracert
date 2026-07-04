@@ -1,0 +1,60 @@
+<div
+  class="dialog-backdrop"
+  (click)="onBackdropClick($event)"
+  role="dialog"
+  aria-modal="true"
+  [attr.aria-label]="title()"
+>
+  <div class="dialog-modal">
+    <div class="dialog-header">
+      <div class="dialog-title">{{ title() }}</div>
+      <button class="dialog-close" type="button" (click)="close()" aria-label="Chiudi">✕</button>
+    </div>
+
+    <div class="dialog-body">
+      <div class="dialog-field">
+        <label class="dialog-label" for="name-dialog-input">
+          {{ mode() === 'rename' ? 'Nuovo nome' : 'Nome cartella' }}
+        </label>
+        <input
+          id="name-dialog-input"
+          class="dialog-input mono"
+          type="text"
+          [ngModel]="name()"
+          (ngModelChange)="onInput($event)"
+          (keydown.enter)="submit()"
+          [attr.aria-invalid]="touched() && validationError() ? 'true' : null"
+          autocomplete="off"
+          spellcheck="false"
+          autofocus
+        />
+
+        @if (mode() === 'create') {
+          <span class="dialog-hint txt-faint">
+            Percorso: <span class="mono">{{ destination() }}</span>
+          </span>
+        }
+
+        @if (touched() && validationError(); as ve) {
+          <span class="dialog-msg dialog-msg--error" role="alert">{{ ve }}</span>
+        }
+      </div>
+
+      @if (serverError(); as se) {
+        <div class="dialog-server-error" role="alert">
+          <span class="dialog-server-error-icon" aria-hidden="true">⚠</span>
+          <span>{{ se }}</span>
+        </div>
+      }
+    </div>
+
+    <div class="dialog-footer">
+      <button type="button" class="ft-btn ft-btn--ghost" (click)="close()" [disabled]="busy()">
+        Annulla
+      </button>
+      <button type="button" class="ft-btn ft-btn--primary" (click)="submit()" [disabled]="!canSubmit()">
+        {{ busy() ? 'Accodamento…' : (mode() === 'rename' ? 'Rinomina' : 'Crea cartella') }}
+      </button>
+    </div>
+  </div>
+</div>

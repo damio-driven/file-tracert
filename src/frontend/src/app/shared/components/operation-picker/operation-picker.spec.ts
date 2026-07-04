@@ -8,13 +8,13 @@ import { CatalogApi } from '../../../core/api/catalog-api.service';
 import { QueueApi } from '../../../core/api/queue-api.service';
 import { VolumesApi } from '../../../core/api/volumes-api.service';
 import {
-  CatalogChildrenDto, CatalogDirDto, CreateJobRequest, FeasibilityResult, SelectedFile,
+  CatalogChildrenDto, CatalogDirDto, CreateJobRequest, FeasibilityResult, SelectedItem,
 } from '../../../core/models/catalog.models';
 import { OperationPicker } from './operation-picker';
 
-const files: SelectedFile[] = [
-  { fileId: 1, name: 'photo.jpg', sizeBytes: 1000, volumeId: 1 },
-  { fileId: 2, name: 'clip.mp4', sizeBytes: 2000, volumeId: 1 },
+const items: SelectedItem[] = [
+  { kind: 'File', id: 1, name: 'photo.jpg', sizeBytes: 1000, volumeId: 1, relativePath: 'photo.jpg' },
+  { kind: 'File', id: 2, name: 'clip.mp4', sizeBytes: 2000, volumeId: 1, relativePath: 'clip.mp4' },
 ];
 
 const feasibility: FeasibilityResult = {
@@ -58,7 +58,7 @@ function setup() {
   });
 
   const fixture = TestBed.createComponent(OperationPicker);
-  fixture.componentRef.setInput('files', files);
+  fixture.componentRef.setInput('items', items);
   // (fixture exposed for output subscriptions in the UX tests)
   const cmp = fixture.componentInstance as unknown as {
     targetVolumeId: number | null;
@@ -178,6 +178,39 @@ describe('OperationPicker target path', () => {
     expect(batch).toHaveLength(2);
     expect(batch.map(r => r.sourceFileId)).toEqual([1, 2]);
     expect(batch.every(r => r.targetRelativePath === 'Archivio')).toBe(true);
+  });
+
+  // Folder ops (step 8): a selected folder becomes a MoveFolder carrying sourceDirectoryId,
+  // and the backend weighs its subtree at preview time.
+  it('a selected folder is enqueued as MoveFolder with sourceDirectoryId', async () => {
+    const { enqueue, cmp, fixture } = setup();
+    fixture.componentRef.setInput('items', [
+      { kind: 'Folder', id: 7, name: 'Vacanze', sizeBytes: 0, volumeId: 1, relativePath: 'Vacanze' },
+    ] satisfies SelectedItem[]);
+
+    await cmp.openDirectory(dir(11, 'Archivio'));
+    await cmp.enqueue();
+
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    const req = enqueue.mock.calls[0][0];
+    expect(req.type).toBe('MoveFolder');
+    expect(req.sourceDirectoryId).toBe(7);
+    expect(req.sourceFileId).toBeNull();
+    expect(req.targetRelativePath).toBe('Archivio');
+  });
+
+  it('preview mixes MoveFile and MoveFolder per item kind', async () => {
+    const { previewBatch, cmp, fixture } = setup();
+    fixture.componentRef.setInput('items', [
+      { kind: 'File', id: 3, name: 'a.jpg', sizeBytes: 10, volumeId: 1, relativePath: 'a.jpg' },
+      { kind: 'Folder', id: 9, name: 'Dir', sizeBytes: 0, volumeId: 1, relativePath: 'Dir' },
+    ] satisfies SelectedItem[]);
+
+    await cmp.runPreview();
+
+    const batch = previewBatch.mock.calls[0][0];
+    expect(batch.map(r => r.type)).toEqual(['MoveFile', 'MoveFolder']);
+    expect(batch[1].sourceDirectoryId).toBe(9);
   });
 
   // UX — "Annulla" must not wipe the selection: the picker signals a successful enqueue

@@ -3,9 +3,11 @@ import { patchState, signalStore, withComputed, withMethods, withState } from '@
 import { firstValueFrom } from 'rxjs';
 
 import { CatalogApi } from '../../core/api/catalog-api.service';
-import { CatalogChildrenDto, CatalogFileDto, SelectedFile, VolumeDto } from '../../core/models/catalog.models';
 import {
-  addPageToSelection, isPageFullySelected, removePageFromSelection, toggleSelected,
+  CatalogChildrenDto, CatalogDirDto, CatalogFileDto, SelectedItem, VolumeDto,
+} from '../../core/models/catalog.models';
+import {
+  addPageToSelection, isPageFullySelected, removePageFromSelection, selectionKey, toggleSelected,
 } from '../../shared/selection/file-selection.util';
 
 interface Breadcrumb {
@@ -23,11 +25,11 @@ interface CatalogState {
   fileSkip: number;
   fileTake: number;
   /**
-   * Full SelectedFile objects, not bare ids: the selection survives folder/page
-   * navigation and the picker always has name/size/volume for every picked file,
-   * even when it is no longer on the visible page (fix #6).
+   * Full SelectedItem objects (files AND folders), not bare ids: the selection
+   * survives folder/page navigation and the picker always has name/size/volume/path
+   * for every pick, even when it is no longer on the visible page (fix #6).
    */
-  selectedFiles: SelectedFile[];
+  selectedItems: SelectedItem[];
 }
 
 const initial: CatalogState = {
@@ -38,11 +40,22 @@ const initial: CatalogState = {
   error: null,
   fileSkip: 0,
   fileTake: 50,
-  selectedFiles: [],
+  selectedItems: [],
 };
 
-function toSelectedFile(file: CatalogFileDto, volumeId: number): SelectedFile {
-  return { fileId: file.id, name: file.name, sizeBytes: file.sizeBytes, volumeId };
+function toFileItem(file: CatalogFileDto, volumeId: number, dirPath: string): SelectedItem {
+  return {
+    kind: 'File', id: file.id, name: file.name, sizeBytes: file.sizeBytes, volumeId,
+    relativePath: dirPath ? `${dirPath}\\${file.name}` : file.name,
+  };
+}
+
+function toFolderItem(dir: CatalogDirDto, volumeId: number): SelectedItem {
+  // Folders carry 0 bytes here — the subtree weight is computed server-side at preview.
+  return {
+    kind: 'Folder', id: dir.id, name: dir.name, sizeBytes: 0, volumeId,
+    relativePath: dir.materializedPath,
+  };
 }
 
 export const CatalogStore = signalStore(
@@ -56,11 +69,20 @@ export const CatalogStore = signalStore(
     volumeIsOnline: computed(() => store.children()?.volumeIsOnline ?? false),
     totalFiles: computed(() => store.children()?.files.totalCount ?? 0),
     canGoUp: computed(() => store.breadcrumbs().length > 0),
-    selectedFileIds: computed(() => store.selectedFiles().map(f => f.fileId)),
-    selectionCount: computed(() => store.selectedFiles().length),
-    hasSelection: computed(() => store.selectedFiles().length > 0),
+    currentDirPath: computed(() => store.children()?.currentDirectoryPath ?? ''),
+    /** Keys of every selected item (File:id / Folder:id) for O(1) row-state lookup. */
+    selectedKeys: computed(() => new Set(store.selectedItems().map(selectionKey))),
+    selectionCount: computed(() => store.selectedItems().length),
+    hasSelection: computed(() => store.selectedItems().length > 0),
+    folderSelectionCount: computed(() =>
+      store.selectedItems().filter(i => i.kind === 'Folder').length),
+    /** The one pick when exactly one item is selected (rename targets a single entity). */
+    singleSelection: computed(() =>
+      store.selectedItems().length === 1 ? store.selectedItems()[0] : null),
     allPageSelected: computed(() =>
-      isPageFullySelected((store.children()?.files.items ?? []).map(f => f.id), store.selectedFiles())),
+      isPageFullySelected(
+        (store.children()?.files.items ?? []).map(f => `File:${f.id}`),
+        store.selectedItems())),
   })),
   withMethods((store, api = inject(CatalogApi)) => {
     async function loadChildren(dirId: number | null, fileSkip: number): Promise<void> {
@@ -82,7 +104,7 @@ export const CatalogStore = signalStore(
           breadcrumbs: [],
           children: null,
           fileSkip: 0,
-          selectedFiles: [],
+          selectedItems: [],
         });
         await loadChildren(null, 0);
       },
@@ -116,21 +138,30 @@ export const CatalogStore = signalStore(
         const vol = store.selectedVolume();
         if (!vol) return;
         patchState(store, {
-          selectedFiles: toggleSelected(store.selectedFiles(), toSelectedFile(file, vol.id)),
+          selectedItems: toggleSelected(
+            store.selectedItems(), toFileItem(file, vol.id, store.currentDirPath())),
+        });
+      },
+      toggleDirSelection(dir: CatalogDirDto): void {
+        const vol = store.selectedVolume();
+        if (!vol) return;
+        patchState(store, {
+          selectedItems: toggleSelected(store.selectedItems(), toFolderItem(dir, vol.id)),
         });
       },
       selectPage(): void {
         const vol = store.selectedVolume();
         if (!vol) return;
-        const pageFiles = (store.children()?.files.items ?? []).map(f => toSelectedFile(f, vol.id));
-        patchState(store, { selectedFiles: addPageToSelection(store.selectedFiles(), pageFiles) });
+        const dirPath = store.currentDirPath();
+        const pageFiles = (store.children()?.files.items ?? []).map(f => toFileItem(f, vol.id, dirPath));
+        patchState(store, { selectedItems: addPageToSelection(store.selectedItems(), pageFiles) });
       },
       deselectPage(): void {
-        const pageIds = (store.children()?.files.items ?? []).map(f => f.id);
-        patchState(store, { selectedFiles: removePageFromSelection(store.selectedFiles(), pageIds) });
+        const pageKeys = (store.children()?.files.items ?? []).map(f => `File:${f.id}`);
+        patchState(store, { selectedItems: removePageFromSelection(store.selectedItems(), pageKeys) });
       },
       clearSelection(): void {
-        patchState(store, { selectedFiles: [] });
+        patchState(store, { selectedItems: [] });
       },
     };
   }),

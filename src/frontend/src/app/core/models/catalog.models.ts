@@ -299,10 +299,24 @@ export interface CreateJobRequest {
   newName: string | null;
 }
 
-/** File selected in Catalog or Search, passed to OperationPicker. */
-export interface SelectedFile {
-  fileId: number;
+/** A file or a folder — the unit of catalog selection. */
+export type SelectedItemKind = 'File' | 'Folder';
+
+/**
+ * An item selected in the Catalog (files or folders) or Search (files only),
+ * passed to the OperationPicker. Kept as a full object, not a bare id, so the
+ * selection survives paging/navigation with everything the picker needs.
+ * `id` is the FileId or the DirectoryId depending on `kind` — the two can
+ * collide (separate tables), so selection is always keyed by kind+id.
+ * `sizeBytes` is the file size; folders carry 0 (their subtree weight is
+ * computed server-side at preview time).
+ */
+export interface SelectedItem {
+  kind: SelectedItemKind;
+  id: number;
   name: string;
   sizeBytes: number;
   volumeId: number;
+  /** Volume-relative path (folder = its own path; file = containing path), for display. */
+  relativePath: string;
 }

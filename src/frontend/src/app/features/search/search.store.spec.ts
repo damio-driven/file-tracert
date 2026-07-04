@@ -110,8 +110,8 @@ describe('SearchStore', () => {
     expect(store.selectedFileIds()).toContain(1);
     expect(store.hasSelection()).toBe(true);
     expect(store.selectionCount()).toBe(1);
-    expect(store.selectedFiles()).toEqual([
-      { fileId: 1, name: 'photo.jpg', sizeBytes: 1024, volumeId: 1 },
+    expect(store.selectedItems()).toEqual([
+      { kind: 'File', id: 1, name: 'photo.jpg', sizeBytes: 1024, volumeId: 1, relativePath: 'Photos\\photo.jpg' },
     ]);
   });
 
@@ -131,7 +131,7 @@ describe('SearchStore', () => {
     await store.search();
     store.toggleSelection(photoResult);
     store.clearSelection();
-    expect(store.selectedFiles()).toHaveLength(0);
+    expect(store.selectedItems()).toHaveLength(0);
   });
 
   // FIX #6 — selection made on one results page must keep its full data after paging
@@ -157,8 +157,8 @@ describe('SearchStore', () => {
     await store.loadPage(1); // photo.jpg is no longer on the visible page
 
     expect(store.selectionCount()).toBe(1);
-    expect(store.selectedFiles()).toEqual([
-      { fileId: 1, name: 'photo.jpg', sizeBytes: 1024, volumeId: 1 },
+    expect(store.selectedItems()).toEqual([
+      { kind: 'File', id: 1, name: 'photo.jpg', sizeBytes: 1024, volumeId: 1, relativePath: 'Photos\\photo.jpg' },
     ]);
   });
 

@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, OnInit, computed, inject } from '@angular/core';
+import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } from '@angular/core';
 import { ScrollingModule } from '@angular/cdk/scrolling';
 
 import { CatalogStore } from './catalog.store';
@@ -8,7 +8,8 @@ import { RelativeTimePipe } from '../../shared/pipes/relative-time.pipe';
 import { FtPill } from '../../shared/components/ft-pill/ft-pill';
 import { FtPanel } from '../../shared/components/ft-panel/ft-panel';
 import { OperationPicker } from '../../shared/components/operation-picker/operation-picker';
-import { CatalogFileDto, FileCategory, SelectedFile, VolumeDto } from '../../core/models/catalog.models';
+import { NameDialog } from '../../shared/components/name-dialog/name-dialog';
+import { CatalogDirDto, CatalogFileDto, FileCategory, SelectedItem, VolumeDto } from '../../core/models/catalog.models';
 
 const CATEGORY_LABELS: Record<FileCategory, string> = {
   Image: 'Immagine', Video: 'Video', Audio: 'Audio',
@@ -23,7 +24,7 @@ const CATEGORY_ICONS: Record<FileCategory, string> = {
 @Component({
   selector: 'ft-catalog',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [ScrollingModule, BytesPipe, RelativeTimePipe, FtPill, FtPanel, OperationPicker],
+  imports: [ScrollingModule, BytesPipe, RelativeTimePipe, FtPill, FtPanel, OperationPicker, NameDialog],
   templateUrl: './catalog.html',
   styleUrl: './catalog.scss',
 })
@@ -33,10 +34,12 @@ export class Catalog implements OnInit {
   protected readonly Math = Math;
 
   protected pickerOpen = false;
+  protected readonly renameTarget = signal<SelectedItem | null>(null);
+  protected readonly newFolderOpen = signal(false);
 
-  // The store keeps full SelectedFile objects, so the picker gets the whole selection
-  // even when it spans folders/pages that are no longer visible (fix #6).
-  protected readonly pickerFiles = computed<SelectedFile[]>(() => this.store.selectedFiles());
+  // The store keeps full SelectedItem objects (files + folders), so the picker gets the
+  // whole selection even when it spans folders/pages that are no longer visible (fix #6).
+  protected readonly pickerItems = computed<SelectedItem[]>(() => this.store.selectedItems());
 
   ngOnInit(): void {
     void this.volumes.loadList();
@@ -92,6 +95,10 @@ export class Catalog implements OnInit {
     this.store.toggleSelection(file);
   }
 
+  protected toggleSelectDir(dir: CatalogDirDto): void {
+    this.store.toggleDirSelection(dir);
+  }
+
   protected toggleSelectAll(): void {
     if (this.store.allPageSelected()) {
       this.store.deselectPage();
@@ -100,8 +107,12 @@ export class Catalog implements OnInit {
     }
   }
 
-  protected isSelected(fileId: number): boolean {
-    return this.store.selectedFileIds().includes(fileId);
+  protected isFileSelected(id: number): boolean {
+    return this.store.selectedKeys().has(`File:${id}`);
+  }
+
+  protected isDirSelected(id: number): boolean {
+    return this.store.selectedKeys().has(`Folder:${id}`);
   }
 
   protected openPicker(): void {
@@ -116,5 +127,42 @@ export class Catalog implements OnInit {
   /** Only a successful enqueue consumes the selection. */
   protected onPickerCompleted(): void {
     this.store.clearSelection();
+  }
+
+  // ── rename / new-folder dialogs ─────────────────────────────────────────────
+
+  protected openRename(target: SelectedItem): void {
+    this.renameTarget.set(target);
+  }
+
+  protected closeRename(): void {
+    this.renameTarget.set(null);
+  }
+
+  protected openNewFolder(): void {
+    this.newFolderOpen.set(true);
+  }
+
+  protected closeNewFolder(): void {
+    this.newFolderOpen.set(false);
+  }
+
+  /** A dialog enqueued its job: close it and drop the (now-actioned) selection. */
+  protected onDialogCompleted(): void {
+    this.renameTarget.set(null);
+    this.newFolderOpen.set(false);
+    this.store.clearSelection();
+  }
+
+  /** Noun phrase for the selection bar; the count is rendered separately. */
+  protected selectionLabel(): string {
+    const total = this.store.selectionCount();
+    const folders = this.store.folderSelectionCount();
+    const files = total - folders;
+
+    if (total === 1) return folders === 1 ? 'cartella selezionata' : 'file selezionato';
+    if (folders === 0) return 'file selezionati';
+    if (files === 0) return 'cartelle selezionate';
+    return 'elementi selezionati';
   }
 }

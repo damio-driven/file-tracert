@@ -10,7 +10,7 @@ import { RelativeTimePipe } from '../../shared/pipes/relative-time.pipe';
 import { FtPill } from '../../shared/components/ft-pill/ft-pill';
 import { FtPanel } from '../../shared/components/ft-panel/ft-panel';
 import { OperationPicker } from '../../shared/components/operation-picker/operation-picker';
-import { FileCategory, SearchResultDto, SearchScope, SearchSort, SelectedFile } from '../../core/models/catalog.models';
+import { FileCategory, SearchResultDto, SearchScope, SearchSort, SelectedItem } from '../../core/models/catalog.models';
 
 @Component({
   selector: 'ft-search',
@@ -27,9 +27,9 @@ export class Search implements OnInit {
   protected queryText = '';
   protected pickerOpen = false;
 
-  // The store keeps full SelectedFile objects, so the picker gets the whole selection
+  // The store keeps full SelectedItem objects, so the picker gets the whole selection
   // even when it spans results pages that are no longer visible (fix #6).
-  protected readonly pickerFiles = computed<SelectedFile[]>(() => this.store.selectedFiles());
+  protected readonly pickerItems = computed<SelectedItem[]>(() => this.store.selectedItems());
 
   protected readonly CATEGORIES: { value: FileCategory; label: string; icon: string }[] = [
     { value: 'Image', label: 'Immagini', icon: 'IMG' },
