@@ -249,7 +249,7 @@ public sealed class JobExecutionEngine
             ct.ThrowIfCancellationRequested();
 
             // Ensure destination directory exists.
-            var dstDir = DirPath(item.TargetRelativePath);
+            var dstDir = ScanPath.Parent(item.TargetRelativePath);
             if (!string.IsNullOrEmpty(dstDir))
                 _mover.EnsureTargetDirectory(tgtGuid, dstDir);
 
@@ -583,13 +583,5 @@ public sealed class JobExecutionEngine
 
         if (anyCleared)
             await _db.SaveChangesAsync(CancellationToken.None);
-    }
-
-    // ── path utilities ────────────────────────────────────────────────────────
-
-    private static string DirPath(string path)
-    {
-        var idx = path.LastIndexOf('\\');
-        return idx < 0 ? string.Empty : path[..idx];
     }
 }

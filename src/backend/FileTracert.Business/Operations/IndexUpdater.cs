@@ -56,7 +56,7 @@ public sealed class IndexUpdater
         var file = await _db.Files.FirstOrDefaultAsync(f => f.Id == item.FileId.Value, ct);
         if (file is null) return;
 
-        file.Name = FileName(item.TargetRelativePath);
+        file.Name = ScanPath.Name(item.TargetRelativePath);
         await _db.SaveChangesAsync(ct);
         await _fts.UpsertAsync(file.Id, file.Name, item.TargetRelativePath, ct);
     }
@@ -79,7 +79,7 @@ public sealed class IndexUpdater
         if (file is null) return;
 
         var targetVolumeId = job.TargetVolumeId ?? file.VolumeId;
-        var targetDirPath = DirPath(item.TargetRelativePath);
+        var targetDirPath = ScanPath.Parent(item.TargetRelativePath);
         var targetDir = await FindOrCreateDirAsync(targetVolumeId, targetDirPath, ct);
 
         file.DirectoryId = targetDir.Id;
@@ -116,7 +116,7 @@ public sealed class IndexUpdater
         if (topDir is null) return;
 
         // Re-parent the top directory.
-        var newParentPath = DirPath(newPath);
+        var newParentPath = ScanPath.Parent(newPath);
         if (string.IsNullOrEmpty(newParentPath))
         {
             topDir.ParentId = null;
@@ -186,8 +186,8 @@ public sealed class IndexUpdater
             .FirstOrDefaultAsync(d => d.VolumeId == volumeId && d.MaterializedPath == path, ct);
         if (existing is not null) return existing;
 
-        var name = string.IsNullOrEmpty(path) ? string.Empty : FileName(path);
-        var parentPath = DirPath(path);
+        var name = string.IsNullOrEmpty(path) ? string.Empty : ScanPath.Name(path);
+        var parentPath = ScanPath.Parent(path);
 
         DirectoryNode? parent = null;
         if (!string.IsNullOrEmpty(path))  // non-root
@@ -216,7 +216,7 @@ public sealed class IndexUpdater
 
         var topDir = dirs.FirstOrDefault(d => d.MaterializedPath == oldPath);
         if (topDir is not null)
-            topDir.Name = FileName(newPath);
+            topDir.Name = ScanPath.Name(newPath);
 
         foreach (var d in dirs)
             d.MaterializedPath = newPath + d.MaterializedPath[oldPath.Length..];
@@ -238,22 +238,8 @@ public sealed class IndexUpdater
         foreach (var f in files)
         {
             if (!pathById.TryGetValue(f.DirectoryId, out var dirPath)) continue;
-            await _fts.UpsertAsync(f.Id, f.Name, JoinPath(dirPath, f.Name), ct);
+            await _fts.UpsertAsync(f.Id, f.Name, ScanPath.Join(dirPath, f.Name), ct);
         }
     }
 
-    private static string DirPath(string path)
-    {
-        var idx = path.LastIndexOf('\\');
-        return idx < 0 ? string.Empty : path[..idx];
-    }
-
-    private static string FileName(string path)
-    {
-        var idx = path.LastIndexOf('\\');
-        return idx < 0 ? path : path[(idx + 1)..];
-    }
-
-    private static string JoinPath(string dir, string name) =>
-        dir.Length == 0 ? name : dir + "\\" + name;
 }

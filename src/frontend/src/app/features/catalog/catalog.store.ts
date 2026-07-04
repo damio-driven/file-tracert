@@ -4,6 +4,9 @@ import { firstValueFrom } from 'rxjs';
 
 import { CatalogApi } from '../../core/api/catalog-api.service';
 import { CatalogChildrenDto, CatalogFileDto, SelectedFile, VolumeDto } from '../../core/models/catalog.models';
+import {
+  addPageToSelection, isPageFullySelected, removePageFromSelection, toggleSelected,
+} from '../../shared/selection/file-selection.util';
 
 interface Breadcrumb {
   id: number;
@@ -56,12 +59,8 @@ export const CatalogStore = signalStore(
     selectedFileIds: computed(() => store.selectedFiles().map(f => f.fileId)),
     selectionCount: computed(() => store.selectedFiles().length),
     hasSelection: computed(() => store.selectedFiles().length > 0),
-    allPageSelected: computed(() => {
-      const items = store.children()?.files.items ?? [];
-      if (items.length === 0) return false;
-      const sel = new Set(store.selectedFiles().map(f => f.fileId));
-      return items.every(f => sel.has(f.id));
-    }),
+    allPageSelected: computed(() =>
+      isPageFullySelected((store.children()?.files.items ?? []).map(f => f.id), store.selectedFiles())),
   })),
   withMethods((store, api = inject(CatalogApi)) => {
     async function loadChildren(dirId: number | null, fileSkip: number): Promise<void> {
@@ -116,25 +115,19 @@ export const CatalogStore = signalStore(
       toggleSelection(file: CatalogFileDto): void {
         const vol = store.selectedVolume();
         if (!vol) return;
-        const sel = store.selectedFiles();
         patchState(store, {
-          selectedFiles: sel.some(s => s.fileId === file.id)
-            ? sel.filter(s => s.fileId !== file.id)
-            : [...sel, toSelectedFile(file, vol.id)],
+          selectedFiles: toggleSelected(store.selectedFiles(), toSelectedFile(file, vol.id)),
         });
       },
       selectPage(): void {
         const vol = store.selectedVolume();
         if (!vol) return;
-        const items = store.children()?.files.items ?? [];
-        const existing = store.selectedFiles();
-        const existingIds = new Set(existing.map(f => f.fileId));
-        const added = items.filter(f => !existingIds.has(f.id)).map(f => toSelectedFile(f, vol.id));
-        patchState(store, { selectedFiles: [...existing, ...added] });
+        const pageFiles = (store.children()?.files.items ?? []).map(f => toSelectedFile(f, vol.id));
+        patchState(store, { selectedFiles: addPageToSelection(store.selectedFiles(), pageFiles) });
       },
       deselectPage(): void {
-        const pageIds = new Set((store.children()?.files.items ?? []).map(f => f.id));
-        patchState(store, { selectedFiles: store.selectedFiles().filter(f => !pageIds.has(f.fileId)) });
+        const pageIds = (store.children()?.files.items ?? []).map(f => f.id);
+        patchState(store, { selectedFiles: removePageFromSelection(store.selectedFiles(), pageIds) });
       },
       clearSelection(): void {
         patchState(store, { selectedFiles: [] });

@@ -7,6 +7,9 @@ import {
   FileCategory, PagedResult, SearchRequest,
   SearchResultDto, SearchScope, SearchSort, SelectedFile,
 } from '../../core/models/catalog.models';
+import {
+  addPageToSelection, isPageFullySelected, removePageFromSelection, toggleSelected,
+} from '../../shared/selection/file-selection.util';
 
 interface SearchFilters {
   category: FileCategory | null;
@@ -82,12 +85,8 @@ export const SearchStore = signalStore(
     selectedFileIds: computed(() => store.selectedFiles().map(f => f.fileId)),
     selectionCount: computed(() => store.selectedFiles().length),
     hasSelection: computed(() => store.selectedFiles().length > 0),
-    allPageSelected: computed(() => {
-      const items = store.results()?.items ?? [];
-      if (items.length === 0) return false;
-      const sel = new Set(store.selectedFiles().map(f => f.fileId));
-      return items.every(f => sel.has(f.fileId));
-    }),
+    allPageSelected: computed(() =>
+      isPageFullySelected((store.results()?.items ?? []).map(f => f.fileId), store.selectedFiles())),
   })),
   withMethods((store, api = inject(SearchApi)) => {
     function buildRequest(skip: number): SearchRequest {
@@ -141,23 +140,17 @@ export const SearchStore = signalStore(
         patchState(store, { text: '', results: null, error: null, currentSkip: 0, selectedFiles: [] });
       },
       toggleSelection(result: SearchResultDto): void {
-        const sel = store.selectedFiles();
         patchState(store, {
-          selectedFiles: sel.some(s => s.fileId === result.fileId)
-            ? sel.filter(s => s.fileId !== result.fileId)
-            : [...sel, toSelectedFile(result)],
+          selectedFiles: toggleSelected(store.selectedFiles(), toSelectedFile(result)),
         });
       },
       selectPage(): void {
-        const items = store.results()?.items ?? [];
-        const existing = store.selectedFiles();
-        const existingIds = new Set(existing.map(f => f.fileId));
-        const added = items.filter(f => !existingIds.has(f.fileId)).map(toSelectedFile);
-        patchState(store, { selectedFiles: [...existing, ...added] });
+        const pageFiles = (store.results()?.items ?? []).map(toSelectedFile);
+        patchState(store, { selectedFiles: addPageToSelection(store.selectedFiles(), pageFiles) });
       },
       deselectPage(): void {
-        const pageIds = new Set((store.results()?.items ?? []).map(f => f.fileId));
-        patchState(store, { selectedFiles: store.selectedFiles().filter(f => !pageIds.has(f.fileId)) });
+        const pageIds = (store.results()?.items ?? []).map(f => f.fileId);
+        patchState(store, { selectedFiles: removePageFromSelection(store.selectedFiles(), pageIds) });
       },
       clearSelection(): void {
         patchState(store, { selectedFiles: [] });

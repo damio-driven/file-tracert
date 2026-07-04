@@ -20,6 +20,10 @@ internal static class ScanPath
         return i < 0 ? path : path[(i + 1)..];
     }
 
+    /// <summary>Joins a directory and a leaf name; the empty directory (volume root) yields just the name.</summary>
+    public static string Join(string dir, string name) =>
+        dir.Length == 0 ? name : dir + "\\" + name;
+
     /// <summary>True when <paramref name="path"/> sits within <paramref name="root"/> (root "" = whole volume).</summary>
     public static bool IsWithin(string path, string root) =>
         root.Length == 0 ||

@@ -1,3 +1,4 @@
+using FileTracert.Business.Scanning;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Operations;
 using FileTracert.Contracts.Paging;
@@ -358,8 +359,8 @@ public sealed class QueueService : IQueueService
             .FirstOrDefaultAsync(f => f.Id == req.SourceFileId.Value, ct)
             ?? throw new InvalidOperationException($"File {req.SourceFileId} not found.");
 
-        var srcPath = JoinPath(file.Directory.MaterializedPath, file.Name);
-        var dstPath = JoinPath(file.Directory.MaterializedPath, req.NewName);
+        var srcPath = ScanPath.Join(file.Directory.MaterializedPath, file.Name);
+        var dstPath = ScanPath.Join(file.Directory.MaterializedPath, req.NewName);
 
         job.SourceVolumeId = file.VolumeId;
         job.TargetVolumeId = file.VolumeId;
@@ -388,8 +389,8 @@ public sealed class QueueService : IQueueService
 
         await GuardDirectoryAsync(req.SourceDirectoryId.Value, dir.MaterializedPath, dir.VolumeId, ct);
 
-        var parentPath = ParentPath(dir.MaterializedPath);
-        var dstPath = JoinPath(parentPath, req.NewName);
+        var parentPath = ScanPath.Parent(dir.MaterializedPath);
+        var dstPath = ScanPath.Join(parentPath, req.NewName);
 
         job.SourceVolumeId = dir.VolumeId;
         job.TargetVolumeId = dir.VolumeId;
@@ -424,8 +425,8 @@ public sealed class QueueService : IQueueService
             ?? throw new InvalidOperationException($"Volume {req.TargetVolumeId} not found.");
 
         bool intra = file.VolumeId == targetVol.Id;
-        var srcPath = JoinPath(file.Directory.MaterializedPath, file.Name);
-        var dstPath = JoinPath(req.TargetRelativePath, file.Name);
+        var srcPath = ScanPath.Join(file.Directory.MaterializedPath, file.Name);
+        var dstPath = ScanPath.Join(req.TargetRelativePath, file.Name);
 
         job.SourceVolumeId = file.VolumeId;
         job.TargetVolumeId = targetVol.Id;
@@ -479,7 +480,7 @@ public sealed class QueueService : IQueueService
             ?? throw new InvalidOperationException($"Volume {req.TargetVolumeId} not found.");
 
         bool intra = dir.VolumeId == targetVol.Id;
-        var dstDirPath = JoinPath(req.TargetRelativePath, dir.Name);
+        var dstDirPath = ScanPath.Join(req.TargetRelativePath, dir.Name);
 
         job.SourceVolumeId = dir.VolumeId;
         job.TargetVolumeId = targetVol.Id;
@@ -554,10 +555,10 @@ public sealed class QueueService : IQueueService
                 ? dirMatPath[(srcPath.Length + 1)..]
                 : string.Empty;
 
-            var srcFilePath = JoinPath(dirMatPath, f.Name);
+            var srcFilePath = ScanPath.Join(dirMatPath, f.Name);
             var dstFilePath = relWithinSrc.Length > 0
                 ? dstDirPath + "\\" + relWithinSrc + "\\" + f.Name
-                : JoinPath(dstDirPath, f.Name);
+                : ScanPath.Join(dstDirPath, f.Name);
 
             return new OperationJobItem
             {
@@ -703,14 +704,4 @@ public sealed class QueueService : IQueueService
         };
     }
 
-    // ── path helpers ──────────────────────────────────────────────────────────
-
-    private static string JoinPath(string dir, string name) =>
-        dir.Length == 0 ? name : dir + "\\" + name;
-
-    private static string ParentPath(string path)
-    {
-        var idx = path.LastIndexOf('\\');
-        return idx < 0 ? string.Empty : path[..idx];
-    }
 }
