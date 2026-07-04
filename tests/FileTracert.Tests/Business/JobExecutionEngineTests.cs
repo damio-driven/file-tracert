@@ -508,6 +508,63 @@ public sealed class JobExecutionEngineTests : IDisposable
         notification.VolumeId.Should().Be(Vol2Id);
     }
 
+    // ── C1: MoveFolder cross-volume — deep source subtree fully recycled ──────
+
+    [Fact]
+    public async Task MoveFolder_cross_volume_recycles_the_whole_source_subtree_deepest_first()
+    {
+        var mover = DefaultMover();
+
+        // Source subtree three levels deep; the only indexed file sits at the bottom.
+        // The old "shortest DirPath" logic would have recycled just "Media\2024\Jan",
+        // leaving "Media\2024" and "Media" orphaned on the source volume.
+        using (var db = _harness.CreateContext())
+        {
+            db.Directories.AddRange(
+                new DirectoryNode { Id = 50, VolumeId = Vol1Id, Name = "Media", MaterializedPath = "Media", IsMaterialized = true },
+                new DirectoryNode { Id = 51, VolumeId = Vol1Id, ParentId = 50, Name = "2024", MaterializedPath = @"Media\2024", IsMaterialized = true },
+                new DirectoryNode { Id = 52, VolumeId = Vol1Id, ParentId = 51, Name = "Jan", MaterializedPath = @"Media\2024\Jan", IsMaterialized = true });
+            db.SaveChanges();
+        }
+
+        int jobId = SeedJob(
+            JobType.MoveFolder, JobState.Pending, intraVolume: false,
+            srcVol: Vol1Id, tgtVol: Vol2Id, tgtPath: @"Archive\Media", totalBytes: 1_000,
+            items:
+            [
+                new OperationJobItem
+                {
+                    FileId = File1Id,
+                    SourceRelativePath = @"Media\2024\Jan\photo.jpg",
+                    TargetRelativePath = @"Archive\Media\2024\Jan\photo.jpg",
+                    State = JobItemState.Pending,
+                    SizeBytes = 1_000,
+                    CreatedUtc = DateTime.UtcNow,
+                    UpdatedUtc = DateTime.UtcNow,
+                },
+            ]);
+
+        await MakeEngine(mover).ExecuteJobAsync(jobId, None);
+
+        (await ReadState(jobId)).Should().Be(JobState.Completed);
+
+        // The source file went to the recycle bin.
+        mover.Received(1).DeleteToRecycleBin(Vol1Guid, @"Media\2024\Jan\photo.jpg");
+
+        // And EVERY directory of the subtree was recycled — root and intermediates included.
+        mover.Received(1).DeleteToRecycleBin(Vol1Guid, @"Media\2024\Jan");
+        mover.Received(1).DeleteToRecycleBin(Vol1Guid, @"Media\2024");
+        mover.Received(1).DeleteToRecycleBin(Vol1Guid, "Media");
+
+        // Deepest-first ordering: each child is recycled before its parent.
+        Received.InOrder(() =>
+        {
+            mover.DeleteToRecycleBin(Vol1Guid, @"Media\2024\Jan");
+            mover.DeleteToRecycleBin(Vol1Guid, @"Media\2024");
+            mover.DeleteToRecycleBin(Vol1Guid, "Media");
+        });
+    }
+
     // ── MoveFile cross-volume — name collision ────────────────────────────────
 
     [Fact]

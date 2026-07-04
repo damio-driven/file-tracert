@@ -1,3 +1,4 @@
+using FileTracert.Business.Scanning;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Notifications;
 using FileTracert.Contracts.Operations;
@@ -359,25 +360,80 @@ public sealed class JobExecutionEngine
                 item.State = JobItemState.Done;
             }
 
-            // Then delete the (now-empty) source directory tree by finding the common root.
-            var srcTopDir = job.Items
-                .Select(i => DirPath(i.SourceRelativePath))
-                .Where(d => !string.IsNullOrEmpty(d))
-                .OrderBy(d => d.Length)
-                .FirstOrDefault();
+            await _db.SaveChangesAsync(ct);
 
-            if (!string.IsNullOrEmpty(srcTopDir))
-            {
-                try { _mover.DeleteToRecycleBin(srcGuid, srcTopDir); }
-                catch (Exception ex)
-                {
-                    // Non-fatal: the directory might not be empty (non-indexed files) or already gone.
-                    _logger.LogWarning(ex, "Job {Id}: could not delete source directory '{Dir}'.", job.Id, srcTopDir);
-                }
-            }
+            // Then recycle the source directory subtree. The old code picked the SHORTEST item
+            // DirPath as "the root" and recycled only that — when the files live in deep subfolders
+            // that shortest path is a leaf subfolder, so the real root and every intermediate dir
+            // survived. Model the whole subtree explicitly (as the copy half does per item) and
+            // recycle deepest-first so each directory is emptied before its parent.
+            await DeleteSourceSubtreeAsync(job, srcGuid, ct);
+            return;
         }
 
         await _db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
+    /// Recycles the moved folder's entire source subtree, deepest directory first. The subtree is
+    /// read from the still-source-shaped <c>Directories</c> rows (IndexUpdater re-parents only after
+    /// completion), guaranteeing the root and empty intermediates are removed, not just the
+    /// directories that happened to hold indexed files.
+    /// </summary>
+    private async Task DeleteSourceSubtreeAsync(OperationJob job, string srcGuid, CancellationToken ct)
+    {
+        var srcRoot = ResolveSourceRoot(job);
+        if (string.IsNullOrEmpty(srcRoot) || job.SourceVolumeId is null)
+            return;
+
+        var prefixWithSep = srcRoot + "\\";
+        var dirPaths = await _db.Directories.AsNoTracking()
+            .Where(d => d.VolumeId == job.SourceVolumeId.Value &&
+                        (d.MaterializedPath == srcRoot || d.MaterializedPath.StartsWith(prefixWithSep)))
+            .Select(d => d.MaterializedPath)
+            .ToListAsync(ct);
+
+        // Deepest-first: order by segment depth so a child is always recycled before its parent.
+        foreach (var dirPath in dirPaths.OrderByDescending(p => p.Count(c => c == '\\')).ThenByDescending(p => p.Length))
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                _mover.DeleteToRecycleBin(srcGuid, dirPath);
+            }
+            catch (Exception ex)
+            {
+                // Not silent (§9): the files are already safely on the target, this is best-effort
+                // subtree cleanup — log the full exception and continue with the remaining dirs.
+                _logger.LogWarning(ex, "Job {Id}: could not recycle source directory '{Dir}'.", job.Id, dirPath);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Reconstructs the moved folder's original root path. Source and target of every item share
+    /// the same tail below their respective roots (<c>srcRoot\tail</c> ↔ <c>TargetRelativePath\tail</c>),
+    /// so stripping that tail off one item's source yields the root — independent of how deep the
+    /// files sit.
+    /// </summary>
+    private static string ResolveSourceRoot(OperationJob job)
+    {
+        var dst = job.TargetRelativePath;
+        var item = job.Items.FirstOrDefault(i => i.FileId.HasValue);
+        if (item is null || string.IsNullOrEmpty(dst))
+            return string.Empty;
+
+        var prefix = dst + "\\";
+        if (item.TargetRelativePath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            var tail = item.TargetRelativePath[prefix.Length..];      // "relwithin\name" or "name"
+            var suffix = "\\" + tail;
+            if (item.SourceRelativePath.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+                return item.SourceRelativePath[..^suffix.Length];
+        }
+
+        // Fallback: the file sits directly under the moved folder → root is its parent dir.
+        return ScanPath.Parent(item.SourceRelativePath);
     }
 
     // ── state machine helpers ─────────────────────────────────────────────────
