@@ -235,6 +235,39 @@ public sealed class QueueServiceTests : IDisposable
         dto.Id.Should().BeGreaterThan(0);
     }
 
+    // ── C3: enqueue + reserve are atomic (no overcommit window) ───────────────
+
+    [Fact]
+    public async Task Enqueue_persists_the_reservation_atomically_with_the_job()
+    {
+        var dto = await Svc().EnqueueAsync(new CreateJobRequest
+        {
+            Type = JobType.MoveFile,
+            SourceFileId = File1Id,     // 1 000 bytes, Vol1 → Vol2
+            TargetVolumeId = Vol2Id,
+            TargetRelativePath = "Backup"
+        }, None);
+
+        dto.State.Should().Be("Pending");
+
+        // The reservation is DURABLE — committed in the same transaction as the job, not left in the
+        // in-memory mirror only. Wiping the mirror and rebuilding it purely from persisted rows must
+        // still reflect the reservation; under the old post-commit reserve, a failure there would
+        // leave the job Pending with no DB entry and this rebuild would show nothing.
+        await _ledger.RebuildFromDbAsync(None);
+
+        using (var db = _harness.CreateContext())
+        {
+            (await db.OperationJobs.CountAsync(None)).Should().Be(1);
+            (await db.SpaceLedgerEntries.CountAsync(e => e.JobId == dto.Id && e.IsActive, None))
+                .Should().Be(2); // +reservation on target, −liberation on source
+        }
+
+        var f = await _ledger.ComputeFeasibilityAsync(Vol2Id, 5_000, true, 4_500, null, null, true, None);
+        f.Feasible.Should().BeFalse();
+        f.AvailableEstimateBytes.Should().Be(4_000);
+    }
+
     // ── Guard: one pending op per entity ─────────────────────────────────────
 
     [Fact]

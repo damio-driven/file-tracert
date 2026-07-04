@@ -51,22 +51,33 @@ public sealed class QueueService : IQueueService
         _db.OperationJobs.Add(job);
         foreach (var item in items)
             _db.OperationJobItems.Add(item);
-        await _db.SaveChangesAsync(ct);
-        await tx.CommitAsync(ct);
+        await _db.SaveChangesAsync(ct);   // assigns job.Id, still inside the open transaction
 
-        // Reserve AFTER commit. If reservation fails, the job stays Pending but has no ledger entry;
-        // the processor re-checks feasibility before executing so no data is at risk.
+        // C3: stage the ledger reservation in the SAME transaction as the job, so the two commit
+        // atomically. The old code reserved AFTER the commit — a throw or aborted request between
+        // the two left the job Pending with no ledger entry, making every other job's feasibility
+        // under-count this demand and overcommit the target.
         if (shouldReserve)
         {
-            await _ledger.ReserveAsync(
-                job.Id,
-                job.SequenceOrder,
-                job.TargetVolumeId!.Value,
-                job.RequiredBytesTarget,
-                job.SourceVolumeId,
-                job.FreedBytesSource,
-                ct);
+            _db.SpaceLedgerEntries.AddRange(SpaceLedger.BuildReservationEntries(
+                job.Id, job.TargetVolumeId!.Value, job.RequiredBytesTarget,
+                job.SourceVolumeId, job.FreedBytesSource));
+            await _db.SaveChangesAsync(ct);
         }
+
+        await tx.CommitAsync(ct);
+
+        // Update the in-memory mirror ONLY after the DB commit succeeds: the durable entries and
+        // the job now exist together, and the mirror can never claim a reservation the DB lacks.
+        if (shouldReserve)
+        {
+            await _ledger.RegisterReservationInMemoryAsync(
+                job.Id, job.SequenceOrder, job.TargetVolumeId!.Value,
+                job.RequiredBytesTarget, job.SourceVolumeId, job.FreedBytesSource, ct);
+        }
+
+        // Wake the processor now instead of letting it discover the job on its next safety poll.
+        _signal.Signal();
 
         _logger.LogInformation("Enqueued job {Id} type={Type} state={State}.", job.Id, job.Type, job.State);
         return MapToDto(job, items, null);

@@ -58,6 +58,21 @@ public interface ISpaceLedger
         CancellationToken ct);
 
     /// <summary>
+    /// Registers an already-persisted reservation in the in-memory mirror only (no DB write).
+    /// Used by the atomic enqueue path (fix C3): the caller persists the ledger entries inside the
+    /// job's own transaction, then calls this AFTER the commit succeeds — so the mirror never
+    /// reflects a reservation the database has not durably committed.
+    /// </summary>
+    Task RegisterReservationInMemoryAsync(
+        int jobId,
+        int sequenceOrder,
+        int targetVolumeId,
+        long requiredBytes,
+        int? sourceVolumeId,
+        long freedBytes,
+        CancellationToken ct);
+
+    /// <summary>
     /// Deactivates all active ledger entries for a job in DB and memory.
     /// Call on Completed, Failed, or Cancelled.
     /// </summary>

@@ -57,24 +57,47 @@ public sealed class SpaceLedger : ISpaceLedger
         using (var scope = _scopeFactory.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<FileTracertDbContext>();
-
-            if (requiredBytes > 0)
-                db.SpaceLedgerEntries.Add(new SpaceLedgerEntry
-                {
-                    JobId = jobId, VolumeId = targetVolumeId,
-                    DeltaBytes = +requiredBytes, IsActive = true
-                });
-
-            if (sourceVolumeId.HasValue && freedBytes > 0)
-                db.SpaceLedgerEntries.Add(new SpaceLedgerEntry
-                {
-                    JobId = jobId, VolumeId = sourceVolumeId.Value,
-                    DeltaBytes = -freedBytes, IsActive = true
-                });
-
+            db.SpaceLedgerEntries.AddRange(
+                BuildReservationEntries(jobId, targetVolumeId, requiredBytes, sourceVolumeId, freedBytes));
             await db.SaveChangesAsync(ct);
         }
 
+        await RegisterReservationInMemoryAsync(
+            jobId, sequenceOrder, targetVolumeId, requiredBytes, sourceVolumeId, freedBytes, ct);
+
+        _logger.LogDebug("SpaceLedger: reserved {Bytes} bytes on volume {Vol} for job {Job}.",
+            requiredBytes, targetVolumeId, jobId);
+    }
+
+    /// <summary>
+    /// Builds the (zero, one, or two) <see cref="SpaceLedgerEntry"/> rows for a job's reservation:
+    /// a +reservation on the target and a −liberation on the source. The single place that owns the
+    /// delta-sign convention — reused by <see cref="ReserveAsync"/> and by the atomic enqueue path,
+    /// which stages these into the job's own transaction (fix C3).
+    /// </summary>
+    public static IReadOnlyList<SpaceLedgerEntry> BuildReservationEntries(
+        int jobId, int targetVolumeId, long requiredBytes, int? sourceVolumeId, long freedBytes)
+    {
+        var entries = new List<SpaceLedgerEntry>(2);
+        if (requiredBytes > 0)
+            entries.Add(new SpaceLedgerEntry
+            {
+                JobId = jobId, VolumeId = targetVolumeId,
+                DeltaBytes = +requiredBytes, IsActive = true
+            });
+        if (sourceVolumeId.HasValue && freedBytes > 0)
+            entries.Add(new SpaceLedgerEntry
+            {
+                JobId = jobId, VolumeId = sourceVolumeId.Value,
+                DeltaBytes = -freedBytes, IsActive = true
+            });
+        return entries;
+    }
+
+    public async Task RegisterReservationInMemoryAsync(
+        int jobId, int sequenceOrder, int targetVolumeId,
+        long requiredBytes, int? sourceVolumeId, long freedBytes, CancellationToken ct)
+    {
         await _lock.WaitAsync(ct);
         try
         {
@@ -85,9 +108,6 @@ public sealed class SpaceLedger : ISpaceLedger
                 AddToMemory(sourceVolumeId.Value, jobId, sequenceOrder, -freedBytes);
         }
         finally { _lock.Release(); }
-
-        _logger.LogDebug("SpaceLedger: reserved {Bytes} bytes on volume {Vol} for job {Job}.",
-            requiredBytes, targetVolumeId, jobId);
     }
 
     public async Task ReleaseAsync(int jobId, CancellationToken ct)
