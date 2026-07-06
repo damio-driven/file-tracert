@@ -25,4 +25,10 @@ public interface ILogStore
     /// trims the oldest beyond <paramref name="maxRows"/>. Returns rows removed.
     /// </summary>
     Task<int> TrimAsync(DateTime olderThanUtc, int maxRows, bool vacuum, CancellationToken ct);
+
+    /// <summary>
+    /// Merges the write-ahead log back into the main file and truncates it, keeping the
+    /// WAL bounded during long runs. Best-effort under concurrent writers.
+    /// </summary>
+    Task CheckpointAsync(CancellationToken ct);
 }

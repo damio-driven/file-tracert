@@ -3,6 +3,7 @@ using System.Text;
 using FileTracert.Contracts.Dtos;
 using FileTracert.Contracts.Logging;
 using FileTracert.Contracts.Paging;
+using FileTracert.Data.Interceptors;
 using Microsoft.Data.Sqlite;
 
 namespace FileTracert.Data.Logging;
@@ -220,10 +221,32 @@ public sealed class SqliteLogStore : ILogStore
         }
     }
 
+    /// <summary>
+    /// Merges the WAL back into the main log file and truncates it. The log DB manages its
+    /// own connection (never the main <c>DbContext</c>), so it is not covered by the EF
+    /// checkpoint at startup nor by <c>SqliteBusyTimeoutInterceptor</c>; without this its
+    /// WAL grows without bound under constant logging (observed: 185 MB). Best-effort — if a
+    /// concurrent writer holds the DB, TRUNCATE simply does less this cycle and catches up next.
+    /// </summary>
+    public async Task CheckpointAsync(CancellationToken ct)
+    {
+        await using var conn = Open();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "PRAGMA wal_checkpoint(TRUNCATE);";
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
     private SqliteConnection Open()
     {
         var conn = new SqliteConnection(_connectionString);
         conn.Open();
+
+        // SQLite serialises writers even in WAL mode; a busy timeout lets a blocked log write
+        // wait for the current writer instead of failing. Matches the main DB's interceptor.
+        using var pragma = conn.CreateCommand();
+        pragma.CommandText = $"PRAGMA busy_timeout={SqliteBusyTimeoutInterceptor.BusyTimeoutMs};";
+        pragma.ExecuteNonQuery();
+
         return conn;
     }
 }

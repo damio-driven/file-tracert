@@ -57,6 +57,7 @@ builder.Services.AddHostedService<VolumeSyncWorker>();
 builder.Services.AddHostedService<ScanWorker>();
 builder.Services.AddHostedService<QueueProcessorWorker>();
 builder.Services.AddHostedService<LogRetentionWorker>();
+builder.Services.AddHostedService<WalCheckpointWorker>();
 
 builder.Services
     .AddControllers()

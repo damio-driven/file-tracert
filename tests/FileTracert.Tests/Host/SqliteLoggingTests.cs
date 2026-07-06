@@ -87,6 +87,8 @@ public sealed class SqliteLoggingTests : IDisposable
 
         public Task<int> TrimAsync(DateTime olderThanUtc, int maxRows, bool vacuum, CancellationToken ct) =>
             throw new NotSupportedException();
+
+        public Task CheckpointAsync(CancellationToken ct) => throw new NotSupportedException();
     }
 
     public void Dispose()

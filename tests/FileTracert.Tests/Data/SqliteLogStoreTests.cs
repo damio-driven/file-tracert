@@ -182,6 +182,40 @@ public sealed class SqliteLogStoreTests : IDisposable
         page.TotalCount.Should().Be(3);
     }
 
+    [Fact]
+    public async Task Checkpoint_truncates_a_grown_wal()
+    {
+        // Grow the WAL: bulk-write with auto-checkpoint disabled so frames accumulate.
+        // Keep this connection open across the checkpoint+assert: closing the last connection
+        // makes SQLite checkpoint and delete the -wal file, which would hide the effect.
+        await using var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={_dbPath}");
+        await conn.OpenAsync();
+        await Exec(conn, "PRAGMA wal_autocheckpoint=0;");
+        var payload = new string('x', 4000);
+        for (int i = 0; i < 200; i++)
+        {
+            await Exec(
+                conn,
+                "INSERT INTO LogEntries (TimestampUtc, Level, Category, Message) " +
+                $"VALUES ('2026-01-01', 2, 'T', '{payload}');");
+        }
+
+        var grownWal = new FileInfo(_dbPath + "-wal").Length;
+        grownWal.Should().BeGreaterThan(100_000);
+
+        // The idle connection holds no read lock, so TRUNCATE can merge every frame back.
+        await _store.CheckpointAsync(CancellationToken.None);
+
+        new FileInfo(_dbPath + "-wal").Length.Should().BeLessThan(grownWal / 10);
+    }
+
+    private static async Task Exec(Microsoft.Data.Sqlite.SqliteConnection conn, string sql)
+    {
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        await cmd.ExecuteNonQueryAsync();
+    }
+
     public void Dispose()
     {
         Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();

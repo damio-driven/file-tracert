@@ -11,7 +11,14 @@ namespace FileTracert.Data.Interceptors;
 /// </summary>
 public sealed class SqliteBusyTimeoutInterceptor : DbConnectionInterceptor
 {
-    private const int BusyTimeoutMs = 5_000;
+    /// <summary>
+    /// Busy-wait budget for a blocked writer. Sized to outlast a full-volume scan's
+    /// persist transaction (delete + bulk-insert holds the single SQLite write lock for
+    /// its whole duration): a small background writer (e.g. VolumeSyncWorker) waits it out
+    /// instead of failing with "database is locked". Shared with <c>SqliteLogStore</c> so
+    /// the log DB uses the same budget.
+    /// </summary>
+    public const int BusyTimeoutMs = 15_000;
 
     public override void ConnectionOpened(DbConnection connection, ConnectionEndEventData eventData)
         => ApplyBusyTimeout(connection);

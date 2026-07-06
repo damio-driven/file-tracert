@@ -36,6 +36,8 @@ public sealed class LogsControllerTests
 
         public Task<int> TrimAsync(DateTime olderThanUtc, int maxRows, bool vacuum, CancellationToken ct) =>
             Task.FromResult(0);
+
+        public Task CheckpointAsync(CancellationToken ct) => Task.CompletedTask;
     }
 
     [Fact]

@@ -32,4 +32,12 @@ public sealed class FileTracertOptions
 
     /// <summary>How often <see cref="Workers.LogRetentionWorker"/> trims the log database.</summary>
     public int LogRetentionIntervalSeconds { get; set; } = 3600;
+
+    /// <summary>
+    /// How often <see cref="Workers.WalCheckpointWorker"/> merges + truncates the WAL of the
+    /// main and log databases. Under constant read/write traffic SQLite's passive
+    /// auto-checkpoint can starve, letting the WAL grow unbounded (observed: 555 MB) which
+    /// slows every write and eventually causes "database is locked".
+    /// </summary>
+    public int WalCheckpointIntervalSeconds { get; set; } = 120;
 }

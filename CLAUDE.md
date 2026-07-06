@@ -474,13 +474,22 @@ src/app/
   vengono mai ri-sondati → mantengono la classificazione vecchia: serve una
   riconciliazione dai dati già persistiti. Non urgente finché l'esclusione manuale
   copre il caso.
-- **Re-scan idempotente vs proiezione** *(introdotto allo step 4)* — lo
-  `ScanService` usa **truncate-per-volume** in transazione per la re-scan
-  completa. È corretto finché la proiezione non esiste, MA cancella anche i
-  campi `Pending*`/overlay di quel volume a ogni re-scan. **Allo step 9
-  (proiezione) va sostituito con un merge** che preserva l'overlay (matching per
-  `UsnFileRef`/path, update invece di delete+insert dei record con stato pendente).
-  Da affrontare obbligatoriamente prima di considerare la proiezione completa.
+- **Re-scan idempotente vs proiezione + contesa di lock** *(introdotto allo step 4;
+  aggravato allo step 8)* — lo `ScanService.PersistAsync` avvolge delete-all
+  volume + BulkInsert dell'intero volume in **un'unica transazione**, che tiene il
+  write-lock unico di SQLite per **minuti** durante gli scan grossi (es. C:). Due
+  conseguenze: (1) il truncate-per-volume cancella gli overlay `Pending*` a ogni
+  re-scan → va sostituito con un **merge** che preserva l'overlay; (2) la
+  transazione monolitica causa **`SQLITE_BUSY`** sugli altri writer
+  (VolumeSyncWorker, API) → `database is locked`. Mitigato allo step 8 con
+  WalCheckpointWorker + `busy_timeout` 15s (cerotto, NON cura). **Allo step 9 il
+  rework deve: preservare l'overlay E spezzare la transazione in blocchi corti**
+  (commit per batch, rilascio del write-lock tra i blocchi) così il sync/API non
+  attendono minuti. È lo stesso punto di codice: farlo una volta sola.
+- **Re-scan idempotente vs proiezione** *(introdotto allo step 4)* — vedi la voce
+  sopra: matching per `UsnFileRef`/path, update invece di delete+insert dei record
+  con stato pendente. Da affrontare obbligatoriamente prima di considerare la
+  proiezione completa.
 
 ---
 
