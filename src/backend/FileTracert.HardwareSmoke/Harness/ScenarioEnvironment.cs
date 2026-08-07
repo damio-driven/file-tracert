@@ -38,7 +38,8 @@ public sealed class ScenarioEnvironment : IAsyncDisposable
     public int TargetVolumeId { get; }
 
     public static async Task<ScenarioEnvironment> CreateAsync(
-        VolumePair pair, string databaseDirectory, LogLevel minimumLogLevel, Action<string> log, CancellationToken ct)
+        VolumePair pair, string databaseDirectory, LogLevel minimumLogLevel, Action<string> log, CancellationToken ct,
+        Action<IServiceCollection>? configureServices = null)
     {
         Directory.CreateDirectory(databaseDirectory);
         var databasePath = Path.Combine(databaseDirectory, "harness.db");
@@ -51,6 +52,9 @@ public sealed class ScenarioEnvironment : IAsyncDisposable
         services.AddPlatformServices();
         services.AddBusinessServices();
         services.AddScoped<CatalogArranger>();
+
+        // Scenario-specific overrides last, so a fault-injection wrapper wins the registration.
+        configureServices?.Invoke(services);
 
         var provider = services.BuildServiceProvider();
 

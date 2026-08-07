@@ -70,11 +70,9 @@ public sealed class RenameFolderScenario : Scenario
             "file row reachable under the renamed folder path");
 
         // ── assert (FTS: the new path is searchable) ──────────────────────────
-        var found = fileRow is not null && await WaitForCatalogConditionAsync(ctx, async () =>
-        {
-            var hits = await SearchFullPathAsync(ctx, "renamed");
-            return hits.Contains(fileRow.Id);
-        });
+        // Single read: since fix #7 the FTS update commits with the Completed state.
+        var found = fileRow is not null &&
+                    (await SearchFullPathAsync(ctx, "renamed")).Contains(fileRow.Id);
 
         if (!found)
         {

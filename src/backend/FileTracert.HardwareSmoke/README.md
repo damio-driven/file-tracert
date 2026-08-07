@@ -142,7 +142,14 @@ di ogni assert fallito (con i path concreti) e dalle note del run.
 | `rename-folder` | intra | Rename applicato, sottoalbero `Directories` e path FTS aggiornati a cascata. |
 | `create-folder` | qualsiasi | Cartella creata su disco e presente nel catalogo. |
 | `cancel-mid-copy` | cross | Cancel durante la copia: sorgente intatto, nessun `.partial`, nessun file finale sulla destinazione, job `Cancelled`. |
+| `cancel-before-delete` | cross | Cancel nella finestra pre-delete (copia finalizzata, sorgente ancora sul disco): il worker riavviato onora `Cancelled`, sorgente mai cestinato, copia atterrata riconciliata nel catalogo. |
 | `crash-resume-mid-copy` | cross | Worker ucciso a metà copia e riavviato: il job riprende e chiude al 100% netto, nessun orfano. |
+| `crash-resume-verifying` | cross | Crash tra finalize e checkpoint `Verified`: il resume verifica il file finale in place e completa, senza fallire sul partial mancante. |
+| `crash-resume-deleting-source` | cross | Crash a metà del recycle dei sorgenti: il resume tollera il sorgente già cestinato e completa. |
+| `crash-resume-simple-op` | qualsiasi | Crash dopo la `File.Move` intra-volume non checkpointata: il re-run riconosce l'op già applicata, completa e aggiorna l'indice. |
+| `intra-collision-blocked` | qualsiasi | Move intra-volume su destinazione occupata: `Blocked(NameCollision)` riattivabile, mai `Failed`, nessun file toccato. |
+| `index-update-fail-once` | cross | Upsert FTS fallisce una volta durante il completamento: il commit atomico fa retry, il job chiude `Completed`, spazio decrementato una sola volta. |
+| `phantom-reservation-rebuild` | cross | Riserva ledger orfana su job terminale (crash footprint): riconciliata al rebuild di startup, la feasibility torna corretta. |
 | `insufficient-space` | cross | Job che non ci sta: `Blocked(InsufficientSpace)`, **non** `Failed`, niente copiato. |
 | `fifo-auto-recovery` | cross | Il job A libera lo spazio che serve a B: B completa **da solo**, senza retry manuale. |
 | `offline-simulated` | cross | Volume di destinazione marcato offline nel catalogo: il job **attende** (mai `Failed`) e parte da solo quando torna online. |
@@ -155,15 +162,16 @@ finché il relativo pacchetto di lavoro non atterra. Un FAIL su questi è la spe
 parla, non l'harness rotto.
 
 Stato all'ultimo run di collaudo (2 volumi interni, `SemiAutomatic=false`) —
-**16 PASS / 1 FAIL**:
+**27 PASS / 1 FAIL**:
 
 - `offline-simulated` e `offline-unplug` → **WP2** (gate offline + block reason offline):
   **ancora rossi**, il job viene eseguito anche con il volume marcato offline;
 - `move-folder-excluded-files`, `move-folder-nothing-to-copy`,
-  `move-folder-rejected-at-enqueue` → **WP3** (MoveFolder sicuro): **verdi** da quando
-  WP3 è atterrato;
-- `crash-resume-mid-copy` → **WP1** (idempotenza al crash): **verde** sul percorso
-  coperto da questo scenario (interruzione durante la copia).
+  `move-folder-rejected-at-enqueue` → **WP3** (MoveFolder sicuro): **verdi**;
+- tutti gli scenari **WP1** (crash/resume ai tre step, cancel-before-delete,
+  collisione intra, index-update-fail-once, phantom-reservation) → **verdi** da quando
+  WP1 è atterrato. Con il fix #7 (indice dentro il commit di Completed) le assert di
+  catalogo leggono una volta sola: il vecchio settle-poll da 15 s è stato rimosso.
 
 ### Scenari SKIP
 

@@ -40,6 +40,13 @@ public abstract class Scenario
     /// <summary>Scenarios that ask for a drive to be unplugged need the target to be removable.</summary>
     public virtual bool NeedsExternalTarget => false;
 
+    /// <summary>
+    /// Optional service overrides applied on top of the product registrations when this
+    /// scenario's environment is built. Fault-injection scenarios use it to wrap ONE real
+    /// service (e.g. a first-call-fails <c>IFileSearchIndex</c>) while everything else stays real.
+    /// </summary>
+    public virtual Action<Microsoft.Extensions.DependencyInjection.IServiceCollection>? ConfigureServices => null;
+
     public bool AppliesTo(VolumePair pair, HardwareSmokeOptions options)
     {
         if (Requires == PairRequirement.Cross && !pair.IsCrossVolume) return false;
@@ -110,39 +117,9 @@ public abstract class Scenario
         });
     }
 
-    /// <summary>
-    /// How long a catalog assertion keeps re-reading before giving up. The engine commits
-    /// <c>Completed</c> BEFORE it runs the index update, so the instant a job looks terminal the
-    /// catalog may still be half-written — asserting on that snapshot would flake. Filesystem
-    /// assertions need no such wait: the source is recycled before the Completed transition.
-    /// </summary>
-    private static readonly TimeSpan CatalogSettleTimeout = TimeSpan.FromSeconds(15);
-
-    /// <summary>Re-reads <paramref name="probe"/> until it yields a row or the settle window expires.</summary>
-    private static async Task<T?> WaitForCatalogAsync<T>(ScenarioContext ctx, Func<Task<T?>> probe)
-        where T : class
-    {
-        var deadline = DateTime.UtcNow + CatalogSettleTimeout;
-        while (true)
-        {
-            var result = await probe();
-            if (result is not null) return result;
-            if (DateTime.UtcNow >= deadline) return null;
-            await Task.Delay(50, ctx.Ct);
-        }
-    }
-
-    /// <summary>Re-evaluates a boolean post-condition until it holds or the settle window expires.</summary>
-    protected static async Task<bool> WaitForCatalogConditionAsync(ScenarioContext ctx, Func<Task<bool>> probe)
-    {
-        var deadline = DateTime.UtcNow + CatalogSettleTimeout;
-        while (true)
-        {
-            if (await probe()) return true;
-            if (DateTime.UtcNow >= deadline) return false;
-            await Task.Delay(50, ctx.Ct);
-        }
-    }
+    // Since fix #7 the index update commits INSIDE the Completed transaction, so the moment a
+    // job is observed terminal the catalog is fully written — assertions read once, no settle
+    // polling. (The old 15 s wait existed only to paper over the pre-fix race.)
 
     /// <summary>
     /// Asserts a file row exists at the expected volume-relative path, and on failure says what the
@@ -152,10 +129,10 @@ public abstract class Scenario
     protected static async Task<FileEntry?> AssertCatalogHasFileAsync(
         ScenarioContext ctx, int volumeId, string volumeRelativePath, string what)
     {
-        var row = await WaitForCatalogAsync(ctx, () => FindFileRowAsync(ctx, volumeId, volumeRelativePath));
+        var row = await FindFileRowAsync(ctx, volumeId, volumeRelativePath);
         if (row is null)
-            ctx.Assert.Fail($"{what}: no Files row at '{volumeRelativePath}' on volume {volumeId} " +
-                            $"after {CatalogSettleTimeout.TotalSeconds:0}s. {await DescribeCatalogAsync(ctx)}");
+            ctx.Assert.Fail($"{what}: no Files row at '{volumeRelativePath}' on volume {volumeId}. " +
+                            $"{await DescribeCatalogAsync(ctx)}");
         return row;
     }
 
@@ -163,10 +140,10 @@ public abstract class Scenario
     protected static async Task<DirectoryNode?> AssertCatalogHasDirectoryAsync(
         ScenarioContext ctx, int volumeId, string materializedPath, string what)
     {
-        var row = await WaitForCatalogAsync(ctx, () => FindDirectoryRowAsync(ctx, volumeId, materializedPath));
+        var row = await FindDirectoryRowAsync(ctx, volumeId, materializedPath);
         if (row is null)
-            ctx.Assert.Fail($"{what}: no Directories row at '{materializedPath}' on volume {volumeId} " +
-                            $"after {CatalogSettleTimeout.TotalSeconds:0}s. {await DescribeCatalogAsync(ctx)}");
+            ctx.Assert.Fail($"{what}: no Directories row at '{materializedPath}' on volume {volumeId}. " +
+                            $"{await DescribeCatalogAsync(ctx)}");
         return row;
     }
 

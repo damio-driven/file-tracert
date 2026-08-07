@@ -76,7 +76,8 @@ public sealed class HarnessRunner
                 Path.Combine(workRoot, runKey),
                 _serviceLogLevel,
                 line => _console.Write($"    {line}"),
-                timeoutCts.Token);
+                timeoutCts.Token,
+                scenario.ConfigureServices);
 
             queue = new QueueDriver(environment.Services, line => _console.Write($"    {line}"));
             source = new FixtureArea(pair.Source, runKey, "source");
