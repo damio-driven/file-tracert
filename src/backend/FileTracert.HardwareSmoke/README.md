@@ -150,15 +150,20 @@ di ogni assert fallito (con i path concreti) e dalle note del run.
 
 ### Scenari attesi RED
 
-Alcuni scenari descrivono il comportamento **corretto**, non quello attuale. Restano rossi
-finché i relativi pacchetti di lavoro non atterrano:
+Alcuni scenari descrivono il comportamento **corretto**, non quello attuale: restano rossi
+finché il relativo pacchetto di lavoro non atterra. Un FAIL su questi è la specifica che
+parla, non l'harness rotto.
 
+Stato all'ultimo run di collaudo (2 volumi interni, `SemiAutomatic=false`) —
+**16 PASS / 1 FAIL**:
+
+- `offline-simulated` e `offline-unplug` → **WP2** (gate offline + block reason offline):
+  **ancora rossi**, il job viene eseguito anche con il volume marcato offline;
 - `move-folder-excluded-files`, `move-folder-nothing-to-copy`,
-  `move-folder-rejected-at-enqueue` → **WP3** (MoveFolder sicuro);
-- `offline-simulated`, `offline-unplug` → **WP2** (gate offline + block reason offline);
-- `crash-resume-mid-copy` → **WP1** (idempotenza degli step al crash).
-
-Un FAIL su questi è la specifica che parla, non l'harness rotto.
+  `move-folder-rejected-at-enqueue` → **WP3** (MoveFolder sicuro): **verdi** da quando
+  WP3 è atterrato;
+- `crash-resume-mid-copy` → **WP1** (idempotenza al crash): **verde** sul percorso
+  coperto da questo scenario (interruzione durante la copia).
 
 ### Scenari SKIP
 
