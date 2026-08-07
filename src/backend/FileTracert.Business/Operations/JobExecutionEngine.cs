@@ -672,8 +672,16 @@ public sealed class JobExecutionEngine
                 job.SourceVolume.FreeBytesLastKnown += job.FreedBytesSource;
         }
 
-        await _db.SaveChangesAsync(ct);
-        await _ledger.ReleaseAsync(job.Id, ct);
+        // Terminal state + ledger release must commit atomically (finding #5): a crash
+        // in between would leave a phantom IsActive reservation that under-counts free
+        // space forever. The in-memory mirror follows only after the durable commit.
+        await using (var tx = await _db.Database.BeginTransactionAsync(ct))
+        {
+            await _db.SaveChangesAsync(ct);
+            await SpaceLedger.DeactivateEntriesAsync(_db, job.Id, ct);
+            await tx.CommitAsync(ct);
+        }
+        await _ledger.ReleaseInMemoryAsync(job.Id, CancellationToken.None);
         _logger.LogInformation("Job {Id} completed.", job.Id);
     }
 
@@ -712,7 +720,11 @@ public sealed class JobExecutionEngine
         job.CompletedUtc = DateTime.UtcNow;
         try
         {
+            // Same-transaction release as CompleteJobAsync (finding #5).
+            await using var tx = await _db.Database.BeginTransactionAsync(ct);
             await _db.SaveChangesAsync(ct);
+            await SpaceLedger.DeactivateEntriesAsync(_db, job.Id, ct);
+            await tx.CommitAsync(ct);
         }
         catch (DbUpdateConcurrencyException)
         {
@@ -720,7 +732,7 @@ public sealed class JobExecutionEngine
             await HandleConcurrentStateChangeAsync(job);
             return;
         }
-        await _ledger.ReleaseAsync(job.Id, ct);
+        await _ledger.ReleaseInMemoryAsync(job.Id, CancellationToken.None);
 
         // FIX #10-partial: a Failed job's .fadit-partial files are discardable garbage
         // (a retry re-copies from scratch) — never leave them on the target.

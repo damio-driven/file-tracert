@@ -16,8 +16,7 @@ namespace FileTracert.Business.Operations;
 /// </summary>
 public sealed class QueueService : IQueueService
 {
-    private static readonly HashSet<JobState> TerminalStates =
-        [JobState.Completed, JobState.Failed, JobState.Cancelled];
+    private static readonly HashSet<JobState> TerminalStates = [.. JobStates.Terminal];
 
     private readonly FileTracertDbContext _db;
     private readonly ISpaceLedger _ledger;
@@ -168,7 +167,12 @@ public sealed class QueueService : IQueueService
             job.CompletedUtc = DateTime.UtcNow;
             try
             {
+                // Cancelled + ledger release commit atomically (finding #5): a crash in
+                // between must not leave a phantom IsActive reservation.
+                await using var tx = await _db.Database.BeginTransactionAsync(ct);
                 await _db.SaveChangesAsync(ct);
+                await SpaceLedger.DeactivateEntriesAsync(_db, jobId, ct);
+                await tx.CommitAsync(ct);
                 break;
             }
             catch (DbUpdateConcurrencyException) when (attempt < maxAttempts)
@@ -184,7 +188,8 @@ public sealed class QueueService : IQueueService
         // sees the state on re-check and has its copy interrupted via the token.
         _cancellation.Cancel(jobId);
 
-        await _ledger.ReleaseAsync(jobId, ct);
+        // DB rows were deactivated inside the commit above — mirror it in memory.
+        await _ledger.ReleaseInMemoryAsync(jobId, ct);
 
         // FIX #10-partial: a job cancelled while NOT running (e.g. checkpointed in Copying
         // after a shutdown, or Blocked with copied items) has orphan .fadit-partial files no

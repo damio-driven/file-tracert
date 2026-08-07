@@ -115,11 +115,14 @@ public sealed class SpaceLedger : ISpaceLedger
         using (var scope = _scopeFactory.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<FileTracertDbContext>();
-            await db.SpaceLedgerEntries
-                .Where(e => e.JobId == jobId && e.IsActive)
-                .ExecuteUpdateAsync(s => s.SetProperty(e => e.IsActive, false), ct);
+            await DeactivateEntriesAsync(db, jobId, ct);
         }
 
+        await ReleaseInMemoryAsync(jobId, ct);
+    }
+
+    public async Task ReleaseInMemoryAsync(int jobId, CancellationToken ct)
+    {
         await _lock.WaitAsync(ct);
         try
         {
@@ -130,6 +133,18 @@ public sealed class SpaceLedger : ISpaceLedger
         _logger.LogDebug("SpaceLedger: released entries for job {Job}.", jobId);
     }
 
+    /// <summary>
+    /// Deactivates a job's active entries through the CALLER's DbContext, so a terminal state
+    /// change and its ledger release commit in the same transaction (finding #5): a crash can
+    /// never leave an IsActive reservation on a terminal job. Static for the same reason as
+    /// <see cref="BuildReservationEntries"/> — the durable write belongs to the caller's
+    /// unit of work, the singleton only mirrors it in memory after the commit.
+    /// </summary>
+    public static Task DeactivateEntriesAsync(FileTracertDbContext db, int jobId, CancellationToken ct) =>
+        db.SpaceLedgerEntries
+            .Where(e => e.JobId == jobId && e.IsActive)
+            .ExecuteUpdateAsync(s => s.SetProperty(e => e.IsActive, false), ct);
+
     public async Task RebuildFromDbAsync(CancellationToken ct)
     {
         // SequenceOrder lives on the job, not on the entry — join it back in so the
@@ -138,6 +153,17 @@ public sealed class SpaceLedger : ISpaceLedger
         using (var scope = _scopeFactory.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<FileTracertDbContext>();
+
+            // Reconciliation (finding #5): a crash between a terminal-state commit and the
+            // (formerly separate) release left IsActive entries on terminal jobs. Loading
+            // them would under-count free space forever — heal the rows, then load.
+            int reconciled = await db.SpaceLedgerEntries
+                .Where(e => e.IsActive && JobStates.Terminal.Contains(e.Job.State))
+                .ExecuteUpdateAsync(s => s.SetProperty(e => e.IsActive, false), ct);
+            if (reconciled > 0)
+                _logger.LogWarning(
+                    "SpaceLedger: deactivated {Count} phantom ledger entries left by terminal jobs.", reconciled);
+
             entries = (await db.SpaceLedgerEntries
                 .Where(e => e.IsActive)
                 .Select(e => new { e.VolumeId, e.JobId, e.Job.SequenceOrder, e.DeltaBytes })

@@ -58,14 +58,15 @@ public sealed class SpaceLedgerTests : IDisposable
         _ledger.ReleaseAsync(jobId, CancellationToken.None);
 
     /// <summary>RebuildFromDbAsync joins SequenceOrder back from OperationJobs — seed the row.</summary>
-    private void SeedJobRow(int jobId, int sequenceOrder)
+    private void SeedJobRow(int jobId, int sequenceOrder,
+        FileTracert.Contracts.Enums.JobState state = FileTracert.Contracts.Enums.JobState.Pending)
     {
         using var db = _harness.CreateContext();
         db.OperationJobs.Add(new FileTracert.Data.Entities.OperationJob
         {
             Id = jobId,
             Type = FileTracert.Contracts.Enums.JobType.MoveFile,
-            State = FileTracert.Contracts.Enums.JobState.Pending,
+            State = state,
             SequenceOrder = sequenceOrder,
             CreatedUtc = DateTime.UtcNow,
             UpdatedUtc = DateTime.UtcNow,
@@ -426,6 +427,32 @@ public sealed class SpaceLedgerTests : IDisposable
         var r = await newLedger.ComputeFeasibilityAsync(1, 1000, true, 999, null, null, true, CancellationToken.None);
         r.Feasible.Should().BeTrue();
         r.AvailableEstimateBytes.Should().Be(1000);
+    }
+
+    [Fact]
+    public async Task RebuildFromDb_reconciles_phantom_reservations_of_terminal_jobs()
+    {
+        // Finding #5 crash footprint: the job committed a terminal state but died before the
+        // ledger release — its entries are still IsActive. The rebuild must not resurrect
+        // them (feasibility would under-count space forever) and must heal the DB rows.
+        SeedJobRow(jobId: 1, sequenceOrder: 1, state: FileTracert.Contracts.Enums.JobState.Completed);
+        await Reserve(jobId: 1, targetVol: 1, required: 900);
+
+        SeedJobRow(jobId: 2, sequenceOrder: 2);
+        await Reserve(jobId: 2, targetVol: 1, required: 100, sequenceOrder: 2);
+
+        var newLedger = new SpaceLedger(CreateScopeFactory(_harness), NullLogger<SpaceLedger>.Instance);
+        await newLedger.RebuildFromDbAsync(CancellationToken.None);
+
+        // Only the live job's 100 bytes count — the terminal job's 900 are a phantom.
+        var r = await newLedger.ComputeFeasibilityAsync(1, 1000, true, 900, null, null, true, CancellationToken.None);
+        r.Feasible.Should().BeTrue("a completed job's reservation is not demand anymore");
+        r.AvailableEstimateBytes.Should().Be(900);
+
+        // And the orphan rows are healed, not just skipped, so every later consumer agrees.
+        using var db = _harness.CreateContext();
+        var job1Active = await db.SpaceLedgerEntries.CountAsync(e => e.JobId == 1 && e.IsActive);
+        job1Active.Should().Be(0, "rebuild must deactivate entries of terminal jobs in the DB");
     }
 
     // ── independent volumes ───────────────────────────────────────────────────

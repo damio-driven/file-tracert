@@ -74,9 +74,19 @@ public interface ISpaceLedger
 
     /// <summary>
     /// Deactivates all active ledger entries for a job in DB and memory.
-    /// Call on Completed, Failed, or Cancelled.
+    /// For NON-terminal normalization only (retry, revaluation). Terminal transitions
+    /// (Completed/Failed/Cancelled) must instead deactivate the DB rows inside their own
+    /// state-commit transaction (finding #5 — no phantom reservations on crash) and then
+    /// call <see cref="ReleaseInMemoryAsync"/> after the commit.
     /// </summary>
     Task ReleaseAsync(int jobId, CancellationToken ct);
+
+    /// <summary>
+    /// Removes a job's entries from the in-memory mirror only (no DB write). Counterpart of
+    /// <see cref="RegisterReservationInMemoryAsync"/>: the caller has already deactivated the
+    /// rows inside the terminal-state transaction and calls this AFTER the commit succeeds.
+    /// </summary>
+    Task ReleaseInMemoryAsync(int jobId, CancellationToken ct);
 
     /// <summary>
     /// Rebuilds in-memory state from all active <c>SpaceLedgerEntries</c> in the DB.

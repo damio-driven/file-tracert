@@ -17,4 +17,12 @@ public static class JobStates
         JobState.Verifying,
         JobState.DeletingSource,
     ];
+
+    /// <summary>Terminal states: the job will never run again (Blocked is NOT terminal).</summary>
+    public static readonly JobState[] Terminal =
+    [
+        JobState.Completed,
+        JobState.Failed,
+        JobState.Cancelled,
+    ];
 }
