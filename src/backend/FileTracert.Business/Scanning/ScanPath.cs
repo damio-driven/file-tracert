@@ -4,7 +4,7 @@ namespace FileTracert.Business.Scanning;
 /// Pure helpers for volume-relative paths (always normalized to backslash, no
 /// leading/trailing separator; the empty string is the volume root).
 /// </summary>
-internal static class ScanPath
+public static class ScanPath
 {
     public static string Normalize(string path) => path.Replace('/', '\\').Trim('\\');
 

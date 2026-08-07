@@ -6,7 +6,7 @@ namespace FileTracert.HardwareSmoke;
 
 /// <summary>
 /// Reads the absolute paths of the production catalogue's active WatchedRoots so the guard-rails
-/// can refuse to run the smoke harness anywhere near catalogued data.
+/// can refuse to run the harness anywhere near catalogued data.
 /// </summary>
 public static class ProductionRootsReader
 {
@@ -16,12 +16,12 @@ public static class ProductionRootsReader
     /// MUST then refuse to run (we cannot prove the target areas are clear of production data).
     /// A missing DB file is a genuine "no production install" → <c>CouldVerify=true</c>, empty list.
     /// </summary>
-    public sealed record Result(bool CouldVerify, IReadOnlyList<string> RootPaths);
+    public sealed record Result(bool CouldVerify, IReadOnlyList<string> RootPaths, string? Error);
 
     public static Result Read(string mainDbPath, IVolumeProbe probe)
     {
         if (!File.Exists(mainDbPath))
-            return new Result(CouldVerify: true, []);
+            return new Result(CouldVerify: true, [], null);
 
         try
         {
@@ -45,12 +45,14 @@ public static class ProductionRootsReader
                 if (mounts.TryGetValue(r.VolumeGuid, out var mount))
                     result.Add(Path.GetFullPath(Path.Combine(mount, r.RelativePath)));
 
-            return new Result(CouldVerify: true, result);
+            return new Result(CouldVerify: true, result, null);
         }
-        catch
+        catch (Exception ex)
         {
-            // Non-silent at the call site: the DB exists but is unreadable → cannot verify.
-            return new Result(CouldVerify: false, []);
+            // Not silent (§9): the DB exists but is unreadable, so we cannot prove the configured
+            // areas are clear of catalogued data. The full exception travels back to the caller,
+            // which refuses to run and prints it.
+            return new Result(CouldVerify: false, [], $"{ex.GetType().Name}: {ex.Message}");
         }
     }
 }

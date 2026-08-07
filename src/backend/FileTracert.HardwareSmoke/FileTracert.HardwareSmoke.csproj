@@ -12,12 +12,19 @@
     <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="10.0.8" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.8" />
     <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.8" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.8" />
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The harness drives the product's own services end to end, so it sits at the test tier of
+         the layering (CLAUDE.md §3): like the xUnit project, it may reference every layer,
+         including Host — that is where the real QueueProcessorWorker lives, and reusing it is what
+         makes "the same state machine the service runs" literally true. -->
     <ProjectReference Include="..\FileTracert.Contracts\FileTracert.Contracts.csproj" />
     <ProjectReference Include="..\FileTracert.Data\FileTracert.Data.csproj" />
     <ProjectReference Include="..\FileTracert.Platform\FileTracert.Platform.csproj" />
+    <ProjectReference Include="..\FileTracert.Business\FileTracert.Business.csproj" />
+    <ProjectReference Include="..\FileTracert.Host\FileTracert.Host.csproj" />
   </ItemGroup>
 
   <ItemGroup>

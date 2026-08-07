@@ -10,15 +10,21 @@ public sealed record GuardResult(bool Ok, string? Reason)
 }
 
 /// <summary>
-/// Guard-rails the hardware-smoke harness MUST pass before doing anything destructive. Pure and
-/// side-effect-free so it is fully unit-testable. Refuses to run unless explicitly enabled, and
-/// rejects any configuration that could touch production data or the OS:
-///   1. disabled or unset → deny;
-///   2. Source / Target / Scratch that coincide with (or contain / are contained by) a production
-///      WatchedRoot → deny (never operate on catalogued data);
-///   3. any path that is a drive root or a system location (Windows, Program Files, …) → deny;
-///   4. the three areas must be pairwise disjoint so the harness duplicates into Scratch and
-///      operates on the copies, never on the Source originals.
+/// Guard-rails the hardware harness MUST pass before doing anything destructive. Pure apart from
+/// the directory-existence probe, so it is fully unit-testable. It refuses to run unless
+/// explicitly enabled, and rejects any configuration that could touch production data or the OS:
+///   1. disabled, or no usable test volume → deny;
+///   2. a scratch subfolder that is not a single safe folder name → deny (the recursive cleanup
+///      must never be able to escape the configured folder);
+///   3. a configured path that does not exist → deny (a typo must not create a work area
+///      somewhere unintended);
+///   4. a path that is a drive root or a system location (Windows, Program Files, …) → deny;
+///   5. a path that coincides with / contains / is contained by a production WatchedRoot → deny
+///      (the harness never operates anywhere near catalogued data);
+///   6. two test volumes whose paths overlap → deny (their scratch areas would collide, and a
+///      cleanup of one would delete the other's fixtures).
+/// The harness only ever creates and destroys content inside <c>{path}\{ScratchSubfolder}</c>:
+/// pre-existing content in the configured folders is never read, moved or deleted.
 /// </summary>
 public static class HardwareSmokeGuard
 {
@@ -29,51 +35,71 @@ public static class HardwareSmokeGuard
         if (!options.Enabled)
             return GuardResult.Deny("HardwareSmoke is disabled (Enabled=false).");
 
-        if (string.IsNullOrWhiteSpace(options.SourcePath) ||
-            string.IsNullOrWhiteSpace(options.TargetPath) ||
-            string.IsNullOrWhiteSpace(options.ScratchPath))
-            return GuardResult.Deny("SourcePath, TargetPath and ScratchPath must all be set.");
+        if (!HarnessPaths.IsSafeScratchSubfolder(options.ScratchSubfolder))
+            return GuardResult.Deny(
+                $"ScratchSubfolder '{options.ScratchSubfolder}' must be a single folder name " +
+                "(no separators, no drive, no '..').");
 
-        string source = Full(options.SourcePath);
-        string target = Full(options.TargetPath);
-        string scratch = Full(options.ScratchPath);
+        var volumes = options.TestVolumes ?? [];
+        if (volumes.Count == 0)
+            return GuardResult.Deny("No TestVolumes configured.");
 
-        foreach (var (label, path) in new[] { ("SourcePath", source), ("TargetPath", target), ("ScratchPath", scratch) })
+        var seenNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var resolved = new List<(string Name, string Path)>(volumes.Count);
+
+        foreach (var volume in volumes)
         {
-            if (IsDriveRoot(path))
-                return GuardResult.Deny($"{label} '{path}' is a drive root — refusing to operate on a whole volume.");
+            if (string.IsNullOrWhiteSpace(volume.Name))
+                return GuardResult.Deny("Every TestVolume needs a Name.");
 
-            if (IsSystemLocation(path))
-                return GuardResult.Deny($"{label} '{path}' is a system location — refusing to touch the OS.");
+            if (!seenNames.Add(volume.Name.Trim()))
+                return GuardResult.Deny($"Duplicate TestVolume name '{volume.Name}'.");
+
+            if (string.IsNullOrWhiteSpace(volume.Path))
+                return GuardResult.Deny($"TestVolume '{volume.Name}' has no Path.");
+
+            var full = Path.GetFullPath(volume.Path.Trim());
+
+            if (!Directory.Exists(full))
+                return GuardResult.Deny(
+                    $"TestVolume '{volume.Name}' path '{full}' does not exist — create it first " +
+                    "so the harness never invents a work area from a typo.");
+
+            if (IsDriveRoot(full))
+                return GuardResult.Deny(
+                    $"TestVolume '{volume.Name}' path '{full}' is a drive root — refusing to operate on a whole volume.");
+
+            if (IsSystemLocation(full))
+                return GuardResult.Deny(
+                    $"TestVolume '{volume.Name}' path '{full}' is a system location — refusing to touch the OS.");
+
+            foreach (var root in productionWatchedRootPaths)
+            {
+                if (string.IsNullOrWhiteSpace(root)) continue;
+                var rootFull = Path.GetFullPath(root);
+                if (PathBoundary.Overlaps(full, rootFull))
+                    return GuardResult.Deny(
+                        $"TestVolume '{volume.Name}' path '{full}' overlaps a production WatchedRoot '{rootFull}' — refusing.");
+            }
+
+            resolved.Add((volume.Name.Trim(), full));
         }
 
-        // Never touch catalogued (production) data. Compare each configured area against every
-        // known WatchedRoot in both directions.
-        foreach (var root in productionWatchedRootPaths)
+        // Overlapping areas would share (or nest) their scratch folders: one scenario's cleanup
+        // would then delete another's fixtures, and an "untouched source" assert would be a lie.
+        for (int i = 0; i < resolved.Count; i++)
         {
-            if (string.IsNullOrWhiteSpace(root)) continue;
-            var rootFull = Full(root);
-            foreach (var (label, path) in new[] { ("SourcePath", source), ("TargetPath", target), ("ScratchPath", scratch) })
+            for (int j = i + 1; j < resolved.Count; j++)
             {
-                if (PathBoundary.Overlaps(path, rootFull))
+                if (PathBoundary.Overlaps(resolved[i].Path, resolved[j].Path))
                     return GuardResult.Deny(
-                        $"{label} '{path}' overlaps a production WatchedRoot '{rootFull}' — refusing.");
+                        $"TestVolumes '{resolved[i].Name}' and '{resolved[j].Name}' overlap " +
+                        $"('{resolved[i].Path}' vs '{resolved[j].Path}') — they must be disjoint.");
             }
         }
 
-        // The three areas must be disjoint: duplicating Source into Scratch and moving to Target
-        // only protects the originals if Scratch is not inside Source (and Target not inside Source).
-        if (PathBoundary.Overlaps(source, scratch))
-            return GuardResult.Deny("ScratchPath overlaps SourcePath — the harness must operate on copies, not the originals.");
-        if (PathBoundary.Overlaps(source, target))
-            return GuardResult.Deny("TargetPath overlaps SourcePath — move destination must be outside the source.");
-        if (PathBoundary.Overlaps(target, scratch))
-            return GuardResult.Deny("TargetPath overlaps ScratchPath — keep the work area and the move target distinct.");
-
         return GuardResult.Allow();
     }
-
-    private static string Full(string path) => Path.GetFullPath(path.Trim());
 
     private static bool IsDriveRoot(string fullPath)
     {

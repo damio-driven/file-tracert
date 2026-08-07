@@ -4,146 +4,181 @@ using FluentAssertions;
 namespace FileTracert.Tests.Business;
 
 /// <summary>
-/// Guard-rail tests for the opt-in hardware-smoke harness. These are the safety net that keeps a
-/// destructive dev tool from ever touching production data or the OS. Pure (no disk) except the
-/// duplication test, which uses a throwaway temp tree.
+/// Guard-rail tests for the opt-in hardware harness. These are the safety net that keeps a
+/// destructive dev tool from ever touching production data or the OS. The guard probes the
+/// filesystem for existence, so the fixtures create real (throwaway) temp folders.
 /// </summary>
-public sealed class HardwareSmokeGuardTests
+public sealed class HardwareSmokeGuardTests : IDisposable
 {
-    private static HardwareSmokeOptions Opts(string src, string tgt, string scratch, bool enabled = true) =>
-        new() { Enabled = enabled, SourcePath = src, TargetPath = tgt, ScratchPath = scratch };
+    private readonly List<string> _created = [];
 
-    // Three disjoint, non-system directories used as a valid baseline.
-    private static (string src, string tgt, string scratch) SafeTriple()
+    private string TempDir(string name)
     {
-        var root = Path.Combine(Path.GetTempPath(), $"ft-guard-{Guid.NewGuid():N}");
-        return (Path.Combine(root, "src"), Path.Combine(root, "tgt"), Path.Combine(root, "scratch"));
+        var path = Path.Combine(Path.GetTempPath(), $"ft-guard-{name}-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(path);
+        _created.Add(path);
+        return path;
     }
+
+    private static HardwareSmokeOptions Opts(bool enabled, params TestVolumeOptions[] volumes) =>
+        new() { Enabled = enabled, TestVolumes = [.. volumes] };
+
+    private static TestVolumeOptions Vol(string name, string path, TestVolumeKind kind = TestVolumeKind.Internal) =>
+        new() { Name = name, Path = path, Kind = kind };
+
+    public void Dispose()
+    {
+        foreach (var path in _created)
+        {
+            try
+            {
+                if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
+            }
+            catch (IOException)
+            {
+                // Leftover temp folder in the OS temp dir: harmless, and never worth failing a test.
+            }
+        }
+    }
+
+    // ── the master switch ─────────────────────────────────────────────────────
 
     [Fact]
     public void Disabled_is_denied_even_with_valid_paths()
     {
-        var (s, t, w) = SafeTriple();
-        var r = HardwareSmokeGuard.Validate(Opts(s, t, w, enabled: false), []);
-        r.Ok.Should().BeFalse();
-        r.Reason.Should().Contain("disabled");
+        var result = HardwareSmokeGuard.Validate(Opts(false, Vol("a", TempDir("a"))), []);
+
+        result.Ok.Should().BeFalse();
+        result.Reason.Should().Contain("disabled");
     }
 
     [Fact]
-    public void Empty_paths_are_denied()
+    public void No_test_volumes_is_denied()
     {
-        HardwareSmokeGuard.Validate(Opts("", "", ""), []).Ok.Should().BeFalse();
-        HardwareSmokeGuard.Validate(Opts(@"C:\a\src", "", @"C:\a\w"), []).Ok.Should().BeFalse();
+        var result = HardwareSmokeGuard.Validate(Opts(true), []);
+
+        result.Ok.Should().BeFalse();
+        result.Reason.Should().Contain("No TestVolumes");
     }
 
     [Fact]
     public void Valid_disjoint_non_system_paths_are_allowed()
     {
-        var (s, t, w) = SafeTriple();
-        var r = HardwareSmokeGuard.Validate(Opts(s, t, w), []);
-        r.Ok.Should().BeTrue(r.Reason);
+        var result = HardwareSmokeGuard.Validate(
+            Opts(true, Vol("a", TempDir("a")), Vol("b", TempDir("b"), TestVolumeKind.External)), []);
+
+        result.Ok.Should().BeTrue(result.Reason);
     }
+
+    // ── configuration hygiene ─────────────────────────────────────────────────
+
+    [Fact]
+    public void Missing_path_is_denied()
+    {
+        var result = HardwareSmokeGuard.Validate(Opts(true, Vol("a", "")), []);
+
+        result.Ok.Should().BeFalse();
+        result.Reason.Should().Contain("no Path");
+    }
+
+    [Fact]
+    public void Nonexistent_path_is_denied_so_a_typo_never_creates_a_work_area()
+    {
+        var missing = Path.Combine(Path.GetTempPath(), $"ft-does-not-exist-{Guid.NewGuid():N}");
+
+        var result = HardwareSmokeGuard.Validate(Opts(true, Vol("a", missing)), []);
+
+        result.Ok.Should().BeFalse();
+        result.Reason.Should().Contain("does not exist");
+    }
+
+    [Fact]
+    public void Duplicate_volume_names_are_denied()
+    {
+        var result = HardwareSmokeGuard.Validate(
+            Opts(true, Vol("same", TempDir("a")), Vol("same", TempDir("b"))), []);
+
+        result.Ok.Should().BeFalse();
+        result.Reason.Should().Contain("Duplicate");
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("..")]
+    [InlineData(@"nested\folder")]
+    [InlineData("C:")]
+    public void Unsafe_scratch_subfolder_is_denied(string subfolder)
+    {
+        var options = Opts(true, Vol("a", TempDir("a")));
+        options.ScratchSubfolder = subfolder;
+
+        var result = HardwareSmokeGuard.Validate(options, []);
+
+        result.Ok.Should().BeFalse();
+        result.Reason.Should().Contain("ScratchSubfolder");
+    }
+
+    // ── never the OS ──────────────────────────────────────────────────────────
 
     [Fact]
     public void Drive_root_is_denied()
     {
-        var (_, t, w) = SafeTriple();
-        var r = HardwareSmokeGuard.Validate(Opts(@"C:\", t, w), []);
-        r.Ok.Should().BeFalse();
-        r.Reason.Should().Contain("drive root");
+        var result = HardwareSmokeGuard.Validate(Opts(true, Vol("a", @"C:\")), []);
+
+        result.Ok.Should().BeFalse();
+        result.Reason.Should().Contain("drive root");
     }
 
     [Fact]
     public void System_location_is_denied()
     {
         var windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
-        var (_, t, w) = SafeTriple();
-        var r = HardwareSmokeGuard.Validate(Opts(Path.Combine(windows, "smoke"), t, w), []);
-        r.Ok.Should().BeFalse();
-        r.Reason.Should().Contain("system location");
+
+        var result = HardwareSmokeGuard.Validate(Opts(true, Vol("a", Path.Combine(windows, "System32"))), []);
+
+        result.Ok.Should().BeFalse();
+        result.Reason.Should().Contain("system location");
     }
 
-    [Fact]
-    public void Path_overlapping_a_production_watched_root_is_denied()
-    {
-        var (s, t, w) = SafeTriple();
-        // Target sits inside a production WatchedRoot → must be refused.
-        var prodRoot = Path.Combine(Path.GetTempPath(), $"ft-prod-{Guid.NewGuid():N}");
-        var t2 = Path.Combine(prodRoot, "inside");
+    // ── never production data ─────────────────────────────────────────────────
 
-        var r = HardwareSmokeGuard.Validate(Opts(s, t2, w), [prodRoot]);
-        r.Ok.Should().BeFalse();
-        r.Reason.Should().Contain("WatchedRoot");
+    [Fact]
+    public void Path_inside_a_production_watched_root_is_denied()
+    {
+        var prodRoot = TempDir("prod");
+        var inside = Path.Combine(prodRoot, "inside");
+        Directory.CreateDirectory(inside);
+
+        var result = HardwareSmokeGuard.Validate(Opts(true, Vol("a", inside)), [prodRoot]);
+
+        result.Ok.Should().BeFalse();
+        result.Reason.Should().Contain("WatchedRoot");
     }
 
     [Fact]
     public void Production_root_nested_inside_a_configured_path_is_denied()
     {
-        var (_, t, w) = SafeTriple();
-        var source = Path.Combine(Path.GetTempPath(), $"ft-src-{Guid.NewGuid():N}");
-        // A WatchedRoot lives UNDER the configured Source → overlap in the other direction.
-        var prodRoot = Path.Combine(source, "catalogued");
+        var configured = TempDir("configured");
+        var prodRoot = Path.Combine(configured, "catalogued");
 
-        var r = HardwareSmokeGuard.Validate(Opts(source, t, w), [prodRoot]);
-        r.Ok.Should().BeFalse();
-        r.Reason.Should().Contain("WatchedRoot");
+        var result = HardwareSmokeGuard.Validate(Opts(true, Vol("a", configured)), [prodRoot]);
+
+        result.Ok.Should().BeFalse();
+        result.Reason.Should().Contain("WatchedRoot");
     }
 
-    [Fact]
-    public void Scratch_inside_source_is_denied_so_originals_are_never_touched()
-    {
-        var source = Path.Combine(Path.GetTempPath(), $"ft-src-{Guid.NewGuid():N}");
-        var scratchInside = Path.Combine(source, "work");
-        var target = Path.Combine(Path.GetTempPath(), $"ft-tgt-{Guid.NewGuid():N}");
-
-        var r = HardwareSmokeGuard.Validate(Opts(source, target, scratchInside), []);
-        r.Ok.Should().BeFalse();
-        r.Reason.Should().Contain("ScratchPath overlaps SourcePath");
-    }
+    // ── the areas must not collide ────────────────────────────────────────────
 
     [Fact]
-    public void Target_inside_source_is_denied()
+    public void Overlapping_test_volumes_are_denied()
     {
-        var source = Path.Combine(Path.GetTempPath(), $"ft-src-{Guid.NewGuid():N}");
-        var targetInside = Path.Combine(source, "out");
-        var scratch = Path.Combine(Path.GetTempPath(), $"ft-w-{Guid.NewGuid():N}");
+        var outer = TempDir("outer");
+        var inner = Path.Combine(outer, "inner");
+        Directory.CreateDirectory(inner);
 
-        var r = HardwareSmokeGuard.Validate(Opts(source, targetInside, scratch), []);
-        r.Ok.Should().BeFalse();
-        r.Reason.Should().Contain("TargetPath overlaps SourcePath");
-    }
+        var result = HardwareSmokeGuard.Validate(Opts(true, Vol("outer", outer), Vol("inner", inner)), []);
 
-    // ── duplication operates on copies, never the originals ────────────────────
-
-    [Fact]
-    public void DuplicateSourceIntoScratch_copies_into_scratch_and_leaves_originals_intact()
-    {
-        var root = Path.Combine(Path.GetTempPath(), $"ft-dup-{Guid.NewGuid():N}");
-        var source = Path.Combine(root, "src");
-        var scratch = Path.Combine(root, "scratch");
-        Directory.CreateDirectory(Path.Combine(source, "sub"));
-        var original = Path.Combine(source, "sub", "keep.txt");
-        File.WriteAllText(original, "precious");
-        Directory.CreateDirectory(scratch);
-
-        try
-        {
-            var opts = Opts(source, Path.Combine(root, "tgt"), scratch);
-            var workDir = HardwareSmokeRunner.DuplicateSourceIntoScratch(opts);
-
-            // The duplicate exists under the work dir (inside scratch)…
-            var duplicate = Path.Combine(workDir, "sub", "keep.txt");
-            File.Exists(duplicate).Should().BeTrue();
-            File.ReadAllText(duplicate).Should().Be("precious");
-            workDir.Should().StartWith(Path.GetFullPath(scratch));
-
-            // …and the original is untouched.
-            File.Exists(original).Should().BeTrue();
-            File.ReadAllText(original).Should().Be("precious");
-        }
-        finally
-        {
-            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
-        }
+        result.Ok.Should().BeFalse();
+        result.Reason.Should().Contain("overlap");
     }
 }
