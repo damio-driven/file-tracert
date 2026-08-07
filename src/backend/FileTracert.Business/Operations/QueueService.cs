@@ -154,12 +154,31 @@ public sealed class QueueService : IQueueService
             .FirstOrDefaultAsync(j => j.Id == jobId, ct)
             ?? throw new InvalidOperationException($"Job {jobId} not found.");
 
-        if (TerminalStates.Contains(job.State))
-            throw new InvalidOperationException($"Job {jobId} is already terminal ({job.State}).");
+        // The State concurrency token (finding #2) can trip if the engine commits a transition
+        // between our read and our write. A cancel must win over any non-terminal state, so
+        // reload and reapply; the loop only ends when Cancelled is committed or the job turned
+        // terminal on its own.
+        const int maxAttempts = 5;
+        for (int attempt = 1; ; attempt++)
+        {
+            if (TerminalStates.Contains(job.State))
+                throw new InvalidOperationException($"Job {jobId} is already terminal ({job.State}).");
 
-        job.State = JobState.Cancelled;
-        job.CompletedUtc = DateTime.UtcNow;
-        await _db.SaveChangesAsync(ct);
+            job.State = JobState.Cancelled;
+            job.CompletedUtc = DateTime.UtcNow;
+            try
+            {
+                await _db.SaveChangesAsync(ct);
+                break;
+            }
+            catch (DbUpdateConcurrencyException) when (attempt < maxAttempts)
+            {
+                _logger.LogInformation(
+                    "Cancel of job {Id}: state moved concurrently (attempt {N}) — reloading and reapplying.",
+                    jobId, attempt);
+                await _db.Entry(job).ReloadAsync(ct);
+            }
+        }
 
         // Signal the running job (if any) AFTER Cancelled is committed, so the engine both
         // sees the state on re-check and has its copy interrupted via the token.

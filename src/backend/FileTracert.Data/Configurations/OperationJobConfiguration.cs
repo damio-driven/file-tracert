@@ -12,7 +12,11 @@ public sealed class OperationJobConfiguration : IEntityTypeConfiguration<Operati
         builder.HasKey(x => x.Id);
 
         builder.Property(x => x.Type).HasConversion<string>();
-        builder.Property(x => x.State).HasConversion<string>();
+        // Concurrency token (finding #2): every UPDATE of a job row carries
+        // WHERE State = <original>, so a state transition committed by another
+        // DbContext (user Cancel from the API) can never be blindly overwritten
+        // by the engine — the stale write throws DbUpdateConcurrencyException.
+        builder.Property(x => x.State).HasConversion<string>().IsConcurrencyToken();
         builder.Property(x => x.BlockReason).HasConversion<string>();
 
         builder.HasOne(x => x.SourceVolume)

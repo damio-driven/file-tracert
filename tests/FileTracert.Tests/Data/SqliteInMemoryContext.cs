@@ -35,7 +35,9 @@ public sealed class SqliteInMemoryContext : IDisposable
         }
     }
 
-    public FileTracertDbContext CreateContext()
+    /// <param name="extraInterceptors">Test-specific interceptors (e.g. fault/race injection)
+    /// appended after the standard auditing interceptor.</param>
+    public FileTracertDbContext CreateContext(params IInterceptor[] extraInterceptors)
     {
         var builder = new DbContextOptionsBuilder<FileTracertDbContext>()
             .UseSqlite(_connection);
@@ -43,6 +45,11 @@ public sealed class SqliteInMemoryContext : IDisposable
         if (_withAuditing)
         {
             builder.AddInterceptors(new AuditingSaveChangesInterceptor());
+        }
+
+        if (extraInterceptors.Length > 0)
+        {
+            builder.AddInterceptors(extraInterceptors);
         }
 
         return new FileTracertDbContext(builder.Options);

@@ -101,6 +101,13 @@ public sealed class JobExecutionEngine
             _logger.LogWarning("Job {Id}: name collision at '{Path}'.", job.Id, ex.TargetPath);
             await SetBlockedAsync(job, JobBlockReason.NameCollision, ex.Message, ct);
         }
+        catch (DbUpdateConcurrencyException)
+        {
+            // The State concurrency token tripped: another DbContext committed a transition
+            // (in practice a user Cancel from the API) between our last read and this write.
+            // Never overwrite it — follow the committed state instead.
+            await HandleConcurrentStateChangeAsync(job);
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Job {Id} failed during execution.", job.Id);
@@ -183,25 +190,23 @@ public sealed class JobExecutionEngine
             await CopyItemsAsync(job, ct);
             // Cancelled mid-copy: leave in Copying so the next run resumes.
             if (ct.IsCancellationRequested) return;
-            // A Cancel may have committed (from the API's DbContext) without cancelling our token
-            // — re-read before advancing so we don't march on to the destructive steps.
-            if (await AbortIfCancelledAsync(job)) return;
             // Verified counts as "copy complete": a retried job can carry items already
             // finalized by the previous attempt — they must not hold the gate forever.
+            // A Cancel committed meanwhile trips the State concurrency token here.
             if (job.Items.All(i => i.State is JobItemState.Copied or JobItemState.Verified or JobItemState.Done))
                 await TransitionAsync(job, JobState.Verifying, ct);
         }
 
         if (job.State == JobState.Verifying)
         {
+            // Finalize publishes files under their real name — honour a concurrent Cancel
+            // before doing so (the token alone would only trip at the NEXT DB write).
             if (await AbortIfCancelledAsync(job)) return;
             await VerifyAndFinalizeItemsAsync(job, ct);
             if (ct.IsCancellationRequested) return;
             // If VerifyAndFinalize set Failed/Blocked, abort.
             if (job.State is JobState.Failed or JobState.Blocked) return;
-            // Re-check BEFORE the transition: TransitionAsync would otherwise overwrite a
-            // concurrently-written Cancelled with DeletingSource and hide the cancel.
-            if (await AbortIfCancelledAsync(job)) return;
+            // A Cancel committed after the guard above trips the token on this transition.
             await TransitionAsync(job, JobState.DeletingSource, ct);
         }
 
@@ -562,9 +567,37 @@ public sealed class JobExecutionEngine
 
     private async Task TransitionAsync(OperationJob job, JobState newState, CancellationToken ct)
     {
+        // Not a blind UPDATE: the State concurrency token makes this throw
+        // DbUpdateConcurrencyException if the committed state changed underneath.
         job.State = newState;
         await _db.SaveChangesAsync(ct);
         _logger.LogDebug("Job {Id}: → {State}.", job.Id, newState);
+    }
+
+    /// <summary>
+    /// Recovery path for a tripped State concurrency token: reloads the committed row and,
+    /// when the committed state is <see cref="JobState.Cancelled"/>, runs the same cleanup
+    /// the regular cancel path runs (partials removed, landed items reconciled). The engine
+    /// never writes over the committed state.
+    /// </summary>
+    private async Task HandleConcurrentStateChangeAsync(OperationJob job)
+    {
+        // Reload discards our stale pending State so the cleanup saves below can't re-trip.
+        await _db.Entry(job).ReloadAsync(CancellationToken.None);
+
+        if (job.State == JobState.Cancelled)
+        {
+            _logger.LogInformation(
+                "Job {Id}: cancelled concurrently during a state transition — aborting; source left untouched.",
+                job.Id);
+            await CleanupPartialsAsync(job);
+            await _indexUpdater.ReconcileCancelledJobAsync(job, CancellationToken.None);
+            return;
+        }
+
+        _logger.LogWarning(
+            "Job {Id}: state changed concurrently to {State} — execution aborted, committed state kept.",
+            job.Id, job.State);
     }
 
     private async Task CompleteJobAsync(OperationJob job, CancellationToken ct)
@@ -596,7 +629,16 @@ public sealed class JobExecutionEngine
         job.State = JobState.Blocked;
         job.BlockReason = reason;
         job.ErrorMessage = message;
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // A Cancel raced the block: the committed state wins over ours.
+            await HandleConcurrentStateChangeAsync(job);
+            return;
+        }
         // Ledger reservation kept — the job may still execute once the blocker resolves.
 
         // The engine runs in a BackgroundService: no API response can carry this to the
@@ -615,7 +657,16 @@ public sealed class JobExecutionEngine
         job.State = JobState.Failed;
         job.ErrorMessage = message;
         job.CompletedUtc = DateTime.UtcNow;
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // A Cancel raced the failure: the committed state wins over ours.
+            await HandleConcurrentStateChangeAsync(job);
+            return;
+        }
         await _ledger.ReleaseAsync(job.Id, ct);
 
         // FIX #10-partial: a Failed job's .fadit-partial files are discardable garbage
