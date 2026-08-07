@@ -32,6 +32,7 @@ internal sealed class Win32FileMover : IFileMover
     {
         var full = Resolve(volumeGuid, relativePath);
         var dest = Path.Combine(Path.GetDirectoryName(full)!, newName);
+        ThrowIfDestinationOccupied(dest);
 
         if (Directory.Exists(full))
             Directory.Move(full, dest);
@@ -43,6 +44,7 @@ internal sealed class Win32FileMover : IFileMover
     {
         var src = Resolve(volumeGuid, srcRel);
         var dest = Resolve(volumeGuid, destRel);
+        ThrowIfDestinationOccupied(dest);
         EnsureParent(dest);
 
         if (Directory.Exists(src))
@@ -97,12 +99,21 @@ internal sealed class Win32FileMover : IFileMover
     {
         var partial = Resolve(volGuid, partialRel);
         var final = Resolve(volGuid, finalRel);
-
-        if (File.Exists(final))
-            throw new NameCollisionException(final);
+        ThrowIfDestinationOccupied(final);
 
         EnsureParent(final);
         File.Move(partial, final);
+    }
+
+    /// <summary>
+    /// C20: an occupied destination is a typed <see cref="NameCollisionException"/> — the
+    /// engine maps it to Blocked(NameCollision), reactivatable — never a raw IOException
+    /// that would end the job in terminal Failed.
+    /// </summary>
+    private static void ThrowIfDestinationOccupied(string destFullPath)
+    {
+        if (File.Exists(destFullPath) || Directory.Exists(destFullPath))
+            throw new NameCollisionException(destFullPath);
     }
 
     public void DeleteToRecycleBin(string volGuid, string relativePath)
