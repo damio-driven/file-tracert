@@ -156,9 +156,14 @@ public sealed class MoveFolderSafetyTests : IDisposable
         return i < 0 ? path : path[(i + 1)..];
     }
 
-    private QueueService Queue() => new(
-        _harness.CreateContext(), _ledger, new JobCancellationRegistry(),
-        _mover, new QueueSignal(), NullLogger<QueueService>.Instance);
+    private QueueService Queue()
+    {
+        var db = _harness.CreateContext();
+        return new QueueService(db, _ledger, new JobCancellationRegistry(),
+            _mover, new QueueSignal(),
+            new IndexUpdater(db, new FakeFileSearchIndex(), NullLogger<IndexUpdater>.Instance),
+            NullLogger<QueueService>.Instance);
+    }
 
     private JobExecutionEngine Engine()
     {

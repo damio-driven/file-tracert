@@ -82,8 +82,11 @@ public sealed class JobPartialCleanupTests : IDisposable
     {
         var ledger = Substitute.For<ISpaceLedger>();
         ledger.ReleaseAsync(default, default).ReturnsForAnyArgs(Task.CompletedTask);
-        return new QueueService(_harness.CreateContext(), ledger, new JobCancellationRegistry(),
-            _mover, new QueueSignal(), NullLogger<QueueService>.Instance);
+        var db = _harness.CreateContext();
+        return new QueueService(db, ledger, new JobCancellationRegistry(),
+            _mover, new QueueSignal(),
+            new IndexUpdater(db, new FakeFileSearchIndex(), NullLogger<IndexUpdater>.Instance),
+            NullLogger<QueueService>.Instance);
     }
 
     private void SeedVolume()

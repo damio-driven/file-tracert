@@ -24,6 +24,7 @@ public sealed class QueueService : IQueueService
     private readonly IJobCancellationRegistry _cancellation;
     private readonly IFileMover _mover;
     private readonly IQueueSignal _signal;
+    private readonly IndexUpdater _indexUpdater;
     private readonly ILogger<QueueService> _logger;
 
     public QueueService(
@@ -32,6 +33,7 @@ public sealed class QueueService : IQueueService
         IJobCancellationRegistry cancellation,
         IFileMover mover,
         IQueueSignal signal,
+        IndexUpdater indexUpdater,
         ILogger<QueueService> logger)
     {
         _db = db;
@@ -39,6 +41,7 @@ public sealed class QueueService : IQueueService
         _cancellation = cancellation;
         _mover = mover;
         _signal = signal;
+        _indexUpdater = indexUpdater;
         _logger = logger;
     }
 
@@ -170,6 +173,11 @@ public sealed class QueueService : IQueueService
         // locked partial just logs and stays for the engine to remove.
         CleanupPartials(job);
         await _db.SaveChangesAsync(ct);
+
+        // FIX #14: items already finalized on the target (or whose source is recycled)
+        // must be re-pointed in the index, or the Catalog shows ghosts and the target
+        // holds untracked copies. The engine repeats this for a running job — idempotent.
+        await _indexUpdater.ReconcileCancelledJobAsync(job, ct);
 
         _logger.LogInformation("Cancelled job {Id}.", jobId);
     }

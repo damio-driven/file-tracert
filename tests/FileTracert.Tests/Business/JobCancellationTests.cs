@@ -81,9 +81,14 @@ public sealed class JobCancellationTests : IDisposable
             TimeProvider.System, NullLogger<JobExecutionEngine>.Instance);
     }
 
-    private QueueService MakeQueue() =>
-        new(_harness.CreateContext(), NoopLedger(), _registry, Substitute.For<IFileMover>(),
-            new QueueSignal(), NullLogger<QueueService>.Instance);
+    private QueueService MakeQueue()
+    {
+        var db = _harness.CreateContext();
+        return new QueueService(db, NoopLedger(), _registry, Substitute.For<IFileMover>(),
+            new QueueSignal(),
+            new IndexUpdater(db, new FakeFileSearchIndex(), NullLogger<IndexUpdater>.Instance),
+            NullLogger<QueueService>.Instance);
+    }
 
     [Fact]
     public async Task Cancel_during_execution_never_recycles_the_source()

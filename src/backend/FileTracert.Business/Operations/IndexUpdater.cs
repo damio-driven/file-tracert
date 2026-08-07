@@ -177,6 +177,60 @@ public sealed class IndexUpdater
             await _fts.UpsertAsync(id, name, path, ct);
     }
 
+    /// <summary>
+    /// FIX #14: reconciles a cancelled job's items that already "landed" on the target.
+    /// A Verified item has its copy finalized under the real name; a Done item has
+    /// additionally lost its source to the recycle bin. Both represent files that
+    /// physically live on the target now — re-pointing their <c>Files</c> rows (and FTS)
+    /// keeps the completed work indexed instead of orphaning it, and stops the Catalog
+    /// from showing a source-side ghost for Done items. A Verified item's source file
+    /// still exists physically; the next scan re-indexes it as a new row. Safe to call
+    /// more than once (engine and API cancel paths may both run it).
+    /// </summary>
+    public async Task ReconcileCancelledJobAsync(OperationJob job, CancellationToken ct)
+    {
+        if (job.TargetVolumeId is null || job.IsIntraVolume) return;
+        var targetVolumeId = job.TargetVolumeId.Value;
+
+        var landed = job.Items
+            .Where(i => i.State is JobItemState.Verified or JobItemState.Done)
+            .ToList();
+        if (landed.Count == 0) return;
+
+        var dirCache = new Dictionary<string, DirectoryNode>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in landed)
+        {
+            if (item.FileId is null)
+            {
+                // Folder marker (target == the job's destination root): the target root
+                // directory was physically created — index it. Any other FileId-less item
+                // (legacy file item) cannot be re-pointed and is skipped.
+                if (string.Equals(item.TargetRelativePath, job.TargetRelativePath, StringComparison.OrdinalIgnoreCase))
+                    await FindOrCreateDirAsync(targetVolumeId, item.TargetRelativePath, ct);
+                continue;
+            }
+
+            var file = await _db.Files.FirstOrDefaultAsync(f => f.Id == item.FileId.Value, ct);
+            if (file is null) continue;
+
+            var targetDirPath = ScanPath.Parent(item.TargetRelativePath);
+            if (!dirCache.TryGetValue(targetDirPath, out var targetDir))
+            {
+                targetDir = await FindOrCreateDirAsync(targetVolumeId, targetDirPath, ct);
+                dirCache[targetDirPath] = targetDir;
+            }
+
+            file.VolumeId = targetVolumeId;
+            file.DirectoryId = targetDir.Id;
+            await _fts.UpsertAsync(file.Id, file.Name, item.TargetRelativePath, ct);
+        }
+
+        await _db.SaveChangesAsync(ct);
+        _logger.LogInformation(
+            "Job {Id}: reconciled {Count} landed item(s) to the target index after cancel.",
+            job.Id, landed.Count);
+    }
+
     // ── helpers ───────────────────────────────────────────────────────────────
 
     /// <summary>Finds or recursively creates all directories in <paramref name="path"/> on the given volume.</summary>

@@ -54,10 +54,15 @@ public sealed class QueueServiceTests : IDisposable
 
     private readonly JobCancellationRegistry _cancellation = new();
 
-    private QueueService Svc() =>
-        new(_harness.CreateContext(), _ledger, _cancellation,
+    private QueueService Svc()
+    {
+        var db = _harness.CreateContext();
+        return new QueueService(db, _ledger, _cancellation,
             NSubstitute.Substitute.For<FileTracert.Contracts.Platform.IFileMover>(),
-            new QueueSignal(), NullLogger<QueueService>.Instance);
+            new QueueSignal(),
+            new IndexUpdater(db, new FakeFileSearchIndex(), NullLogger<IndexUpdater>.Instance),
+            NullLogger<QueueService>.Instance);
+    }
 
     private void Seed()
     {
@@ -778,6 +783,75 @@ public sealed class QueueServiceTests : IDisposable
         }, None);
 
         dto.State.Should().Be("Pending");
+    }
+
+    // ── FIX #14: cancel mid-flight reconciles items already landed on the target ──
+
+    /// <summary>Cross-volume MoveFile checkpointed at <paramref name="jobState"/> with its
+    /// single item at <paramref name="itemState"/> — the shape a cancel finds after a
+    /// shutdown between Verifying and DeletingSource.</summary>
+    private int SeedCrossMoveJob(JobState jobState, JobItemState itemState)
+    {
+        using var db = _harness.CreateContext();
+        var job = new OperationJob
+        {
+            Type = JobType.MoveFile,
+            State = jobState,
+            IsIntraVolume = false,
+            SourceVolumeId = Vol1Id,
+            TargetVolumeId = Vol2Id,
+            TargetRelativePath = @"Backup\report.txt",
+            TotalBytes = 1_000,
+            RequiredBytesTarget = 1_000,
+            SequenceOrder = 1,
+            CreatedUtc = DateTime.UtcNow,
+            UpdatedUtc = DateTime.UtcNow,
+        };
+        job.Items.Add(new OperationJobItem
+        {
+            FileId = File1Id,
+            SourceRelativePath = @"Docs\report.txt",
+            TargetRelativePath = @"Backup\report.txt",
+            SizeBytes = 1_000,
+            State = itemState,
+            CreatedUtc = DateTime.UtcNow,
+            UpdatedUtc = DateTime.UtcNow,
+        });
+        db.OperationJobs.Add(job);
+        db.SaveChanges();
+        return job.Id;
+    }
+
+    [Fact]
+    public async Task Cancel_mid_Verifying_indexes_the_finalized_copy_on_the_target()
+    {
+        // The item is Verified: its copy is already finalized (renamed to the real name)
+        // on the target. Cancelling must not orphan that file — the index keeps it.
+        int jobId = SeedCrossMoveJob(JobState.Verifying, JobItemState.Verified);
+
+        await Svc().CancelAsync(jobId, None);
+
+        await using var db = _harness.CreateContext();
+        var file = await db.Files.Include(f => f.Directory).SingleAsync(f => f.Id == File1Id);
+        file.VolumeId.Should().Be(Vol2Id, "the finalized copy physically lives on the target");
+        file.Directory.VolumeId.Should().Be(Vol2Id);
+        file.Directory.MaterializedPath.Should().Be("Backup");
+    }
+
+    [Fact]
+    public async Task Cancel_mid_DeletingSource_leaves_no_ghost_at_the_source()
+    {
+        // The item is Done: the source copy is already in the recycle bin. Cancelling must
+        // not leave the Files row pointing at a location that no longer exists (ghost in
+        // Catalogo/Ricerca) while the real file sits untracked on the target.
+        int jobId = SeedCrossMoveJob(JobState.DeletingSource, JobItemState.Done);
+
+        await Svc().CancelAsync(jobId, None);
+
+        await using var db = _harness.CreateContext();
+        var file = await db.Files.Include(f => f.Directory).SingleAsync(f => f.Id == File1Id);
+        file.VolumeId.Should().Be(Vol2Id, "the only remaining physical copy is on the target");
+        file.Directory.MaterializedPath.Should().Be("Backup");
     }
 
     // ── name / path validation (folder ops) ────────────────────────────────────

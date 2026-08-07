@@ -90,6 +90,8 @@ public sealed class JobExecutionEngine
             {
                 _logger.LogInformation("Job {Id}: cancelled during execution — cleaning partials.", job.Id);
                 await CleanupPartialsAsync(job);
+                // FIX #14: items already landed on the target keep their finalized copy indexed.
+                await _indexUpdater.ReconcileCancelledJobAsync(job, CancellationToken.None);
                 return;
             }
             throw;
@@ -248,11 +250,7 @@ public sealed class JobExecutionEngine
         // not just its files. Materialize the whole target directory tree — including empty
         // subdirectories — so an empty or all-excluded folder still produces its destination
         // (C21) and structure is never lost. CreateFolder is idempotent, safe on resume.
-        // Type-gated: only MoveFolder has a marker — a MoveFile item without FileId is a
-        // plain file item and must go through the copy pipeline.
-        var marker = job.Type == JobType.MoveFolder
-            ? job.Items.FirstOrDefault(i => i.FileId is null && i.State == JobItemState.Pending)
-            : null;
+        var marker = FindFolderMarker(job, pendingOnly: true);
         if (marker is not null)
         {
             _mover.CreateFolder(tgtGuid, marker.TargetRelativePath);
@@ -511,11 +509,26 @@ public sealed class JobExecutionEngine
     /// so stripping that tail off one item's source yields the root — independent of how deep the
     /// files sit.
     /// </summary>
+    /// <summary>
+    /// The folder marker is the MoveFolder item that stands for the folder itself:
+    /// no FileId AND a target equal to the job's destination root. The second condition
+    /// is what tells it apart from a legacy/manually-seeded FILE item that merely lacks
+    /// a FileId — file items always target a path BELOW the destination root.
+    /// </summary>
+    private static OperationJobItem? FindFolderMarker(OperationJob job, bool pendingOnly)
+    {
+        if (job.Type != JobType.MoveFolder) return null;
+        return job.Items.FirstOrDefault(i =>
+            i.FileId is null &&
+            string.Equals(i.TargetRelativePath, job.TargetRelativePath, StringComparison.OrdinalIgnoreCase) &&
+            (!pendingOnly || i.State == JobItemState.Pending));
+    }
+
     private static string ResolveSourceRoot(OperationJob job)
     {
-        // The folder marker item (FileId = null) carries the root verbatim.
-        // Jobs enqueued before the marker existed fall back to tail-stripping below.
-        var marker = job.Items.FirstOrDefault(i => i.FileId is null);
+        // The folder marker item carries the root verbatim. Jobs enqueued before the
+        // marker existed fall back to tail-stripping below.
+        var marker = FindFolderMarker(job, pendingOnly: false);
         if (marker is not null)
             return marker.SourceRelativePath;
 
@@ -650,6 +663,8 @@ public sealed class JobExecutionEngine
         _logger.LogInformation(
             "Job {Id}: cancellation detected — aborting before the next step; source left untouched.", job.Id);
         await CleanupPartialsAsync(job);
+        // FIX #14: items already landed on the target keep their finalized copy indexed.
+        await _indexUpdater.ReconcileCancelledJobAsync(job, CancellationToken.None);
         return true;
     }
 

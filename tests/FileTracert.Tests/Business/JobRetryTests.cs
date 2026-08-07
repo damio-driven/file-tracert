@@ -70,9 +70,14 @@ public sealed class JobRetryTests : IDisposable
     private string R(params string[] parts) => Path.Combine([_relRoot, .. parts]);
     private string Abs(string rel) => Path.GetFullPath(Path.Combine(_mountPoint, rel));
 
-    private QueueService MakeQueue() =>
-        new(_harness.CreateContext(), _ledger, new JobCancellationRegistry(), _mover,
-            new QueueSignal(), NullLogger<QueueService>.Instance);
+    private QueueService MakeQueue()
+    {
+        var db = _harness.CreateContext();
+        return new QueueService(db, _ledger, new JobCancellationRegistry(), _mover,
+            new QueueSignal(),
+            new IndexUpdater(db, new FakeFileSearchIndex(), NullLogger<IndexUpdater>.Instance),
+            NullLogger<QueueService>.Instance);
+    }
 
     private JobExecutionEngine MakeEngine()
     {
