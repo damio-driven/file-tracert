@@ -97,9 +97,9 @@ public sealed class MoveFolderExcludedFilesScenario : Scenario
         // ── assert: the catalog follows the files ─────────────────────────────
         foreach (var relative in IndexedFiles)
         {
-            var expectedPath = ctx.Target.RelativePath(relative);
-            var row = await FindFileRowAsync(ctx, ctx.TargetVolumeId, expectedPath);
-            ctx.Assert.True(row is not null, $"catalog row re-pointed to '{expectedPath}'");
+            await AssertCatalogHasFileAsync(
+                ctx, ctx.TargetVolumeId, ctx.Target.RelativePath(relative),
+                $"catalog row for '{relative}' re-pointed to the target");
         }
 
         ctx.Log($"{IndexedFiles.Length} indexed file(s) moved, {ExcludedFiles.Length} filtered-out file(s) left in place");

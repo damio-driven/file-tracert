@@ -50,8 +50,11 @@ public sealed class HardwareSmokeOptions
     /// <summary>
     /// Scenario name filter. <c>["*"]</c> (or empty) runs everything; otherwise only scenarios
     /// whose name matches one of the entries case-insensitively.
+    /// Starts EMPTY on purpose: the configuration binder <em>appends</em> to a pre-populated list
+    /// instead of replacing it, so a default of <c>["*"]</c> would silently win over whatever the
+    /// operator configured and always run everything.
     /// </summary>
-    public List<string> Scenarios { get; set; } = ["*"];
+    public List<string> Scenarios { get; set; } = [];
 
     /// <summary>
     /// Enables the interactive scenarios that ask the operator to physically unplug and replug a

@@ -44,10 +44,8 @@ public abstract class MoveFileScenarioBase : Scenario
         AssertNoPartialsAnywhere(ctx);
 
         // ── assert (catalog) ──────────────────────────────────────────────────
-        var movedRow = await FindFileRowAsync(
-            ctx, ctx.TargetVolumeId, ctx.Target.RelativePath("holiday.jpg"));
-        ctx.Assert.True(movedRow is not null,
-            $"catalog row re-pointed to '{ctx.Target.RelativePath("holiday.jpg")}' on volume {ctx.TargetVolumeId}");
+        var movedRow = await AssertCatalogHasFileAsync(
+            ctx, ctx.TargetVolumeId, ctx.Target.RelativePath("holiday.jpg"), "catalog row re-pointed to the target");
         if (movedRow is not null)
             ctx.Assert.Equal(fileRow.Id, movedRow.Id, "catalog row identity preserved across the move");
 

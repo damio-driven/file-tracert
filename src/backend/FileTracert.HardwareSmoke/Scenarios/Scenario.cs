@@ -89,12 +89,100 @@ public abstract class Scenario
         });
     }
 
-    /// <summary>Loads the catalog row for a directory by its materialized path, or null.</summary>
-    protected static Task<DirectoryNode?> FindDirectoryRowAsync(
-        ScenarioContext ctx, int volumeId, string materializedPath) =>
-        ctx.Env.WithDbAsync(db => db.Directories
-            .AsNoTracking()
-            .FirstOrDefaultAsync(d => d.VolumeId == volumeId && d.MaterializedPath == materializedPath, ctx.Ct));
+    /// <summary>
+    /// Loads the catalog row for a directory by its materialized path, or null. The comparison is
+    /// case-insensitive in memory on purpose: SQLite's default BINARY collation would make an
+    /// assert fail on a casing difference that Windows itself does not consider a difference, and
+    /// the harness must report real defects, not collation trivia.
+    /// </summary>
+    protected static async Task<DirectoryNode?> FindDirectoryRowAsync(
+        ScenarioContext ctx, int volumeId, string materializedPath)
+    {
+        return await ctx.Env.WithDbAsync(async db =>
+        {
+            var rows = await db.Directories
+                .AsNoTracking()
+                .Where(d => d.VolumeId == volumeId)
+                .ToListAsync(ctx.Ct);
+
+            return rows.FirstOrDefault(d =>
+                string.Equals(d.MaterializedPath, materializedPath, StringComparison.OrdinalIgnoreCase));
+        });
+    }
+
+    /// <summary>
+    /// How long a catalog assertion keeps re-reading before giving up. The engine commits
+    /// <c>Completed</c> BEFORE it runs the index update, so the instant a job looks terminal the
+    /// catalog may still be half-written — asserting on that snapshot would flake. Filesystem
+    /// assertions need no such wait: the source is recycled before the Completed transition.
+    /// </summary>
+    private static readonly TimeSpan CatalogSettleTimeout = TimeSpan.FromSeconds(15);
+
+    /// <summary>Re-reads <paramref name="probe"/> until it yields a row or the settle window expires.</summary>
+    private static async Task<T?> WaitForCatalogAsync<T>(ScenarioContext ctx, Func<Task<T?>> probe)
+        where T : class
+    {
+        var deadline = DateTime.UtcNow + CatalogSettleTimeout;
+        while (true)
+        {
+            var result = await probe();
+            if (result is not null) return result;
+            if (DateTime.UtcNow >= deadline) return null;
+            await Task.Delay(50, ctx.Ct);
+        }
+    }
+
+    /// <summary>Re-evaluates a boolean post-condition until it holds or the settle window expires.</summary>
+    protected static async Task<bool> WaitForCatalogConditionAsync(ScenarioContext ctx, Func<Task<bool>> probe)
+    {
+        var deadline = DateTime.UtcNow + CatalogSettleTimeout;
+        while (true)
+        {
+            if (await probe()) return true;
+            if (DateTime.UtcNow >= deadline) return false;
+            await Task.Delay(50, ctx.Ct);
+        }
+    }
+
+    /// <summary>
+    /// Asserts a file row exists at the expected volume-relative path, and on failure says what the
+    /// catalog actually holds — a bare "row not found" costs a debugging round-trip.
+    /// Returns the row so the caller can assert more on it.
+    /// </summary>
+    protected static async Task<FileEntry?> AssertCatalogHasFileAsync(
+        ScenarioContext ctx, int volumeId, string volumeRelativePath, string what)
+    {
+        var row = await WaitForCatalogAsync(ctx, () => FindFileRowAsync(ctx, volumeId, volumeRelativePath));
+        if (row is null)
+            ctx.Assert.Fail($"{what}: no Files row at '{volumeRelativePath}' on volume {volumeId} " +
+                            $"after {CatalogSettleTimeout.TotalSeconds:0}s. {await DescribeCatalogAsync(ctx)}");
+        return row;
+    }
+
+    /// <summary>Directory counterpart of <see cref="AssertCatalogHasFileAsync"/>.</summary>
+    protected static async Task<DirectoryNode?> AssertCatalogHasDirectoryAsync(
+        ScenarioContext ctx, int volumeId, string materializedPath, string what)
+    {
+        var row = await WaitForCatalogAsync(ctx, () => FindDirectoryRowAsync(ctx, volumeId, materializedPath));
+        if (row is null)
+            ctx.Assert.Fail($"{what}: no Directories row at '{materializedPath}' on volume {volumeId} " +
+                            $"after {CatalogSettleTimeout.TotalSeconds:0}s. {await DescribeCatalogAsync(ctx)}");
+        return row;
+    }
+
+    /// <summary>Every file and directory row in the scenario's throwaway catalog, for failure messages.</summary>
+    protected static Task<string> DescribeCatalogAsync(ScenarioContext ctx) =>
+        ctx.Env.WithDbAsync(async db =>
+        {
+            var files = await db.Files.Include(f => f.Directory).AsNoTracking()
+                .Select(f => $"v{f.VolumeId}:{f.Directory.MaterializedPath}|{f.Name}")
+                .ToListAsync(ctx.Ct);
+            var dirs = await db.Directories.AsNoTracking()
+                .Select(d => $"v{d.VolumeId}:{d.MaterializedPath}")
+                .ToListAsync(ctx.Ct);
+
+            return $"Catalog now holds files [{string.Join(", ", files)}] and directories [{string.Join(", ", dirs)}].";
+        });
 
     /// <summary>
     /// Rewrites a volume's last-known free bytes. The queue's feasibility is computed against this

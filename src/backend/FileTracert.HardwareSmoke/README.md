@@ -50,7 +50,7 @@ Ogni scenario è **arrange → act → assert**:
 | `TestVolumes` | Le cartelle sacrificabili, **una per drive fisico** se possibile. `Path` deve **esistere già**. |
 | `Kind` | `Internal` / `External`. Serve solo per il report e per abilitare lo scenario di scollegamento fisico. |
 | `ScratchSubfolder` | Nome di **una sola cartella** creata dentro ogni `Path`. È l'unica cosa che l'harness crea e l'unica che il cleanup rimuove. |
-| `Scenarios` | `["*"]` = tutti; altrimenti i nomi degli scenari da eseguire. Un nome sconosciuto viene segnalato nel report. |
+| `Scenarios` | `["*"]` o lista vuota = tutti; altrimenti i nomi degli scenari da eseguire. Un nome sconosciuto viene segnalato nel report. |
 | `SemiAutomatic` | `true` abilita lo scenario che chiede all'operatore di staccare e ricollegare fisicamente il drive. |
 | `MainDatabasePath` | Override del DB di produzione da cui il guard legge le `WatchedRoot`. Vuoto = `%LOCALAPPDATA%\FileTracert\filetracert.db`. |
 | `LargeFileMegabytes` | Dimensione del file usato dagli scenari a tempo (cancel, crash/resume): deve essere abbastanza grande da poter interrompere la copia. |

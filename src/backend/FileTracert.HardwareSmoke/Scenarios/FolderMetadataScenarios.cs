@@ -57,30 +57,47 @@ public sealed class RenameFolderScenario : Scenario
 
         // ── assert (catalog: the subtree moved, keeping its identity) ─────────
         var renamedPath = ctx.Source.RelativePath(NewName);
-        var renamedRow = await FindDirectoryRowAsync(ctx, ctx.SourceVolumeId, renamedPath);
-        ctx.Assert.True(renamedRow is not null, $"directory row cascaded to '{renamedPath}'");
+        var renamedRow = await AssertCatalogHasDirectoryAsync(
+            ctx, ctx.SourceVolumeId, renamedPath, "directory row cascaded to the new path");
         if (renamedRow is not null)
             ctx.Assert.Equal(albumRow.Id, renamedRow.Id, "directory row identity preserved across the rename");
 
-        var subRow = await FindDirectoryRowAsync(ctx, ctx.SourceVolumeId, ScanPath.Join(renamedPath, "sub"));
-        ctx.Assert.True(subRow is not null, $"nested directory row cascaded to '{ScanPath.Join(renamedPath, "sub")}'");
+        await AssertCatalogHasDirectoryAsync(
+            ctx, ctx.SourceVolumeId, ScanPath.Join(renamedPath, "sub"), "nested directory row cascaded");
 
-        var fileRow = await FindFileRowAsync(ctx, ctx.SourceVolumeId, ScanPath.Join(renamedPath, "photo.jpg"));
-        ctx.Assert.True(fileRow is not null, "file row reachable under the renamed folder path");
+        var fileRow = await AssertCatalogHasFileAsync(
+            ctx, ctx.SourceVolumeId, ScanPath.Join(renamedPath, "photo.jpg"),
+            "file row reachable under the renamed folder path");
 
         // ── assert (FTS: the new path is searchable) ──────────────────────────
-        var hits = await ctx.Env.WithScopeAsync(sp => sp.GetRequiredService<IFileSearchIndex>().SearchAsync(
-            new FileSearchQuery(
-                Text: "renamed", Scope: SearchScope.FullPath, Category: null, Extensions: null,
-                SizeBytesMin: null, SizeBytesMax: null, ModifiedFrom: null, ModifiedTo: null,
-                VolumeId: null, OnlineOnly: false, Sort: SearchSort.Relevance, Desc: false,
-                Skip: 0, Take: 50),
-            ctx.Ct));
+        var found = fileRow is not null && await WaitForCatalogConditionAsync(ctx, async () =>
+        {
+            var hits = await SearchFullPathAsync(ctx, "renamed");
+            return hits.Contains(fileRow.Id);
+        });
 
-        ctx.Assert.True(
-            fileRow is not null && hits.Items.Contains(fileRow.Id),
-            $"the FTS index must find the file under its new path (search returned {hits.Items.Count} hit(s))");
+        if (!found)
+        {
+            var hits = await SearchFullPathAsync(ctx, "renamed");
+            ctx.Assert.Fail(
+                "the FTS index must find the file under its new path; searching the path for " +
+                $"'renamed' returned {hits.Count} hit(s) [{string.Join(", ", hits)}], " +
+                $"expected to contain file id {fileRow?.Id.ToString() ?? "(none)"}.");
+        }
     }
+
+    private static Task<IReadOnlyList<int>> SearchFullPathAsync(ScenarioContext ctx, string text) =>
+        ctx.Env.WithScopeAsync<IReadOnlyList<int>>(async sp =>
+        {
+            var result = await sp.GetRequiredService<IFileSearchIndex>().SearchAsync(
+                new FileSearchQuery(
+                    Text: text, Scope: SearchScope.FullPath, Category: null, Extensions: null,
+                    SizeBytesMin: null, SizeBytesMax: null, ModifiedFrom: null, ModifiedTo: null,
+                    VolumeId: null, OnlineOnly: false, Sort: SearchSort.Relevance, Desc: false,
+                    Skip: 0, Take: 50),
+                ctx.Ct);
+            return result.Items;
+        });
 }
 
 /// <summary>
@@ -117,8 +134,8 @@ public sealed class CreateFolderScenario : Scenario
 
         ctx.Assert.DirectoryExists(absolutePath, "folder created on disk");
 
-        var row = await FindDirectoryRowAsync(ctx, ctx.TargetVolumeId, relativePath);
-        ctx.Assert.True(row is not null, $"catalog row for the new folder '{relativePath}'");
+        var row = await AssertCatalogHasDirectoryAsync(
+            ctx, ctx.TargetVolumeId, relativePath, "catalog row for the new folder");
         if (row is not null)
             ctx.Assert.True(row.IsMaterialized, "the created folder must be materialized in the catalog");
     }
