@@ -172,7 +172,9 @@ public sealed class HardwareHarnessTests : IDisposable
     [Fact]
     public void A_fixture_area_reports_the_volume_relative_path_the_queue_speaks()
     {
-        var volume = Volume("a", "{A}", scratchRelative: @"safe\FileTracertHarness");
+        var volume = Volume("a", "{A}",
+            scratchFull: HarnessPaths.ScratchAreaOf(TempDir("vol"), "FileTracertHarness"),
+            scratchRelative: @"safe\FileTracertHarness");
         var area = new FixtureArea(volume, "scenario", "source");
 
         area.RootRelativePath.Should().Be(@"safe\FileTracertHarness\scenario\source");
