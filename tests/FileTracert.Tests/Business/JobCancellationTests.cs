@@ -175,6 +175,8 @@ public sealed class JobCancellationTests : IDisposable
         public void FinalizePartial(string v, string p, string f) => _inner.FinalizePartial(v, p, f);
         public void DeleteToRecycleBin(string v, string r) => _inner.DeleteToRecycleBin(v, r);
         public bool Exists(string v, string r) => _inner.Exists(v, r);
+        public bool IsDirectoryEmpty(string v, string r) => _inner.IsDirectoryEmpty(v, r);
+        public bool CanRecycle(string v) => _inner.CanRecycle(v);
         public void EnsureTargetDirectory(string v, string r) => _inner.EnsureTargetDirectory(v, r);
     }
 }

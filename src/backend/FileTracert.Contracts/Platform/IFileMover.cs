@@ -47,6 +47,20 @@ public interface IFileMover
     /// <summary>Returns <c>true</c> when a file or directory exists at the volume-relative path.</summary>
     bool Exists(string volGuid, string relativePath);
 
+    /// <summary>
+    /// Returns <c>true</c> when the directory exists and contains no files or subdirectories.
+    /// Used by the queue's delete phase, which must never recycle a directory that still
+    /// holds content it did not copy.
+    /// </summary>
+    bool IsDirectoryEmpty(string volGuid, string relativePath);
+
+    /// <summary>
+    /// Returns <c>true</c> when the volume has a working Recycle Bin, i.e.
+    /// <see cref="DeleteToRecycleBin"/> actually recycles instead of silently degrading
+    /// to a permanent delete (removable FAT/exFAT volumes have no bin).
+    /// </summary>
+    bool CanRecycle(string volGuid);
+
     /// <summary>Creates all directories in <paramref name="relativePath"/> that do not yet exist.</summary>
     void EnsureTargetDirectory(string volGuid, string relativePath);
 }

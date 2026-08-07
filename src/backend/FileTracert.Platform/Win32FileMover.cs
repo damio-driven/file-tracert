@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using FileTracert.Contracts.Platform;
 using FileTracert.Platform.Internal;
@@ -120,6 +121,24 @@ internal sealed class Win32FileMover : IFileMover
     {
         var full = Resolve(volGuid, relativePath);
         return File.Exists(full) || Directory.Exists(full);
+    }
+
+    public bool IsDirectoryEmpty(string volGuid, string relativePath)
+    {
+        var full = Resolve(volGuid, relativePath);
+        return Directory.Exists(full) && !Directory.EnumerateFileSystemEntries(full).Any();
+    }
+
+    public bool CanRecycle(string volGuid)
+    {
+        var mountPoints = GetMountPoints(volGuid);
+        if (mountPoints.Count == 0) return false;
+
+        var info = new NativeMethods.SHQUERYRBINFO
+        {
+            cbSize = Marshal.SizeOf<NativeMethods.SHQUERYRBINFO>(),
+        };
+        return NativeMethods.SHQueryRecycleBin(mountPoints[0], ref info) == 0; // S_OK
     }
 
     // ── private helpers ─────────────────────────────────────────────────────

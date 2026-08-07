@@ -671,7 +671,13 @@ public sealed class QueueServiceTests : IDisposable
             .OrderBy(i => i.SourceRelativePath)
             .ToListAsync(None);
 
-        items.Should().HaveCount(2);
+        // 1 folder marker (the moved folder itself, C21) + 2 file items.
+        items.Should().HaveCount(3);
+
+        var markerItem = items.Single(i => i.FileId == null);
+        markerItem.SourceRelativePath.Should().Be("Docs");
+        markerItem.TargetRelativePath.Should().Be(@"Archive\Docs");
+        markerItem.SizeBytes.Should().Be(0);
 
         var csvItem = items.First(i => i.SourceRelativePath.EndsWith("data.csv"));
         csvItem.TargetRelativePath.Should().Be(@"Archive\Docs\Sub\data.csv");

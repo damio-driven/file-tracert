@@ -30,4 +30,16 @@ internal static partial class NativeMethods
 
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
     internal static extern int SHFileOperation(ref SHFILEOPSTRUCT lpFileOp);
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct SHQUERYRBINFO
+    {
+        public int cbSize;
+        public long i64Size;
+        public long i64NumItems;
+    }
+
+    /// <summary>Succeeds (S_OK) only when the drive root has a queryable Recycle Bin.</summary>
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    internal static extern int SHQueryRecycleBin(string pszRootPath, ref SHQUERYRBINFO pSHQueryRBInfo);
 }

@@ -341,6 +341,56 @@ public class Win32FileMoverTests : IDisposable
         Directory.Exists(Abs(rel)).Should().BeTrue();
     }
 
+    // ── IsDirectoryEmpty / CanRecycle ────────────────────────────────────────
+
+    [Fact]
+    public void IsDirectoryEmpty_true_for_empty_directory()
+    {
+        var rel = R("empty-dir");
+        Directory.CreateDirectory(Abs(rel));
+
+        _mover.IsDirectoryEmpty(_volumeGuid, rel).Should().BeTrue();
+    }
+
+    [Fact]
+    public void IsDirectoryEmpty_false_when_directory_contains_a_file()
+    {
+        var rel = R("full-dir");
+        WriteFile(R("full-dir", "content.txt"));
+
+        _mover.IsDirectoryEmpty(_volumeGuid, rel).Should().BeFalse();
+    }
+
+    [Fact]
+    public void IsDirectoryEmpty_false_when_directory_contains_only_a_subdirectory()
+    {
+        var rel = R("nested-dir");
+        Directory.CreateDirectory(Abs(R("nested-dir", "child")));
+
+        _mover.IsDirectoryEmpty(_volumeGuid, rel).Should().BeFalse();
+    }
+
+    [Fact]
+    public void IsDirectoryEmpty_false_for_missing_directory()
+    {
+        _mover.IsDirectoryEmpty(_volumeGuid, R("does-not-exist")).Should().BeFalse();
+    }
+
+    [Fact]
+    public void CanRecycle_true_on_the_system_volume()
+    {
+        // The volume hosting %TEMP% always has a recycle bin.
+        _mover.CanRecycle(_volumeGuid).Should().BeTrue();
+    }
+
+    [Fact]
+    public void CanRecycle_false_for_volume_with_no_mount_point()
+    {
+        const string fakeGuid = @"\\?\Volume{00000000-0000-0000-0000-000000000000}\";
+
+        _mover.CanRecycle(fakeGuid).Should().BeFalse();
+    }
+
     // ── offline volume ───────────────────────────────────────────────────────
 
     [Fact]

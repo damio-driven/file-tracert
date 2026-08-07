@@ -514,6 +514,19 @@ public sealed class QueueService : IQueueService
             return false;
         }
 
+        // Root marker item (FileId = null): represents the folder itself. It gives the
+        // engine the source root path and guarantees real work happens — the target folder
+        // is created even when the subtree holds no indexed file (C21: an empty or
+        // all-excluded folder must never reach Completed without a syscall).
+        items.Add(new OperationJobItem
+        {
+            FileId = null,
+            SourceRelativePath = dir.MaterializedPath,
+            TargetRelativePath = dstDirPath,
+            SizeBytes = 0,
+            State = JobItemState.Pending
+        });
+
         // Cross-volume: expand to one item per file in the subtree.
         var expanded = await ExpandSubtreeAsync(dir, dstDirPath, ct);
         items.AddRange(expanded);

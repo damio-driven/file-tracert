@@ -244,6 +244,23 @@ public sealed class JobExecutionEngine
         job.BytesProcessed = CompletedItemBytes(job);
         await _db.SaveChangesAsync(ct);
 
+        // Folder marker (MoveFolder cross-volume, FileId = null): the folder itself moves,
+        // not just its files. Materialize the whole target directory tree — including empty
+        // subdirectories — so an empty or all-excluded folder still produces its destination
+        // (C21) and structure is never lost. CreateFolder is idempotent, safe on resume.
+        // Type-gated: only MoveFolder has a marker — a MoveFile item without FileId is a
+        // plain file item and must go through the copy pipeline.
+        var marker = job.Type == JobType.MoveFolder
+            ? job.Items.FirstOrDefault(i => i.FileId is null && i.State == JobItemState.Pending)
+            : null;
+        if (marker is not null)
+        {
+            _mover.CreateFolder(tgtGuid, marker.TargetRelativePath);
+            await EnsureTargetSubtreeAsync(job, marker, tgtGuid, ct);
+            marker.State = JobItemState.Done;
+            await _db.SaveChangesAsync(ct);
+        }
+
         foreach (var item in job.Items.Where(i => i.State == JobItemState.Pending))
         {
             ct.ThrowIfCancellationRequested();
@@ -282,6 +299,31 @@ public sealed class JobExecutionEngine
             await _db.SaveChangesAsync(ct);
 
             _logger.LogDebug("Job {Id}: copied '{Src}'.", job.Id, item.SourceRelativePath);
+        }
+    }
+
+    /// <summary>
+    /// Creates on the target every directory of the moved folder's source subtree, mapped
+    /// under the destination root. Read from the Directories rows (still source-shaped at
+    /// this point), so empty subdirectories — which the per-file expansion cannot see —
+    /// are recreated too.
+    /// </summary>
+    private async Task EnsureTargetSubtreeAsync(
+        OperationJob job, OperationJobItem marker, string tgtGuid, CancellationToken ct)
+    {
+        if (job.SourceVolumeId is null) return;
+
+        var srcRoot = marker.SourceRelativePath;
+        var prefixWithSep = srcRoot + "\\";
+        var subDirPaths = await _db.Directories.AsNoTracking()
+            .Where(d => d.VolumeId == job.SourceVolumeId.Value && d.MaterializedPath.StartsWith(prefixWithSep))
+            .Select(d => d.MaterializedPath)
+            .ToListAsync(ct);
+
+        foreach (var srcDirPath in subDirPaths)
+        {
+            ct.ThrowIfCancellationRequested();
+            _mover.CreateFolder(tgtGuid, marker.TargetRelativePath + srcDirPath[srcRoot.Length..]);
         }
     }
 
@@ -340,6 +382,24 @@ public sealed class JobExecutionEngine
 
         var srcGuid = job.SourceVolume!.VolumeGuid;
 
+        // On volumes without a recycle bin (removable FAT/exFAT) FOF_ALLOWUNDO silently
+        // degrades to a permanent delete. The data is already copied+verified on the target,
+        // so the move proceeds — but the loss of undo must be surfaced, never silent (§9).
+        if (!_mover.CanRecycle(srcGuid))
+        {
+            _logger.LogWarning(
+                "Job {Id}: source volume {Vol} has no recycle bin — source files will be deleted permanently.",
+                job.Id, job.SourceVolumeId);
+            await _notifications.PublishAsync(
+                NotificationSeverity.Warning,
+                "Coda",
+                "Volume di origine senza cestino",
+                "Il volume di origine non ha un cestino: i file di origine verranno eliminati " +
+                "definitivamente (copia già verificata sulla destinazione, ma nessun annullamento possibile).",
+                job.SourceVolumeId,
+                ct);
+        }
+
         if (job.Type == JobType.MoveFile)
         {
             // FirstOrDefault: on a resume/retry the single item may already be Done.
@@ -375,16 +435,20 @@ public sealed class JobExecutionEngine
     }
 
     /// <summary>
-    /// Recycles the moved folder's entire source subtree, deepest directory first. The subtree is
-    /// read from the still-source-shaped <c>Directories</c> rows (IndexUpdater re-parents only after
-    /// completion), guaranteeing the root and empty intermediates are removed, not just the
-    /// directories that happened to hold indexed files.
+    /// Removes the moved folder's source directories, deepest first, recycling a directory
+    /// ONLY when it is empty. The expansion covers just the indexed+included files, so the
+    /// physical subtree can hold content the job never copied (excluded files, files the
+    /// scanner never saw): recycling the tree blindly would destroy data that exists nowhere
+    /// else. A non-empty directory is left in place and the incompleteness is surfaced via
+    /// log + Notification (§9). Returns the paths actually removed so the index can drop
+    /// exactly those rows.
     /// </summary>
-    private async Task DeleteSourceSubtreeAsync(OperationJob job, string srcGuid, CancellationToken ct)
+    private async Task<List<string>> DeleteSourceSubtreeAsync(OperationJob job, string srcGuid, CancellationToken ct)
     {
+        var removed = new List<string>();
         var srcRoot = ResolveSourceRoot(job);
         if (string.IsNullOrEmpty(srcRoot) || job.SourceVolumeId is null)
-            return;
+            return removed;
 
         var prefixWithSep = srcRoot + "\\";
         var dirPaths = await _db.Directories.AsNoTracking()
@@ -393,13 +457,26 @@ public sealed class JobExecutionEngine
             .Select(d => d.MaterializedPath)
             .ToListAsync(ct);
 
-        // Deepest-first: order by segment depth so a child is always recycled before its parent.
+        var keptNonEmpty = new List<string>();
+
+        // Deepest-first: order by segment depth so a child is always emptied and recycled
+        // before its parent is examined.
         foreach (var dirPath in dirPaths.OrderByDescending(p => p.Count(c => c == '\\')).ThenByDescending(p => p.Length))
         {
             ct.ThrowIfCancellationRequested();
             try
             {
+                if (!_mover.Exists(srcGuid, dirPath))
+                    continue;
+
+                if (!_mover.IsDirectoryEmpty(srcGuid, dirPath))
+                {
+                    keptNonEmpty.Add(dirPath);
+                    continue;
+                }
+
                 _mover.DeleteToRecycleBin(srcGuid, dirPath);
+                removed.Add(dirPath);
             }
             catch (Exception ex)
             {
@@ -408,6 +485,24 @@ public sealed class JobExecutionEngine
                 _logger.LogWarning(ex, "Job {Id}: could not recycle source directory '{Dir}'.", job.Id, dirPath);
             }
         }
+
+        if (keptNonEmpty.Count > 0)
+        {
+            _logger.LogWarning(
+                "Job {Id}: {Count} source directory(ies) kept because they still contain uncopied content: {Dirs}.",
+                job.Id, keptNonEmpty.Count, string.Join("; ", keptNonEmpty));
+            await _notifications.PublishAsync(
+                NotificationSeverity.Warning,
+                "Coda",
+                "Contenuto non copiato rimasto sul sorgente",
+                $"Lo spostamento della cartella '{srcRoot}' ha lasciato sul volume di origine " +
+                $"{keptNonEmpty.Count} cartella/e con contenuto non indicizzato (mai copiato): " +
+                $"{string.Join("; ", keptNonEmpty)}. Nessun file è stato eliminato senza copia verificata.",
+                job.SourceVolumeId,
+                ct);
+        }
+
+        return removed;
     }
 
     /// <summary>
@@ -418,6 +513,12 @@ public sealed class JobExecutionEngine
     /// </summary>
     private static string ResolveSourceRoot(OperationJob job)
     {
+        // The folder marker item (FileId = null) carries the root verbatim.
+        // Jobs enqueued before the marker existed fall back to tail-stripping below.
+        var marker = job.Items.FirstOrDefault(i => i.FileId is null);
+        if (marker is not null)
+            return marker.SourceRelativePath;
+
         var dst = job.TargetRelativePath;
         var item = job.Items.FirstOrDefault(i => i.FileId.HasValue);
         if (item is null || string.IsNullOrEmpty(dst))

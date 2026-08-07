@@ -155,6 +155,11 @@ public sealed class JobExecutionEngineTests : IDisposable
                 Arg.Any<string>(), Arg.Any<string>(),
                 Arg.Any<bool>())
              .Returns(true);
+        // Substitute booleans default to false; the engine's delete phase treats those as
+        // "missing dir / no recycle bin" — model a normal NTFS volume with empty dirs instead.
+        mover.Exists(Arg.Any<string>(), Arg.Any<string>()).Returns(true);
+        mover.IsDirectoryEmpty(Arg.Any<string>(), Arg.Any<string>()).Returns(true);
+        mover.CanRecycle(Arg.Any<string>()).Returns(true);
         return mover;
     }
 
@@ -563,6 +568,43 @@ public sealed class JobExecutionEngineTests : IDisposable
             mover.DeleteToRecycleBin(Vol1Guid, @"Media\2024");
             mover.DeleteToRecycleBin(Vol1Guid, "Media");
         });
+    }
+
+    // ── FIX #1 — volumes without a recycle bin must not degrade silently ──────
+
+    [Fact]
+    public async Task Delete_phase_on_volume_without_recycle_bin_warns_before_permanent_delete()
+    {
+        var mover = DefaultMover();
+        mover.CanRecycle(Vol1Guid).Returns(false); // e.g. removable exFAT: FOF_ALLOWUNDO degrades to hard delete
+
+        int jobId = SeedJob(
+            JobType.MoveFile, JobState.Pending, intraVolume: false,
+            srcVol: Vol1Id, tgtVol: Vol2Id, tgtPath: @"Backup\report.txt", totalBytes: 1_000,
+            items:
+            [
+                new OperationJobItem
+                {
+                    SourceRelativePath = @"Docs\report.txt",
+                    TargetRelativePath = @"Backup\report.txt",
+                    State = JobItemState.Pending,
+                    SizeBytes = 1_000,
+                    CreatedUtc = DateTime.UtcNow,
+                    UpdatedUtc = DateTime.UtcNow,
+                },
+            ]);
+
+        await MakeEngine(mover).ExecuteJobAsync(jobId, None);
+
+        // The move still completes (the data is already verified on the target), but the
+        // permanent nature of the source delete is surfaced, never silent (§9).
+        (await ReadState(jobId)).Should().Be(JobState.Completed);
+
+        await using var db = _harness.CreateContext();
+        var notification = await db.Notifications.SingleAsync();
+        notification.Severity.Should().Be(NotificationSeverity.Warning);
+        notification.Message.Should().Contain("cestino");
+        notification.VolumeId.Should().Be(Vol1Id);
     }
 
     // ── MoveFile cross-volume — name collision ────────────────────────────────
