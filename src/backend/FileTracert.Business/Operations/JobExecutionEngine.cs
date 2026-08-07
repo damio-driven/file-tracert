@@ -129,17 +129,19 @@ public sealed class JobExecutionEngine
         switch (job.Type)
         {
             case JobType.CreateFolder:
-                _mover.CreateFolder(tgtGuid!, job.TargetRelativePath!);
+                _mover.CreateFolder(tgtGuid!, job.TargetRelativePath!); // mkdir is idempotent
                 break;
 
             case JobType.RenameFile:
             case JobType.RenameFolder:
-                _mover.RenameIntraVolume(srcGuid!, item!.SourceRelativePath, job.TargetRelativePath!);
+                if (!SimpleOpAlreadyApplied(job, srcGuid!, item!))
+                    _mover.RenameIntraVolume(srcGuid!, item!.SourceRelativePath, job.TargetRelativePath!);
                 break;
 
             case JobType.MoveFile:
             case JobType.MoveFolder:
-                _mover.MoveIntraVolume(srcGuid!, item!.SourceRelativePath, item.TargetRelativePath);
+                if (!SimpleOpAlreadyApplied(job, srcGuid!, item!))
+                    _mover.MoveIntraVolume(srcGuid!, item!.SourceRelativePath, item.TargetRelativePath);
                 break;
         }
 
@@ -150,6 +152,24 @@ public sealed class JobExecutionEngine
 
         await CompleteJobAsync(job, ct);
         await _indexUpdater.UpdateAfterCompletionAsync(job, ct);
+    }
+
+    /// <summary>
+    /// Crash-resume guard for the single-OS-call ops (finding #4): an intra-volume rename/move
+    /// has no checkpoint between the call and Completed, so after a crash the re-run must
+    /// recognize "target exists + source absent" as already applied — re-executing would throw
+    /// FileNotFoundException and fail an operation that physically succeeded (and the index
+    /// update, which runs after completion, would never happen).
+    /// </summary>
+    private bool SimpleOpAlreadyApplied(OperationJob job, string volGuid, OperationJobItem item)
+    {
+        bool applied = _mover.Exists(volGuid, item.TargetRelativePath) &&
+                       !_mover.Exists(volGuid, item.SourceRelativePath);
+        if (applied)
+            _logger.LogInformation(
+                "Job {Id}: '{Target}' already in place and source absent — applied by an interrupted run; completing.",
+                job.Id, item.TargetRelativePath);
+        return applied;
     }
 
     // ── cross-volume state machine ────────────────────────────────────────────
@@ -355,8 +375,21 @@ public sealed class JobExecutionEngine
 
             var partialRel = item.TempPath!;
 
+            // Crash-resume (finding #4): FinalizePartial can have renamed partial→final with the
+            // process dying before Verified was persisted. "final exists + partial absent" is that
+            // exact footprint — verify the final in place instead of failing on the missing partial
+            // (and instead of re-copying into a NameCollision against our own output on retry).
+            bool alreadyFinalized = !_mover.Exists(tgtGuid, partialRel) &&
+                                    _mover.Exists(tgtGuid, item.TargetRelativePath);
+            if (alreadyFinalized)
+                _logger.LogInformation(
+                    "Job {Id}: '{Dst}' already finalized by an interrupted run — verifying in place.",
+                    job.Id, item.TargetRelativePath);
+
+            var candidateRel = alreadyFinalized ? item.TargetRelativePath : partialRel;
+
             // Size-only verification (full hash is optional, not enabled for MVP).
-            bool ok = _mover.Verify(srcGuid, item.SourceRelativePath, tgtGuid, partialRel, withHash: false);
+            bool ok = _mover.Verify(srcGuid, item.SourceRelativePath, tgtGuid, candidateRel, withHash: false);
             if (!ok)
             {
                 _logger.LogError("Job {Id}: verification failed for '{Src}'.", job.Id, item.SourceRelativePath);
@@ -368,7 +401,8 @@ public sealed class JobExecutionEngine
             }
 
             // Rename .fadit-partial → final. Throws NameCollisionException if final already exists.
-            _mover.FinalizePartial(tgtGuid, partialRel, item.TargetRelativePath);
+            if (!alreadyFinalized)
+                _mover.FinalizePartial(tgtGuid, partialRel, item.TargetRelativePath);
 
             item.TempPath = null;
             item.State = JobItemState.Verified;
@@ -412,7 +446,7 @@ public sealed class JobExecutionEngine
             var item = job.Items.FirstOrDefault(i => i.State == JobItemState.Verified);
             if (item is not null)
             {
-                _mover.DeleteToRecycleBin(srcGuid, item.SourceRelativePath);
+                RecycleSourceIfPresent(job, srcGuid, item);
                 item.State = JobItemState.Done;
             }
 
@@ -420,15 +454,16 @@ public sealed class JobExecutionEngine
             return [];
         }
 
-        // MoveFolder cross-volume: delete individual source files first.
+        // MoveFolder cross-volume: delete individual source files first. Checkpoint per item
+        // (finding #4): a crash mid-loop must find the recycled items persisted as Done, not
+        // re-recycle them (their target copy is verified — the source is legitimately gone).
         foreach (var item in job.Items.Where(i => i.State == JobItemState.Verified))
         {
             ct.ThrowIfCancellationRequested();
-            _mover.DeleteToRecycleBin(srcGuid, item.SourceRelativePath);
+            RecycleSourceIfPresent(job, srcGuid, item);
             item.State = JobItemState.Done;
+            await _db.SaveChangesAsync(ct);
         }
-
-        await _db.SaveChangesAsync(ct);
 
         // Then remove the source directory subtree (empty dirs only — see
         // DeleteSourceSubtreeAsync). The old code picked the SHORTEST item DirPath as
@@ -437,6 +472,24 @@ public sealed class JobExecutionEngine
         // survived. Model the whole subtree explicitly and go deepest-first so each
         // directory is emptied before its parent.
         return await DeleteSourceSubtreeAsync(job, srcGuid, ct);
+    }
+
+    /// <summary>
+    /// Recycles an item's source file, tolerating a path already absent: after a crash mid
+    /// DeletingSource the interrupted run may have recycled it without persisting Done
+    /// (finding #4) — that item's work is done, not an error to re-raise.
+    /// </summary>
+    private void RecycleSourceIfPresent(OperationJob job, string srcGuid, OperationJobItem item)
+    {
+        if (_mover.Exists(srcGuid, item.SourceRelativePath))
+        {
+            _mover.DeleteToRecycleBin(srcGuid, item.SourceRelativePath);
+            return;
+        }
+
+        _logger.LogInformation(
+            "Job {Id}: source '{Src}' already absent — recycled by an interrupted run, treated as done.",
+            job.Id, item.SourceRelativePath);
     }
 
     /// <summary>
