@@ -497,6 +497,21 @@ public sealed class QueueService : IQueueService
         bool intra = dir.VolumeId == targetVol.Id;
         var dstDirPath = ScanPath.Join(targetPath, dir.Name);
 
+        // C22: geometrically impossible or pointless moves are a 400 at enqueue, not a
+        // Failed job at execution. Both checks are intra-volume only — on another volume
+        // the same relative path is a different physical location.
+        if (intra)
+        {
+            if (ScanPath.IsWithin(targetPath, dir.MaterializedPath))
+                throw new ArgumentException(
+                    $"Impossibile spostare la cartella '{dir.MaterializedPath}' dentro sé stessa " +
+                    $"o in una sua sottocartella ('{targetPath}').");
+
+            if (string.Equals(dstDirPath, dir.MaterializedPath, StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException(
+                    $"La cartella '{dir.MaterializedPath}' si trova già in questa posizione.");
+        }
+
         job.SourceVolumeId = dir.VolumeId;
         job.TargetVolumeId = targetVol.Id;
         job.TargetRelativePath = dstDirPath;

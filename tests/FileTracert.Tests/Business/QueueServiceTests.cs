@@ -711,6 +711,75 @@ public sealed class QueueServiceTests : IDisposable
         (await db.OperationJobs.CountAsync(None)).Should().Be(0);
     }
 
+    // ── C22: move-into-self / no-op folder moves rejected at enqueue ──────────
+
+    [Fact]
+    public async Task MoveFolder_into_its_own_subtree_is_rejected_at_enqueue()
+    {
+        // Moving "Docs" under "Docs\Sub" would create Docs\Sub\Docs inside the moved tree:
+        // the OS Directory.Move would throw at execution — reject with a 400 up front instead.
+        var act = async () => await Svc().EnqueueAsync(new CreateJobRequest
+        {
+            Type = JobType.MoveFolder,
+            SourceDirectoryId = Dir1Id,          // "Docs"
+            TargetVolumeId = Vol1Id,
+            TargetRelativePath = @"docs\Sub"     // case-flipped on purpose: predicate must be case-insensitive
+        }, None);
+
+        await act.Should().ThrowAsync<ArgumentException>();
+
+        using var db = _harness.CreateContext();
+        (await db.OperationJobs.CountAsync(None)).Should().Be(0, "no job may be created for an impossible move");
+    }
+
+    [Fact]
+    public async Task MoveFolder_into_itself_is_rejected_at_enqueue()
+    {
+        // Target parent == the folder itself → destination "Docs\Docs" inside the moved tree.
+        var act = async () => await Svc().EnqueueAsync(new CreateJobRequest
+        {
+            Type = JobType.MoveFolder,
+            SourceDirectoryId = Dir1Id,          // "Docs"
+            TargetVolumeId = Vol1Id,
+            TargetRelativePath = "Docs"
+        }, None);
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Fact]
+    public async Task MoveFolder_to_its_current_location_is_rejected_at_enqueue()
+    {
+        // "Docs\Sub" moved to parent "Docs" = exactly where it already is: a no-op.
+        var act = async () => await Svc().EnqueueAsync(new CreateJobRequest
+        {
+            Type = JobType.MoveFolder,
+            SourceDirectoryId = Dir2Id,          // "Docs\Sub"
+            TargetVolumeId = Vol1Id,
+            TargetRelativePath = "Docs"
+        }, None);
+
+        await act.Should().ThrowAsync<ArgumentException>();
+
+        using var db = _harness.CreateContext();
+        (await db.OperationJobs.CountAsync(None)).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task MoveFolder_cross_volume_to_same_path_is_allowed()
+    {
+        // Same relative path but a DIFFERENT volume is a real move, not a no-op.
+        var dto = await Svc().EnqueueAsync(new CreateJobRequest
+        {
+            Type = JobType.MoveFolder,
+            SourceDirectoryId = Dir2Id,          // "Docs\Sub" on Vol1
+            TargetVolumeId = Vol2Id,
+            TargetRelativePath = "Docs"
+        }, None);
+
+        dto.State.Should().Be("Pending");
+    }
+
     // ── name / path validation (folder ops) ────────────────────────────────────
 
     [Theory]
