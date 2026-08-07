@@ -32,7 +32,8 @@ internal sealed class Win32FileMover : IFileMover
     {
         var full = Resolve(volumeGuid, relativePath);
         var dest = Path.Combine(Path.GetDirectoryName(full)!, newName);
-        ThrowIfDestinationOccupied(dest);
+        if (!IsCaseOnlyDifference(full, dest))
+            ThrowIfDestinationOccupied(dest);
 
         if (Directory.Exists(full))
             Directory.Move(full, dest);
@@ -44,7 +45,8 @@ internal sealed class Win32FileMover : IFileMover
     {
         var src = Resolve(volumeGuid, srcRel);
         var dest = Resolve(volumeGuid, destRel);
-        ThrowIfDestinationOccupied(dest);
+        if (!IsCaseOnlyDifference(src, dest))
+            ThrowIfDestinationOccupied(dest);
         EnsureParent(dest);
 
         if (Directory.Exists(src))
@@ -115,6 +117,15 @@ internal sealed class Win32FileMover : IFileMover
         if (File.Exists(destFullPath) || Directory.Exists(destFullPath))
             throw new NameCollisionException(destFullPath);
     }
+
+    /// <summary>
+    /// A rename/move whose destination differs from the source only by letter casing is the
+    /// SAME entry on case-insensitive NTFS: Exists(dest) would report the source itself and
+    /// wrongly flag a collision — but File.Move/Directory.Move apply the re-casing fine.
+    /// </summary>
+    private static bool IsCaseOnlyDifference(string sourceFullPath, string destFullPath) =>
+        string.Equals(sourceFullPath, destFullPath, StringComparison.OrdinalIgnoreCase) &&
+        !string.Equals(sourceFullPath, destFullPath, StringComparison.Ordinal);
 
     public void DeleteToRecycleBin(string volGuid, string relativePath)
     {

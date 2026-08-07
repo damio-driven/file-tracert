@@ -61,7 +61,20 @@ public sealed class BlockedJobRevaluator
             job.State = JobState.Pending;
             job.BlockReason = JobBlockReason.None;
             job.ErrorMessage = null;
-            await _db.SaveChangesAsync(ct);
+            try
+            {
+                await _db.SaveChangesAsync(ct);
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                // A cancel raced the unblock: keep the committed state, skip this job and
+                // keep the revaluation pass alive for the remaining candidates.
+                await _db.Entry(job).ReloadAsync(ct);
+                _logger.LogInformation(
+                    "Job {Id}: state moved concurrently during revaluation (now {State}) — skipped.",
+                    job.Id, job.State);
+                continue;
+            }
 
             // Guarantee exactly one active reservation: a job blocked at enqueue never
             // reserved (shouldReserve was false), one blocked by the engine kept its

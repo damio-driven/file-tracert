@@ -182,6 +182,13 @@ public sealed class QueueService : IQueueService
                     jobId, attempt);
                 await _db.Entry(job).ReloadAsync(ct);
             }
+            catch (DbUpdateConcurrencyException ex)
+            {
+                // Out of attempts: surface a meaningful error instead of a raw EF exception.
+                throw new InvalidOperationException(
+                    $"Impossibile annullare il job {jobId}: lo stato continua a cambiare sotto la " +
+                    "richiesta. Riprovare.", ex);
+            }
         }
 
         // Signal the running job (if any) AFTER Cancelled is committed, so the engine both
@@ -238,7 +245,21 @@ public sealed class QueueService : IQueueService
         job.ErrorMessage = null;
         job.CompletedUtc = null;
         job.RetryCount++;
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // The State token tripped: something else (a cancel, the revaluator) moved the
+            // job between our read and this write. Keep the committed state and tell the
+            // caller in API terms, not with a raw EF exception.
+            _db.ChangeTracker.Clear();
+            var current = await _db.OperationJobs.AsNoTracking()
+                .Where(j => j.Id == jobId).Select(j => j.State).FirstAsync(ct);
+            throw new InvalidOperationException(
+                $"Job {jobId} changed state concurrently (now {current}) — retry it again if still applicable.");
+        }
 
         // Ledger coherence (same principle as the atomic enqueue, fix #2): a Failed job
         // released its reservation, an engine-Blocked one kept it, an enqueue-Blocked one

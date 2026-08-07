@@ -102,6 +102,54 @@ public sealed class IntraVolumeCollisionTests : IDisposable
     }
 
     [Fact]
+    public async Task Case_only_rename_is_not_a_collision_and_completes()
+    {
+        // Review follow-up on C20: on case-insensitive NTFS, File.Exists(dest) is true for the
+        // SOURCE ITSELF when the rename differs only by case ("report.txt" → "REPORT.txt").
+        // That must stay a normal, working rename — not a permanent Blocked(NameCollision).
+        const string content = "same file, new casing";
+        var srcRel = R("docs", "report.txt");
+        Directory.CreateDirectory(Abs(R("docs")));
+        File.WriteAllText(Abs(srcRel), content);
+
+        int jobId;
+        using (var db = _harness.CreateContext())
+        {
+            db.Volumes.Add(new Volume
+            {
+                Id = 1, VolumeGuid = _volumeGuid, FileSystem = "NTFS",
+                FreeBytesLastKnown = 1_000_000, IsOnline = true,
+            });
+            var job = new OperationJob
+            {
+                Id = 1, Type = JobType.RenameFile, State = JobState.Pending,
+                IsIntraVolume = true, SourceVolumeId = 1, TargetVolumeId = 1,
+                TargetRelativePath = "REPORT.txt",
+                SequenceOrder = 1, CreatedUtc = DateTime.UtcNow, UpdatedUtc = DateTime.UtcNow,
+            };
+            job.Items.Add(new OperationJobItem
+            {
+                SourceRelativePath = srcRel, TargetRelativePath = R("docs", "REPORT.txt"),
+                SizeBytes = content.Length, State = JobItemState.Pending,
+                CreatedUtc = DateTime.UtcNow, UpdatedUtc = DateTime.UtcNow,
+            });
+            db.OperationJobs.Add(job);
+            db.SaveChanges();
+            jobId = job.Id;
+        }
+
+        await MakeEngine().ExecuteJobAsync(jobId, CancellationToken.None);
+
+        using var check = _harness.CreateContext();
+        var job2 = await check.OperationJobs.AsNoTracking().SingleAsync(j => j.Id == jobId);
+        job2.State.Should().Be(JobState.Completed,
+            $"a case-only rename is not a collision (block={job2.BlockReason}, error='{job2.ErrorMessage}')");
+
+        var actualName = new DirectoryInfo(Abs(R("docs"))).GetFiles().Single().Name;
+        actualName.Should().Be("REPORT.txt", "the new casing must be applied on disk");
+    }
+
+    [Fact]
     public async Task Intra_volume_move_onto_existing_target_blocks_as_NameCollision_not_Failed()
     {
         const string sourceContent = "the file being moved";

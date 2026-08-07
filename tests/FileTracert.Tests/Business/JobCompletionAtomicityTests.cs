@@ -167,6 +167,95 @@ public sealed class JobCompletionAtomicityTests : IDisposable
         dir.MaterializedPath.Should().Be(R("dst"));
     }
 
+    [Fact]
+    public async Task Persistently_failing_index_update_parks_the_job_Failed_instead_of_looping_forever()
+    {
+        // Review follow-up on #7: a PERSISTENT completion failure (FTS corruption, log volume
+        // full) must not livelock the FIFO queue with an endless re-pick of the same job.
+        // After a bounded number of attempts the job is parked Failed (visible, retryable).
+        const string content = "persistent failure payload";
+        var srcRel = R("src", "stuck.jpg");
+        var dstRel = R("dst", "stuck.jpg");
+
+        Directory.CreateDirectory(Abs(R("src")));
+        File.WriteAllText(Abs(srcRel), content);
+        Directory.CreateDirectory(Abs(R("dst")));
+        File.WriteAllText(Abs(dstRel), content);
+
+        int jobId;
+        using (var db = _harness.CreateContext())
+        {
+            db.Volumes.Add(new Volume
+            {
+                Id = 1, VolumeGuid = _volumeGuid, FileSystem = "NTFS",
+                FreeBytesLastKnown = InitialFreeBytes, IsOnline = true,
+            });
+            db.Directories.Add(new DirectoryNode
+            {
+                Id = 1, VolumeId = 1, Name = "src", MaterializedPath = R("src"),
+                IsMaterialized = true, CreatedUtc = DateTime.UtcNow, UpdatedUtc = DateTime.UtcNow,
+            });
+            db.Files.Add(new FileEntry
+            {
+                Id = 10, VolumeId = 1, DirectoryId = 1, Name = "stuck.jpg", Extension = ".jpg",
+                SizeBytes = content.Length, IsIncluded = true, IsPresent = true,
+                CreatedUtc = DateTime.UtcNow, UpdatedUtc = DateTime.UtcNow,
+                FileModifiedUtc = DateTime.UtcNow, LastIndexedUtc = DateTime.UtcNow,
+            });
+            var job = new OperationJob
+            {
+                Id = 1, Type = JobType.MoveFile, State = JobState.DeletingSource,
+                IsIntraVolume = false, SourceVolumeId = 1, TargetVolumeId = 1,
+                TargetRelativePath = dstRel, TotalBytes = content.Length,
+                RequiredBytesTarget = content.Length, FreedBytesSource = 0,
+                SequenceOrder = 1, CreatedUtc = DateTime.UtcNow, UpdatedUtc = DateTime.UtcNow,
+            };
+            job.Items.Add(new OperationJobItem
+            {
+                FileId = 10,
+                SourceRelativePath = srcRel, TargetRelativePath = dstRel,
+                SizeBytes = content.Length, State = JobItemState.Verified,
+                BytesCopied = content.Length,
+                CreatedUtc = DateTime.UtcNow, UpdatedUtc = DateTime.UtcNow,
+            });
+            db.OperationJobs.Add(job);
+            db.SaveChanges();
+            jobId = job.Id;
+        }
+
+        var fts = new AlwaysFailFileSearchIndex();
+
+        // The worker would re-pick the runnable job after each rolled-back attempt; five
+        // executions are more than the budget — the job must be parked Failed by then.
+        for (int i = 0; i < 5; i++)
+            await MakeEngine(fts).ExecuteJobAsync(jobId, CancellationToken.None);
+
+        using var final = _harness.CreateContext();
+        var job3 = await final.OperationJobs.AsNoTracking().SingleAsync(j => j.Id == jobId);
+        job3.State.Should().Be(JobState.Failed,
+            "a persistent completion failure must park the job, not loop forever " +
+            $"(state={job3.State}, error='{job3.ErrorMessage}')");
+        job3.ErrorMessage.Should().NotBeNullOrEmpty();
+
+        // Space never folded: every completion attempt rolled back, the final Failed does not fold.
+        var volume = await final.Volumes.AsNoTracking().SingleAsync(v => v.Id == 1);
+        volume.FreeBytesLastKnown.Should().Be(InitialFreeBytes);
+    }
+
+    /// <summary>Upsert always throws — the persistent-failure analogue.</summary>
+    private sealed class AlwaysFailFileSearchIndex : IFileSearchIndex
+    {
+        public Task UpsertAsync(int fileId, string name, string path, CancellationToken ct)
+            => throw new InvalidOperationException("simulated persistent index failure");
+
+        public Task ClearVolumeAsync(int volumeId, CancellationToken ct) => Task.CompletedTask;
+        public Task SyncVolumeFromDbAsync(int volumeId, CancellationToken ct) => Task.CompletedTask;
+        public Task RebuildAsync(CancellationToken ct) => Task.CompletedTask;
+        public Task RemoveAsync(int fileId, CancellationToken ct) => Task.CompletedTask;
+        public Task<PagedResult<int>> SearchAsync(FileSearchQuery query, CancellationToken ct)
+            => Task.FromResult(new PagedResult<int>([], 0, query.Skip, query.Take));
+    }
+
     /// <summary>Throws on the first Upsert (transient-failure analogue), succeeds afterwards.</summary>
     private sealed class FailOnceFileSearchIndex : IFileSearchIndex
     {

@@ -378,6 +378,8 @@ public sealed class JobExecutionEngine
             // process dying before Verified was persisted. "final exists + partial absent" is that
             // exact footprint — verify the final in place instead of failing on the missing partial
             // (and instead of re-copying into a NameCollision against our own output on retry).
+            // Known limit: with hash off (MVP) a FOREIGN same-size file at the final path passes
+            // the in-place verify and gets adopted; hash verification closes this when enabled.
             bool alreadyFinalized = !_mover.Exists(tgtGuid, partialRel) &&
                                     _mover.Exists(tgtGuid, item.TargetRelativePath);
             if (alreadyFinalized)
@@ -627,15 +629,22 @@ public sealed class JobExecutionEngine
     }
 
     /// <summary>
-    /// Recovery path for a tripped State concurrency token: reloads the committed row and,
-    /// when the committed state is <see cref="JobState.Cancelled"/>, runs the same cleanup
-    /// the regular cancel path runs (partials removed, landed items reconciled). The engine
-    /// never writes over the committed state.
+    /// Recovery path for a tripped State concurrency token: drops every pending mutation of
+    /// the aborted run, reloads the committed row and, when the committed state is
+    /// <see cref="JobState.Cancelled"/>, runs the same cleanup the regular cancel path runs
+    /// (partials removed, landed items reconciled). The engine never writes over the
+    /// committed state — and never lets the aborted run's tracked edits (space fold, index
+    /// re-points) leak into the follow-up saves.
     /// </summary>
-    private async Task HandleConcurrentStateChangeAsync(OperationJob job)
+    private async Task HandleConcurrentStateChangeAsync(OperationJob staleJob)
     {
-        // Reload discards our stale pending State so the cleanup saves below can't re-trip.
-        await _db.Entry(job).ReloadAsync(CancellationToken.None);
+        _db.ChangeTracker.Clear();
+        var job = await _db.OperationJobs
+            .Include(j => j.Items)
+            .Include(j => j.SourceVolume)
+            .Include(j => j.TargetVolume)
+            .FirstOrDefaultAsync(j => j.Id == staleJob.Id, CancellationToken.None);
+        if (job is null) return;
 
         if (job.State == JobState.Cancelled)
         {
@@ -647,10 +656,8 @@ public sealed class JobExecutionEngine
             return;
         }
 
-        // Either a genuine concurrent transition, or our own completion transaction rolled
-        // back (index-update failure) leaving the tracker ahead of the DB. Both resolve the
-        // same way: keep the committed state; if it is still runnable the worker re-picks
-        // the job and it resumes from its checkpoint.
+        // A genuine concurrent transition: keep the committed state; if it is still
+        // runnable the worker re-picks the job and it resumes from its checkpoint.
         _logger.LogWarning(
             "Job {Id}: committed state is {State}, diverging from this run's attempted write — " +
             "execution aborted, committed state kept.",
@@ -687,15 +694,75 @@ public sealed class JobExecutionEngine
         //   with it, a retry can never subtract RequiredBytesTarget twice.
         // - ledger release INSIDE it (finding #5): a crash can't leave a phantom IsActive
         //   reservation on a terminal job. The in-memory mirror follows after the commit.
-        await using (var tx = await _db.Database.BeginTransactionAsync(ct))
+        try
         {
+            await using var tx = await _db.Database.BeginTransactionAsync(ct);
             await _indexUpdater.UpdateAfterCompletionAsync(job, removedSourceDirPaths, ct);
             await _db.SaveChangesAsync(ct);
             await SpaceLedger.DeactivateEntriesAsync(_db, job.Id, ct);
             await tx.CommitAsync(ct);
         }
+        catch (OperationCanceledException) { throw; }          // shutdown: resume next start
+        catch (DbUpdateConcurrencyException) { throw; }        // cancel raced: outer handler follows it
+        catch (Exception ex)
+        {
+            await HandleCompletionCommitFailureAsync(job, ex, ct);
+            return;
+        }
         await _ledger.ReleaseInMemoryAsync(job.Id, CancellationToken.None);
         _logger.LogInformation("Job {Id} completed.", job.Id);
+    }
+
+    /// <summary>
+    /// Bounded retry budget for completion-commit failures. Transient causes (SQLITE_BUSY)
+    /// resolve within a re-pick or two; hitting the budget means the failure is persistent
+    /// and the job must be parked instead of livelocking the FIFO queue.
+    /// </summary>
+    private const int MaxCompletionAttempts = 3;
+
+    /// <summary>
+    /// The completion transaction rolled back (typically the index/FTS update failed). The
+    /// job's physical work is done and its checkpoint is intact, so for a transient cause
+    /// the right move is to leave it runnable and let the worker re-pick it. But the
+    /// re-pick is immediate: a PERSISTENT failure would starve the whole FIFO queue — so
+    /// the attempts are counted on <see cref="OperationJob.RetryCount"/> and past the
+    /// budget the job is parked <see cref="JobState.Failed"/> (visible in the UI bell,
+    /// manually retryable) WITHOUT the failing index update.
+    /// </summary>
+    private async Task HandleCompletionCommitFailureAsync(OperationJob job, Exception failure, CancellationToken ct)
+    {
+        // The tracker still holds every pending mutation of the rolled-back completion
+        // (Completed state, space fold, index re-points). Drop them all — only the
+        // committed checkpoint may reach the DB from here on.
+        _db.ChangeTracker.Clear();
+
+        var attempts = await _db.OperationJobs.AsNoTracking()
+            .Where(j => j.Id == job.Id).Select(j => j.RetryCount)
+            .FirstAsync(CancellationToken.None) + 1;
+        // RetryCount-only conditional-free update: it must persist even if a cancel races.
+        await _db.OperationJobs.Where(j => j.Id == job.Id)
+            .ExecuteUpdateAsync(s => s.SetProperty(j => j.RetryCount, attempts), CancellationToken.None);
+
+        if (attempts < MaxCompletionAttempts)
+        {
+            _logger.LogWarning(failure,
+                "Job {Id}: completion commit failed (attempt {N}/{Max}) — rolled back; " +
+                "the job stays at its checkpoint and re-runs.",
+                job.Id, attempts, MaxCompletionAttempts);
+            return;
+        }
+
+        _logger.LogError(failure,
+            "Job {Id}: completion commit failed {Max} times — parking the job as Failed.",
+            job.Id, MaxCompletionAttempts);
+        var reloaded = await _db.OperationJobs
+            .Include(j => j.Items)
+            .Include(j => j.SourceVolume)
+            .Include(j => j.TargetVolume)
+            .FirstAsync(j => j.Id == job.Id, CancellationToken.None);
+        await SetFailedAsync(reloaded,
+            $"Completamento fallito {MaxCompletionAttempts} volte durante l'aggiornamento " +
+            $"dell'indice: {failure.Message}", ct);
     }
 
     private async Task SetBlockedAsync(OperationJob job, JobBlockReason reason, string message, CancellationToken ct)
