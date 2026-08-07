@@ -35,9 +35,6 @@ public sealed class QueueDriver : IAsyncDisposable
         _log = log;
     }
 
-    /// <summary>True while a worker is running.</summary>
-    public bool WorkerRunning => _worker is not null;
-
     public async Task StartWorkerAsync(CancellationToken ct)
     {
         if (_worker is not null) return;

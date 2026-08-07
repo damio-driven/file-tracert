@@ -63,20 +63,6 @@ public sealed class ScenarioAssertions
             _failures.Add($"{why}: directory '{absolutePath}' still exists.");
     }
 
-    /// <summary>Byte-for-byte equality via SHA-256 — the harness's own integrity check, independent
-    /// of the size-only verification the queue performs.</summary>
-    public void SameContent(string expectedPath, string actualPath, string what)
-    {
-        if (!File.Exists(expectedPath) || !File.Exists(actualPath))
-        {
-            _failures.Add($"{what}: cannot compare, one of '{expectedPath}' / '{actualPath}' is missing.");
-            return;
-        }
-
-        if (Sha256(expectedPath) != Sha256(actualPath))
-            _failures.Add($"{what}: content of '{actualPath}' differs from '{expectedPath}'.");
-    }
-
     /// <summary>No <c>.fadit-partial</c> may survive anywhere under the given tree, in any outcome
     /// (success, failure, cancel or crash) — a leftover partial is an orphan by definition.</summary>
     public void NoPartialsUnder(string absoluteDirectory, string why)

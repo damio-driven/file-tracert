@@ -12,6 +12,8 @@ public sealed class FixtureArea
 {
     private const int ContentBufferSize = 1 << 20; // 1 MB write chunks
 
+    private readonly List<string> _created = [];
+
     public FixtureArea(TestVolume volume, string scenarioSlug, string role)
     {
         Volume = volume;
@@ -29,6 +31,13 @@ public sealed class FixtureArea
     /// <summary>Same root, relative to the volume — the form the queue and the DB speak.</summary>
     public string RootRelativePath { get; }
 
+    /// <summary>
+    /// Absolute paths of everything this area created, in creation order. The run reports them so
+    /// there is a written record of what the harness put on the operator's disks — and, by
+    /// difference, of what the queue then moved away or sent to the Recycle Bin.
+    /// </summary>
+    public IReadOnlyList<string> CreatedPaths => _created;
+
     /// <summary>Absolute path of an entry inside the area.</summary>
     public string FullPath(string relative) =>
         relative.Length == 0 ? RootFullPath : Path.Combine(RootFullPath, relative);
@@ -42,6 +51,7 @@ public sealed class FixtureArea
     {
         var full = FullPath(relative);
         Directory.CreateDirectory(full);
+        _created.Add(full);
         return full;
     }
 
@@ -69,6 +79,7 @@ public sealed class FixtureArea
             written += chunk;
         }
 
+        _created.Add(full);
         return full;
     }
 }

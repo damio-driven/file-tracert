@@ -61,6 +61,8 @@ public sealed class HarnessRunner
 
         ScenarioEnvironment? environment = null;
         QueueDriver? queue = null;
+        FixtureArea? source = null;
+        FixtureArea? target = null;
 
         // Interactive scenarios wait on a human: a wall-clock cap would kill them at the prompt.
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -77,15 +79,16 @@ public sealed class HarnessRunner
                 timeoutCts.Token);
 
             queue = new QueueDriver(environment.Services, line => _console.Write($"    {line}"));
+            source = new FixtureArea(pair.Source, runKey, "source");
+            target = new FixtureArea(pair.Target, runKey, "target");
 
             var context = new ScenarioContext(
-                scenario,
                 _options,
                 pair,
                 environment,
                 queue,
-                new FixtureArea(pair.Source, runKey, "source"),
-                new FixtureArea(pair.Target, runKey, "target"),
+                source,
+                target,
                 _console,
                 timeoutCts.Token);
 
@@ -121,8 +124,53 @@ public sealed class HarnessRunner
         }
         finally
         {
+            // Traceability before anything is torn down: whatever the verdict, the operator gets a
+            // written record of what the harness put on their disks and what left its place.
+            if (source is not null && target is not null)
+                ReportWhatHappenedOnDisk(source, target);
+
             if (queue is not null) await queue.DisposeAsync();
             if (environment is not null) await environment.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// Logs the fixtures this scenario created, which of them are no longer at their original path
+    /// (moved by the queue, or sent to the Recycle Bin of their volume — the harness never empties
+    /// it), and what the target area ended up holding.
+    /// </summary>
+    private void ReportWhatHappenedOnDisk(FixtureArea source, FixtureArea target)
+    {
+        var created = source.CreatedPaths.Concat(target.CreatedPaths).ToList();
+        var gone = created.Where(p => !File.Exists(p) && !Directory.Exists(p)).ToList();
+
+        _console.Write($"    created {created.Count} fixture entr(ies) under " +
+                       $"'{source.RootFullPath}' and '{target.RootFullPath}'");
+
+        if (gone.Count > 0)
+        {
+            _console.Write($"    {gone.Count} left their original path (moved, or in the Recycle Bin " +
+                           $"of their volume): {string.Join("; ", gone)}");
+        }
+
+        var landed = SafeEnumerate(target.RootFullPath);
+        _console.Write($"    target area now holds: {(landed.Count == 0 ? "(nothing)" : string.Join("; ", landed))}");
+    }
+
+    private List<string> SafeEnumerate(string root)
+    {
+        try
+        {
+            return Directory.Exists(root)
+                ? [.. Directory.EnumerateFileSystemEntries(root, "*", SearchOption.AllDirectories)]
+                : [];
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Not silent (§9): the listing is only for the operator's record, so a read error
+            // degrades the trace instead of failing an otherwise good scenario.
+            _console.Write($"    could not list '{root}' for the run record: {ex.GetType().Name}: {ex.Message}");
+            return [];
         }
     }
 }

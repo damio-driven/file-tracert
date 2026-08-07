@@ -22,12 +22,11 @@ public sealed class ScenarioEnvironment : IAsyncDisposable
     private readonly Action<string> _log;
 
     private ScenarioEnvironment(
-        ServiceProvider services, string databaseDirectory, string databasePath,
+        ServiceProvider services, string databaseDirectory,
         int sourceVolumeId, int targetVolumeId, Action<string> log)
     {
         Services = services;
         DatabaseDirectory = databaseDirectory;
-        DatabasePath = databasePath;
         SourceVolumeId = sourceVolumeId;
         TargetVolumeId = targetVolumeId;
         _log = log;
@@ -35,7 +34,6 @@ public sealed class ScenarioEnvironment : IAsyncDisposable
 
     public ServiceProvider Services { get; }
     public string DatabaseDirectory { get; }
-    public string DatabasePath { get; }
     public int SourceVolumeId { get; }
     public int TargetVolumeId { get; }
 
@@ -70,7 +68,7 @@ public sealed class ScenarioEnvironment : IAsyncDisposable
                 : sourceVolumeId;
 
             return new ScenarioEnvironment(
-                provider, databaseDirectory, databasePath, sourceVolumeId, targetVolumeId, log);
+                provider, databaseDirectory, sourceVolumeId, targetVolumeId, log);
         }
         catch
         {

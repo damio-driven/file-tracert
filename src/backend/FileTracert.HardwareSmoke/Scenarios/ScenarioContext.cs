@@ -8,7 +8,6 @@ namespace FileTracert.HardwareSmoke.Scenarios;
 public sealed class ScenarioContext
 {
     public ScenarioContext(
-        Scenario scenario,
         HardwareSmokeOptions options,
         VolumePair pair,
         ScenarioEnvironment environment,
@@ -18,7 +17,6 @@ public sealed class ScenarioContext
         IHarnessConsole console,
         CancellationToken ct)
     {
-        Scenario = scenario;
         Options = options;
         Pair = pair;
         Env = environment;
@@ -29,7 +27,6 @@ public sealed class ScenarioContext
         Ct = ct;
     }
 
-    public Scenario Scenario { get; }
     public HardwareSmokeOptions Options { get; }
     public VolumePair Pair { get; }
     public ScenarioEnvironment Env { get; }
@@ -49,7 +46,7 @@ public sealed class ScenarioContext
 
     public TimeSpan Timeout => TimeSpan.FromSeconds(Options.ScenarioTimeoutSeconds);
 
-    public long LargeFileBytes => (long)Math.Max(1, Options.LargeFileMegabytes) * 1024 * 1024;
+    public long LargeFileBytes => (long)Math.Max(1, Options.LargeFileMegabytes) * 1024L * 1024L;
 
     public void Log(string line) => Console.Write($"    {line}");
 
@@ -61,12 +58,4 @@ public sealed class ScenarioContext
     /// <summary>Indexes the source area — the usual arrange step.</summary>
     public Task<CatalogArranger.IndexResult> IndexSourceAsync(EffectiveFilter filter) =>
         IndexAsync(Source, SourceVolumeId, filter);
-
-    /// <summary>Absolute path of a volume-relative path on the source volume.</summary>
-    public string SourceAbsolute(string volumeRelativePath) =>
-        Path.Combine(Pair.Source.MountPoint, volumeRelativePath);
-
-    /// <summary>Absolute path of a volume-relative path on the target volume.</summary>
-    public string TargetAbsolute(string volumeRelativePath) =>
-        Path.Combine(Pair.Target.MountPoint, volumeRelativePath);
 }
