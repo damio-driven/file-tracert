@@ -312,4 +312,71 @@ public sealed class MoveFolderSafetyTests : IDisposable
             "empty subdirectories are part of the moved folder");
         Directory.Exists(Abs(R("src", "Proj"))).Should().BeFalse("fully-moved source tree must be recycled");
     }
+
+    // ── #15 — no ghost Directories subtree after a cross-volume MoveFolder ────
+
+    [Fact]
+    public async Task MoveFolder_cross_volume_drops_the_source_directory_rows_and_materializes_the_target()
+    {
+        var rootId = SeedDirectory(R("src", "Media"), parentId: null);
+        var subId = SeedDirectory(R("src", "Media", "2024"), parentId: rootId);
+        SeedFile(R("src", "Media", "2024"), subId, "pic.jpg", "img", included: true);
+
+        var dto = await Queue().EnqueueAsync(new CreateJobRequest
+        {
+            Type = JobType.MoveFolder,
+            SourceDirectoryId = rootId,
+            TargetVolumeId = TgtVolId,
+            TargetRelativePath = R("dst"),
+        }, None);
+
+        await Engine().ExecuteJobAsync(dto.Id, None);
+        await AssertCompleted(dto.Id);
+
+        await using var db = _harness.CreateContext();
+
+        // The physically recycled source subtree must not stay navigable in the Catalog:
+        // its rows are de-materialized (the Catalog tree filters on IsMaterialized).
+        var srcRoot = await db.Directories.AsNoTracking().SingleAsync(d => d.Id == rootId);
+        var srcSub = await db.Directories.AsNoTracking().SingleAsync(d => d.Id == subId);
+        srcRoot.IsMaterialized.Should().BeFalse("the source folder was recycled — a ghost tree must not be navigable");
+        srcSub.IsMaterialized.Should().BeFalse();
+
+        // The target tree is materialized and holds the moved file.
+        var tgtRoot = await db.Directories.AsNoTracking()
+            .SingleAsync(d => d.VolumeId == TgtVolId && d.MaterializedPath == R("dst", "Media"));
+        tgtRoot.IsMaterialized.Should().BeTrue();
+        var tgtSub = await db.Directories.AsNoTracking()
+            .SingleAsync(d => d.VolumeId == TgtVolId && d.MaterializedPath == R("dst", "Media", "2024"));
+        tgtSub.IsMaterialized.Should().BeTrue();
+
+        var file = await db.Files.AsNoTracking().SingleAsync(f => f.Name == "pic.jpg");
+        file.VolumeId.Should().Be(TgtVolId);
+        file.DirectoryId.Should().Be(tgtSub.Id);
+    }
+
+    [Fact]
+    public async Task MoveFolder_keeps_source_directory_rows_materialized_when_content_was_left_behind()
+    {
+        // A directory kept on disk because it still holds uncopied content must STAY
+        // navigable in the Catalog — de-materializing it would hide real files.
+        var dirId = SeedDirectory(R("src", "Mixed"), parentId: null);
+        SeedFile(R("src", "Mixed"), dirId, "in.jpg", "copied", included: true);
+        WriteFile(R("src", "Mixed", "stray.txt"), "left behind");
+
+        var dto = await Queue().EnqueueAsync(new CreateJobRequest
+        {
+            Type = JobType.MoveFolder,
+            SourceDirectoryId = dirId,
+            TargetVolumeId = TgtVolId,
+            TargetRelativePath = R("dst"),
+        }, None);
+
+        await Engine().ExecuteJobAsync(dto.Id, None);
+        await AssertCompleted(dto.Id);
+
+        await using var db = _harness.CreateContext();
+        var srcDir = await db.Directories.AsNoTracking().SingleAsync(d => d.Id == dirId);
+        srcDir.IsMaterialized.Should().BeTrue("the directory physically survives with leftover content");
+    }
 }

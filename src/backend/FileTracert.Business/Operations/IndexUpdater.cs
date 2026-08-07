@@ -26,7 +26,13 @@ public sealed class IndexUpdater
         _logger = logger;
     }
 
-    public async Task UpdateAfterCompletionAsync(OperationJob job, CancellationToken ct)
+    public Task UpdateAfterCompletionAsync(OperationJob job, CancellationToken ct) =>
+        UpdateAfterCompletionAsync(job, removedSourceDirPaths: [], ct);
+
+    /// <param name="removedSourceDirPaths">Source directories the engine physically removed
+    /// during a cross-volume MoveFolder — exactly these rows get de-materialized (#15).</param>
+    public async Task UpdateAfterCompletionAsync(
+        OperationJob job, IReadOnlyCollection<string> removedSourceDirPaths, CancellationToken ct)
     {
         _logger.LogDebug("IndexUpdater: updating index for job {Id} type={Type}.", job.Id, job.Type);
 
@@ -36,7 +42,7 @@ public sealed class IndexUpdater
             case JobType.RenameFile:    await RenameFileIndexAsync(job, ct); break;
             case JobType.RenameFolder:  await RenameFolderIndexAsync(job, ct); break;
             case JobType.MoveFile:      await MoveFileIndexAsync(job, ct); break;
-            case JobType.MoveFolder:    await MoveFolderIndexAsync(job, ct); break;
+            case JobType.MoveFolder:    await MoveFolderIndexAsync(job, removedSourceDirPaths, ct); break;
         }
     }
 
@@ -90,12 +96,13 @@ public sealed class IndexUpdater
         await _fts.UpsertAsync(file.Id, file.Name, item.TargetRelativePath, ct);
     }
 
-    private async Task MoveFolderIndexAsync(OperationJob job, CancellationToken ct)
+    private async Task MoveFolderIndexAsync(
+        OperationJob job, IReadOnlyCollection<string> removedSourceDirPaths, CancellationToken ct)
     {
         if (job.IsIntraVolume)
             await MoveFolderIntraIndexAsync(job, ct);
         else
-            await MoveFolderCrossIndexAsync(job, ct);
+            await MoveFolderCrossIndexAsync(job, removedSourceDirPaths, ct);
     }
 
     private async Task MoveFolderIntraIndexAsync(OperationJob job, CancellationToken ct)
@@ -135,13 +142,37 @@ public sealed class IndexUpdater
         await UpdateFtsForDirsAsync(dirs, ct);
     }
 
-    private async Task MoveFolderCrossIndexAsync(OperationJob job, CancellationToken ct)
+    private async Task MoveFolderCrossIndexAsync(
+        OperationJob job, IReadOnlyCollection<string> removedSourceDirPaths, CancellationToken ct)
     {
         if (job.TargetVolumeId is null) return;
         var targetVolumeId = job.TargetVolumeId.Value;
 
+        // Materialize the target tree the engine physically created: every source subtree
+        // directory row gets its mapped counterpart under the destination root. Done BEFORE
+        // de-materializing the source rows, which are the mapping input.
+        var marker = job.Items.FirstOrDefault(i =>
+            i.FileId is null &&
+            string.Equals(i.TargetRelativePath, job.TargetRelativePath, StringComparison.OrdinalIgnoreCase));
+        if (marker is not null && job.SourceVolumeId is not null)
+        {
+            var srcRoot = marker.SourceRelativePath;
+            var prefixWithSep = srcRoot + "\\";
+            var srcDirPaths = await _db.Directories.AsNoTracking()
+                .Where(d => d.VolumeId == job.SourceVolumeId.Value &&
+                            (d.MaterializedPath == srcRoot || d.MaterializedPath.StartsWith(prefixWithSep)))
+                .Select(d => d.MaterializedPath)
+                .ToListAsync(ct);
+
+            foreach (var srcDirPath in srcDirPaths)
+            {
+                var mapped = marker.TargetRelativePath + srcDirPath[srcRoot.Length..];
+                var dir = await FindOrCreateDirAsync(targetVolumeId, mapped, ct);
+                dir.IsMaterialized = true; // physically created by the engine
+            }
+        }
+
         var fileItems = job.Items.Where(i => i.FileId.HasValue).ToList();
-        if (fileItems.Count == 0) return;
 
         // Load every affected file up front instead of one query per item.
         var fileIds = fileItems.Select(i => i.FileId!.Value).ToList();
@@ -168,6 +199,26 @@ public sealed class IndexUpdater
             file.VolumeId = targetVolumeId;
             file.DirectoryId = targetDir.Id;
             ftsUpserts.Add((file.Id, file.Name, item.TargetRelativePath));
+        }
+
+        // #15: de-materialize exactly the source directories the engine physically removed.
+        // The Catalog tree filters on IsMaterialized, so the recycled subtree stops being
+        // navigable; rows are kept (no hard-delete, §6) so soft-deleted file rows keep a
+        // valid FK. Directories left behind with uncopied content are NOT in the list and
+        // stay visible.
+        if (removedSourceDirPaths.Count > 0 && job.SourceVolumeId is not null)
+        {
+            var removedSet = new HashSet<string>(removedSourceDirPaths, StringComparer.OrdinalIgnoreCase);
+            // The removed paths all sit under the moved folder's root (the shortest path in
+            // the set) — bound the query to that subtree instead of scanning the volume.
+            var subtreeRoot = removedSourceDirPaths.OrderBy(p => p.Length).First();
+            var subtreePrefix = subtreeRoot + "\\";
+            var candidates = await _db.Directories
+                .Where(d => d.VolumeId == job.SourceVolumeId.Value &&
+                            (d.MaterializedPath == subtreeRoot || d.MaterializedPath.StartsWith(subtreePrefix)))
+                .ToListAsync(ct);
+            foreach (var ghost in candidates.Where(d => removedSet.Contains(d.MaterializedPath)))
+                ghost.IsMaterialized = false;
         }
 
         // C5: one round-trip for the whole batch of file re-points, not one SaveChanges per file.

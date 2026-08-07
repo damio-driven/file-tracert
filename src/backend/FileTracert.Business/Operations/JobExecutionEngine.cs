@@ -209,9 +209,11 @@ public sealed class JobExecutionEngine
         {
             // Last line of defense before recycling the source: honour a concurrent cancel.
             if (await AbortIfCancelledAsync(job)) return;
-            await DeleteSourcesAsync(job, ct);
+            var removedSourceDirs = await DeleteSourcesAsync(job, ct);
             await CompleteJobAsync(job, ct);
-            await _indexUpdater.UpdateAfterCompletionAsync(job, ct);
+            // #15: the index must drop exactly the source directories that were physically
+            // removed — surviving ones (uncopied leftovers) stay navigable.
+            await _indexUpdater.UpdateAfterCompletionAsync(job, removedSourceDirs, ct);
         }
     }
 
@@ -373,7 +375,8 @@ public sealed class JobExecutionEngine
 
     // ── delete source phase ───────────────────────────────────────────────────
 
-    private async Task DeleteSourcesAsync(OperationJob job, CancellationToken ct)
+    /// <summary>Returns the source directory paths physically removed (MoveFolder only).</summary>
+    private async Task<List<string>> DeleteSourcesAsync(OperationJob job, CancellationToken ct)
     {
         // Nothing below this line is reversible — bail out if cancellation raced in.
         ct.ThrowIfCancellationRequested();
@@ -407,29 +410,28 @@ public sealed class JobExecutionEngine
                 _mover.DeleteToRecycleBin(srcGuid, item.SourceRelativePath);
                 item.State = JobItemState.Done;
             }
-        }
-        else
-        {
-            // MoveFolder cross-volume: delete individual source files first.
-            foreach (var item in job.Items.Where(i => i.State == JobItemState.Verified))
-            {
-                ct.ThrowIfCancellationRequested();
-                _mover.DeleteToRecycleBin(srcGuid, item.SourceRelativePath);
-                item.State = JobItemState.Done;
-            }
 
             await _db.SaveChangesAsync(ct);
+            return [];
+        }
 
-            // Then recycle the source directory subtree. The old code picked the SHORTEST item
-            // DirPath as "the root" and recycled only that — when the files live in deep subfolders
-            // that shortest path is a leaf subfolder, so the real root and every intermediate dir
-            // survived. Model the whole subtree explicitly (as the copy half does per item) and
-            // recycle deepest-first so each directory is emptied before its parent.
-            await DeleteSourceSubtreeAsync(job, srcGuid, ct);
-            return;
+        // MoveFolder cross-volume: delete individual source files first.
+        foreach (var item in job.Items.Where(i => i.State == JobItemState.Verified))
+        {
+            ct.ThrowIfCancellationRequested();
+            _mover.DeleteToRecycleBin(srcGuid, item.SourceRelativePath);
+            item.State = JobItemState.Done;
         }
 
         await _db.SaveChangesAsync(ct);
+
+        // Then remove the source directory subtree (empty dirs only — see
+        // DeleteSourceSubtreeAsync). The old code picked the SHORTEST item DirPath as
+        // "the root" and recycled only that — when the files live in deep subfolders that
+        // shortest path is a leaf subfolder, so the real root and every intermediate dir
+        // survived. Model the whole subtree explicitly and go deepest-first so each
+        // directory is emptied before its parent.
+        return await DeleteSourceSubtreeAsync(job, srcGuid, ct);
     }
 
     /// <summary>
