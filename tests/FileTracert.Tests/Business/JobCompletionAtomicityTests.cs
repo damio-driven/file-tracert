@@ -1,0 +1,192 @@
+using FileTracert.Business.Operations;
+using FileTracert.Contracts.Enums;
+using FileTracert.Contracts.Operations;
+using FileTracert.Contracts.Paging;
+using FileTracert.Contracts.Search;
+using FileTracert.Data.Entities;
+using FileTracert.Platform;
+using FileTracert.Tests.Data;
+using FluentAssertions;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
+using NSubstitute;
+
+namespace FileTracert.Tests.Business;
+
+/// <summary>
+/// Review finding #7: the index update used to run AFTER the Completed commit, without a
+/// catch — a transient failure (SQLITE_BUSY) flipped an already-completed job to Failed,
+/// and re-running completion subtracted RequiredBytesTarget from FreeBytesLastKnown a
+/// second time. The completion must be atomic: index update inside the same commit as
+/// Completed, so a failure rolls the whole completion back (job re-runs from checkpoint)
+/// and the space fold applies exactly once.
+/// </summary>
+[Trait("Category", "Platform")]
+public sealed class JobCompletionAtomicityTests : IDisposable
+{
+    private const long InitialFreeBytes = 1_000_000;
+
+    private readonly SqliteInMemoryContext _harness;
+    private readonly Win32FileMover _mover;
+    private readonly string _volumeGuid;
+    private readonly string _mountPoint;
+    private readonly string _relRoot;
+    private readonly string _absRoot;
+
+    public JobCompletionAtomicityTests()
+    {
+        _harness = new SqliteInMemoryContext();
+        using (var setup = _harness.CreateContext())
+            setup.Database.ExecuteSqlRaw("PRAGMA foreign_keys = OFF");
+
+        _mover = new Win32FileMover(NullLogger<Win32FileMover>.Instance);
+
+        var probe = new Win32VolumeProbe(
+            new WmiPhysicalDiskResolver(NullLogger<WmiPhysicalDiskResolver>.Instance),
+            NullLogger<Win32VolumeProbe>.Instance);
+
+        var tempPath = Path.GetTempPath();
+        var vol = probe.EnumerateVolumes()
+            .Where(v => v.MountPoints.Count > 0)
+            .OrderByDescending(v => v.MountPoints[0].Length)
+            .First(v => tempPath.StartsWith(v.MountPoints[0], StringComparison.OrdinalIgnoreCase));
+
+        _volumeGuid = vol.VolumeGuid;
+        _mountPoint = vol.MountPoints[0];
+        _absRoot = Path.Combine(tempPath, $"ft-atomic-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(_absRoot);
+        _relRoot = Path.GetRelativePath(_mountPoint, _absRoot);
+    }
+
+    public void Dispose()
+    {
+        _harness.Dispose();
+        if (Directory.Exists(_absRoot))
+            Directory.Delete(_absRoot, recursive: true);
+    }
+
+    private string R(params string[] parts) => Path.Combine([_relRoot, .. parts]);
+    private string Abs(string rel) => Path.GetFullPath(Path.Combine(_mountPoint, rel));
+
+    private JobExecutionEngine MakeEngine(IFileSearchIndex fts)
+    {
+        var ledger = Substitute.For<ISpaceLedger>();
+        ledger.ReleaseAsync(default, default).ReturnsForAnyArgs(Task.CompletedTask);
+        ledger.ReleaseInMemoryAsync(default, default).ReturnsForAnyArgs(Task.CompletedTask);
+
+        var db = _harness.CreateContext();
+        var indexUpdater = new IndexUpdater(db, fts, NullLogger<IndexUpdater>.Instance);
+        var notifications = new FileTracert.Business.Notifications.NotificationService(db);
+        return new JobExecutionEngine(db, _mover, ledger, indexUpdater, notifications,
+            TimeProvider.System, NullLogger<JobExecutionEngine>.Instance);
+    }
+
+    [Fact]
+    public async Task Index_update_failing_once_never_flips_Completed_and_space_folds_exactly_once()
+    {
+        const string content = "atomic completion payload";
+        var srcRel = R("src", "photo.jpg");
+        var dstRel = R("dst", "photo.jpg");
+
+        Directory.CreateDirectory(Abs(R("src")));
+        File.WriteAllText(Abs(srcRel), content);
+        Directory.CreateDirectory(Abs(R("dst")));
+        File.WriteAllText(Abs(dstRel), content); // already finalized — job checkpointed at DeletingSource
+
+        int jobId;
+        using (var db = _harness.CreateContext())
+        {
+            db.Volumes.Add(new Volume
+            {
+                Id = 1, VolumeGuid = _volumeGuid, FileSystem = "NTFS",
+                FreeBytesLastKnown = InitialFreeBytes, IsOnline = true,
+            });
+            db.Directories.Add(new DirectoryNode
+            {
+                Id = 1, VolumeId = 1, Name = "src", MaterializedPath = R("src"),
+                IsMaterialized = true, CreatedUtc = DateTime.UtcNow, UpdatedUtc = DateTime.UtcNow,
+            });
+            db.Files.Add(new FileEntry
+            {
+                Id = 10, VolumeId = 1, DirectoryId = 1, Name = "photo.jpg", Extension = ".jpg",
+                SizeBytes = content.Length, IsIncluded = true, IsPresent = true,
+                CreatedUtc = DateTime.UtcNow, UpdatedUtc = DateTime.UtcNow,
+                FileModifiedUtc = DateTime.UtcNow, LastIndexedUtc = DateTime.UtcNow,
+            });
+            var job = new OperationJob
+            {
+                Id = 1, Type = JobType.MoveFile, State = JobState.DeletingSource,
+                IsIntraVolume = false, SourceVolumeId = 1, TargetVolumeId = 1,
+                TargetRelativePath = dstRel, TotalBytes = content.Length,
+                RequiredBytesTarget = content.Length, FreedBytesSource = 0,
+                SequenceOrder = 1, CreatedUtc = DateTime.UtcNow, UpdatedUtc = DateTime.UtcNow,
+            };
+            job.Items.Add(new OperationJobItem
+            {
+                FileId = 10,
+                SourceRelativePath = srcRel, TargetRelativePath = dstRel,
+                SizeBytes = content.Length, State = JobItemState.Verified,
+                BytesCopied = content.Length,
+                CreatedUtc = DateTime.UtcNow, UpdatedUtc = DateTime.UtcNow,
+            });
+            db.OperationJobs.Add(job);
+            db.SaveChanges();
+            jobId = job.Id;
+        }
+
+        var fts = new FailOnceFileSearchIndex();
+
+        // Attempt 1: the FTS upsert fails (transient SQLITE_BUSY analogue). The whole
+        // completion must roll back — the job must NOT end up Failed (its files moved fine)
+        // and must stay at a runnable checkpoint.
+        await MakeEngine(fts).ExecuteJobAsync(jobId, CancellationToken.None);
+        fts.FailedOnce.Should().BeTrue("the failure injection must actually have fired");
+
+        using (var check = _harness.CreateContext())
+        {
+            var afterFirst = await check.OperationJobs.AsNoTracking().SingleAsync(j => j.Id == jobId);
+            afterFirst.State.Should().NotBe(JobState.Failed,
+                "a failed index update must not flip a physically-successful job to Failed");
+        }
+
+        // Attempt 2: the worker re-picks the job; the index update now succeeds.
+        await MakeEngine(fts).ExecuteJobAsync(jobId, CancellationToken.None);
+
+        using var final = _harness.CreateContext();
+        var job2 = await final.OperationJobs.Include(j => j.Items).AsNoTracking().SingleAsync(j => j.Id == jobId);
+        job2.State.Should().Be(JobState.Completed, $"error='{job2.ErrorMessage}'");
+        job2.Items.Single().State.Should().Be(JobItemState.Done);
+
+        // Space fold exactly once, no double decrement across the retry.
+        var volume = await final.Volumes.AsNoTracking().SingleAsync(v => v.Id == 1);
+        volume.FreeBytesLastKnown.Should().Be(InitialFreeBytes - content.Length);
+
+        // The index update did land: the file row points at the target directory.
+        var file = await final.Files.AsNoTracking().SingleAsync(f => f.Id == 10);
+        var dir = await final.Directories.AsNoTracking().SingleAsync(d => d.Id == file.DirectoryId);
+        dir.MaterializedPath.Should().Be(R("dst"));
+    }
+
+    /// <summary>Throws on the first Upsert (transient-failure analogue), succeeds afterwards.</summary>
+    private sealed class FailOnceFileSearchIndex : IFileSearchIndex
+    {
+        public bool FailedOnce { get; private set; }
+
+        public Task UpsertAsync(int fileId, string name, string path, CancellationToken ct)
+        {
+            if (!FailedOnce)
+            {
+                FailedOnce = true;
+                throw new InvalidOperationException("simulated transient failure (SQLITE_BUSY)");
+            }
+            return Task.CompletedTask;
+        }
+
+        public Task ClearVolumeAsync(int volumeId, CancellationToken ct) => Task.CompletedTask;
+        public Task SyncVolumeFromDbAsync(int volumeId, CancellationToken ct) => Task.CompletedTask;
+        public Task RebuildAsync(CancellationToken ct) => Task.CompletedTask;
+        public Task RemoveAsync(int fileId, CancellationToken ct) => Task.CompletedTask;
+        public Task<PagedResult<int>> SearchAsync(FileSearchQuery query, CancellationToken ct)
+            => Task.FromResult(new PagedResult<int>([], 0, query.Skip, query.Take));
+    }
+}

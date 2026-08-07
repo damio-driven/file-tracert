@@ -151,7 +151,6 @@ public sealed class JobExecutionEngine
         }
 
         await CompleteJobAsync(job, ct);
-        await _indexUpdater.UpdateAfterCompletionAsync(job, ct);
     }
 
     /// <summary>
@@ -234,11 +233,11 @@ public sealed class JobExecutionEngine
         {
             // Last line of defense before recycling the source: honour a concurrent cancel.
             if (await AbortIfCancelledAsync(job)) return;
+            // #15: CompleteJobAsync passes the physically removed source directories to the
+            // index update so exactly those rows are dropped — surviving ones (uncopied
+            // leftovers) stay navigable.
             var removedSourceDirs = await DeleteSourcesAsync(job, ct);
-            await CompleteJobAsync(job, ct);
-            // #15: the index must drop exactly the source directories that were physically
-            // removed — surviving ones (uncopied leftovers) stay navigable.
-            await _indexUpdater.UpdateAfterCompletionAsync(job, removedSourceDirs, ct);
+            await CompleteJobAsync(job, removedSourceDirs, ct);
         }
     }
 
@@ -648,12 +647,21 @@ public sealed class JobExecutionEngine
             return;
         }
 
+        // Either a genuine concurrent transition, or our own completion transaction rolled
+        // back (index-update failure) leaving the tracker ahead of the DB. Both resolve the
+        // same way: keep the committed state; if it is still runnable the worker re-picks
+        // the job and it resumes from its checkpoint.
         _logger.LogWarning(
-            "Job {Id}: state changed concurrently to {State} — execution aborted, committed state kept.",
+            "Job {Id}: committed state is {State}, diverging from this run's attempted write — " +
+            "execution aborted, committed state kept.",
             job.Id, job.State);
     }
 
-    private async Task CompleteJobAsync(OperationJob job, CancellationToken ct)
+    private Task CompleteJobAsync(OperationJob job, CancellationToken ct) =>
+        CompleteJobAsync(job, removedSourceDirPaths: [], ct);
+
+    private async Task CompleteJobAsync(
+        OperationJob job, IReadOnlyCollection<string> removedSourceDirPaths, CancellationToken ct)
     {
         job.State = JobState.Completed;
         job.CompletedUtc = DateTime.UtcNow;
@@ -672,11 +680,16 @@ public sealed class JobExecutionEngine
                 job.SourceVolume.FreeBytesLastKnown += job.FreedBytesSource;
         }
 
-        // Terminal state + ledger release must commit atomically (finding #5): a crash
-        // in between would leave a phantom IsActive reservation that under-counts free
-        // space forever. The in-memory mirror follows only after the durable commit.
+        // One atomic completion commit:
+        // - catalog/FTS update INSIDE it (finding #7): a failure rolls the whole completion
+        //   back — the job stays at its checkpoint and re-runs — instead of flipping an
+        //   already-committed Completed to Failed; and since the space fold above commits
+        //   with it, a retry can never subtract RequiredBytesTarget twice.
+        // - ledger release INSIDE it (finding #5): a crash can't leave a phantom IsActive
+        //   reservation on a terminal job. The in-memory mirror follows after the commit.
         await using (var tx = await _db.Database.BeginTransactionAsync(ct))
         {
+            await _indexUpdater.UpdateAfterCompletionAsync(job, removedSourceDirPaths, ct);
             await _db.SaveChangesAsync(ct);
             await SpaceLedger.DeactivateEntriesAsync(_db, job.Id, ct);
             await tx.CommitAsync(ct);
