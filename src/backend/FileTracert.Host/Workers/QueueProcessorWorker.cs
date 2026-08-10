@@ -44,6 +44,14 @@ public sealed class QueueProcessorWorker : BackgroundService
     {
         // Restore the in-memory ledger from DB before processing any jobs.
         await _ledger.RebuildFromDbAsync(stoppingToken);
+
+        // The world can have moved while the service was down — a drive reconnected, space freed —
+        // and the volume sync only reports offline→online TRANSITIONS: a job parked before the
+        // shutdown would wait for an event that already happened. One revaluation pass against the
+        // reality found at startup closes that hole (and the crash window between the sync's commit
+        // and its own revaluation call).
+        await RevaluateBlockedJobsAsync(stoppingToken);
+
         _logger.LogInformation("QueueProcessorWorker started.");
 
         while (!stoppingToken.IsCancellationRequested)
@@ -81,12 +89,7 @@ public sealed class QueueProcessorWorker : BackgroundService
                 // Blocked(InsufficientSpace) job is waiting for — wake those up so they
                 // restart on their own (fresh scope: the engine's scope is already spent).
                 if (await IsCompletedAsync(jobId.Value, stoppingToken))
-                {
-                    using var revalScope = _services.CreateScope();
-                    await revalScope.ServiceProvider
-                        .GetRequiredService<BlockedJobRevaluator>()
-                        .RevaluateAsync(stoppingToken);
-                }
+                    await RevaluateBlockedJobsAsync(stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -100,6 +103,16 @@ public sealed class QueueProcessorWorker : BackgroundService
         }
 
         _logger.LogInformation("QueueProcessorWorker stopping.");
+    }
+
+    /// <summary>
+    /// Runs one revaluation pass on a fresh scope (the engine's own scope is already spent by the
+    /// time this is called after a completion).
+    /// </summary>
+    private async Task RevaluateBlockedJobsAsync(CancellationToken ct)
+    {
+        using var scope = _services.CreateScope();
+        await scope.ServiceProvider.GetRequiredService<BlockedJobRevaluator>().RevaluateAsync(ct);
     }
 
     private async Task<bool> IsCompletedAsync(int jobId, CancellationToken ct)
