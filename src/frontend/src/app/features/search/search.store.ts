@@ -105,14 +105,22 @@ export const SearchStore = signalStore(
       };
     }
 
+    // Latest wins: filters re-run the search on every change, and an earlier query over a
+    // wider result set can land after a later, narrower one. Without this the grid would show
+    // results that contradict the filters on screen.
+    let latestRequest = 0;
+
     async function doSearch(skip: number): Promise<void> {
       const text = store.text().trim();
       if (!text) return;
+      const request = ++latestRequest;
       patchState(store, { loading: true, error: null, currentSkip: skip });
       try {
         const results = await firstValueFrom(api.search(buildRequest(skip)));
+        if (request !== latestRequest) return;
         patchState(store, { results, loading: false });
       } catch (e) {
+        if (request !== latestRequest) return;
         patchState(store, { error: (e as Error).message, loading: false });
       }
     }

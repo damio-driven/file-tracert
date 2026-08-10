@@ -1,6 +1,6 @@
 import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { of, throwError } from 'rxjs';
+import { delay, of, throwError } from 'rxjs';
 import { vi } from 'vitest';
 
 import { SearchApi } from '../../core/api/search-api.service';
@@ -74,6 +74,21 @@ describe('SearchStore', () => {
     const request = searchSpy.mock.calls.at(-1)![0];
     expect(request.modifiedFrom).toBe('2026-07-03T00:00:00.000Z');
     expect(request.modifiedTo).toBe('2026-07-03T23:59:59.999Z');
+  });
+
+  it('ignores a stale response that lands after a newer search', async () => {
+    const slowPage: PagedResult<SearchResultDto> = { ...mockResult, totalCount: 999 };
+    let call = 0;
+    const searchSpy = vi.fn((_req: SearchRequest) =>
+      ++call === 1 ? of(slowPage).pipe(delay(30)) : of(mockResult));
+    const store = setup({ search: searchSpy });
+    store.setQuery('photo');
+
+    const stale = store.search();
+    const fresh = store.search();
+    await Promise.all([stale, fresh]);
+
+    expect(store.results()?.totalCount).toBe(1);
   });
 
   it('setFilters merges partial filter state', () => {
