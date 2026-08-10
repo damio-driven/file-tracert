@@ -68,6 +68,28 @@ describe('Search screen — modified-date filter', () => {
     expect(new Date(2026, 6, 3, 14, 20).getTime()).toBeLessThan(to.getTime());
   });
 
+  it('keeps the active bound when the typed day cannot be read', async () => {
+    await pick(dateInputs()[0], '2026-07-03');
+    const applied = lastRequest().modifiedFrom;
+    const callsBefore = searchSpy.mock.calls.length;
+
+    // Mid-typing value: a 2-digit year is a syntactically valid date the util rejects.
+    await pick(dateInputs()[0], '0026-07-03');
+
+    expect(searchSpy.mock.calls.length).toBe(callsBefore);
+    expect(lastRequest().modifiedFrom).toBe(applied);
+  });
+
+  it('drags the other end along instead of sending an inverted range', async () => {
+    await pick(dateInputs()[1], '2026-07-03');
+    await pick(dateInputs()[0], '2026-07-05');
+
+    const from = new Date(lastRequest().modifiedFrom!);
+    const to = new Date(lastRequest().modifiedTo!);
+    expect(from.getTime()).toBeLessThan(to.getTime());
+    expect(to.getDate()).toBe(5);
+  });
+
   it('clears both bounds and re-runs the search', async () => {
     await pick(dateInputs()[0], '2026-07-03');
     await pick(dateInputs()[1], '2026-07-04');

@@ -17,9 +17,17 @@ export function localDayStartToUtcIso(day: string): string | null {
   return toUtcIso(day, 0, 0, 0, 0);
 }
 
-/** Last millisecond of the picked local day, as an ISO UTC instant. */
+/**
+ * Last instant of the picked local day, as an ISO UTC instant.
+ *
+ * The bound is compared inclusively against timestamps that carry 100 ns ticks on NTFS,
+ * so stopping at .999 would drop a file modified at 23:59:59.9997. JavaScript dates have
+ * no sub-millisecond resolution, but `toISOString()` always emits exactly three fractional
+ * digits, so widening the tail to the last tick is a safe suffix swap.
+ */
 export function localDayEndToUtcIso(day: string): string | null {
-  return toUtcIso(day, 23, 59, 59, 999);
+  const endOfDay = toUtcIso(day, 23, 59, 59, 999);
+  return endOfDay === null ? null : endOfDay.replace('.999Z', '.9999999Z');
 }
 
 /** Inverse mapping, so a bound already in the store can be shown back in the input. */
@@ -33,9 +41,12 @@ export function utcIsoToLocalDay(iso: string | null | undefined): string {
     return '';
   }
 
+  // The year is padded too: `<input type="date">` rejects "150-07-03" as an invalid value
+  // and renders an empty field, which would hide a bound that is still being applied.
+  const year = `${instant.getFullYear()}`.padStart(4, '0');
   const month = `${instant.getMonth() + 1}`.padStart(2, '0');
   const day = `${instant.getDate()}`.padStart(2, '0');
-  return `${instant.getFullYear()}-${month}-${day}`;
+  return `${year}-${month}-${day}`;
 }
 
 function toUtcIso(

@@ -41,6 +41,16 @@ describe('day-range.util', () => {
     expect(end - start).toBe(86_400_000 - 1);
   });
 
+  it('extends the upper bound past millisecond resolution', () => {
+    // NTFS timestamps carry 100 ns ticks: a bound truncated at .999 drops files
+    // modified in the last fraction of the day.
+    expect(localDayEndToUtcIso('2026-07-03')!.endsWith('.9999999Z')).toBe(true);
+  });
+
+  it('pads a year below 1000 so the date input can render the bound back', () => {
+    expect(utcIsoToLocalDay(localDayStartToUtcIso('0150-07-03'))).toBe('0150-07-03');
+  });
+
   it('reads an ISO bound back as the local day it belongs to', () => {
     expect(utcIsoToLocalDay(localDayStartToUtcIso('2026-07-03'))).toBe('2026-07-03');
     expect(utcIsoToLocalDay(localDayEndToUtcIso('2026-07-03'))).toBe('2026-07-03');

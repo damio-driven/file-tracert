@@ -62,41 +62,76 @@ export class Search implements OnInit {
 
   protected setScope(scope: SearchScope): void {
     this.store.setScope(scope);
-    if (this.store.text()) void this.store.search();
+    this.rerun();
   }
 
   protected setSort(sort: SearchSort): void {
     const wasSort = this.store.sort() === sort;
     this.store.setSort(sort, wasSort && !this.store.desc());
-    if (this.store.text()) void this.store.search();
+    this.rerun();
   }
 
   protected toggleCategory(cat: FileCategory): void {
     const current = this.store.filters().category;
     this.store.setFilters({ category: current === cat ? null : cat });
-    if (this.store.text()) void this.store.search();
+    this.rerun();
   }
 
   protected toggleOnlineOnly(): void {
     this.store.setFilters({ onlineOnly: !this.store.filters().onlineOnly });
-    if (this.store.text()) void this.store.search();
+    this.rerun();
   }
 
   // The date inputs speak local calendar days; the API speaks UTC instants. The bounds
   // widen to cover the whole picked day, so "fino al 3/7" keeps the files modified that
   // afternoon (see day-range.util).
   protected setModifiedFrom(day: string): void {
-    this.store.setFilters({ modifiedFrom: localDayStartToUtcIso(day) });
-    if (this.store.text()) void this.store.search();
+    this.setBound('from', day);
   }
 
   protected setModifiedTo(day: string): void {
-    this.store.setFilters({ modifiedTo: localDayEndToUtcIso(day) });
-    if (this.store.text()) void this.store.search();
+    this.setBound('to', day);
   }
 
   protected clearDates(): void {
     this.store.setFilters({ modifiedFrom: null, modifiedTo: null });
+    this.rerun();
+  }
+
+  /**
+   * An empty field clears that end. A day the util cannot read (a half-typed year, a value
+   * a non-native picker produced) leaves the applied filter alone: dropping it there would
+   * re-run the search unfiltered while the input still showed a date. A bound that would
+   * invert the range drags the other end with it, instead of sending from > to and
+   * answering "nessun risultato" for a reason nothing on screen explains.
+   */
+  private setBound(edge: 'from' | 'to', day: string): void {
+    if (day.trim() === '') {
+      this.store.setFilters(edge === 'from' ? { modifiedFrom: null } : { modifiedTo: null });
+      this.rerun();
+      return;
+    }
+
+    const start = localDayStartToUtcIso(day);
+    const end = localDayEndToUtcIso(day);
+    if (start === null || end === null) {
+      return;
+    }
+
+    const { modifiedFrom, modifiedTo } = this.store.filters();
+    if (edge === 'from') {
+      const inverted = modifiedTo !== null && Date.parse(start) > Date.parse(modifiedTo);
+      this.store.setFilters({ modifiedFrom: start, ...(inverted ? { modifiedTo: end } : {}) });
+    } else {
+      const inverted = modifiedFrom !== null && Date.parse(end) < Date.parse(modifiedFrom);
+      this.store.setFilters({ modifiedTo: end, ...(inverted ? { modifiedFrom: start } : {}) });
+    }
+
+    this.rerun();
+  }
+
+  /** A filter change only re-runs the search once a query is actually active. */
+  private rerun(): void {
     if (this.store.text()) void this.store.search();
   }
 
