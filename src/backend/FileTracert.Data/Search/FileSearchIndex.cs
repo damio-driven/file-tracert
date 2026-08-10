@@ -237,12 +237,12 @@ public sealed class FileSearchIndex : IFileSearchIndex
         if (q.ModifiedFrom.HasValue)
         {
             sb.AppendLine("  AND f.ModifiedUtc >= $modFrom");
-            p.Add(("$modFrom", q.ModifiedFrom.Value.ToString("o")));
+            p.Add(("$modFrom", AsUtc(q.ModifiedFrom.Value)));
         }
         if (q.ModifiedTo.HasValue)
         {
             sb.AppendLine("  AND f.ModifiedUtc <= $modTo");
-            p.Add(("$modTo", q.ModifiedTo.Value.ToString("o")));
+            p.Add(("$modTo", AsUtc(q.ModifiedTo.Value)));
         }
         if (q.VolumeId.HasValue)
         {
@@ -256,4 +256,20 @@ public sealed class FileSearchIndex : IFileSearchIndex
 
         return (sb.ToString(), p);
     }
+
+    /// <summary>
+    /// Normalises a bound to UTC and hands it over as a <see cref="DateTime"/>, not as a
+    /// string: the provider then writes it in the same TEXT layout it used for the column
+    /// (<c>yyyy-MM-dd HH:mm:ss.FFFFFFF</c>). An ISO round-trip string ("…T14:20:29.912Z")
+    /// compares lexically against that layout and loses — ' ' (0x20) sorts before 'T' (0x54)
+    /// — so a midnight lower bound used to drop the entire day (review finding #11).
+    /// Comparing on <c>julianday()</c> would be format-proof but would forfeit the index on
+    /// ModifiedUtc, which also serves the Date sort.
+    /// </summary>
+    private static DateTime AsUtc(DateTime bound) => bound.Kind switch
+    {
+        DateTimeKind.Utc => bound,
+        DateTimeKind.Local => bound.ToUniversalTime(),
+        _ => DateTime.SpecifyKind(bound, DateTimeKind.Utc),
+    };
 }

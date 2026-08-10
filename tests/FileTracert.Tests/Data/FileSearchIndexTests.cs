@@ -58,7 +58,8 @@ public sealed class FileSearchIndexTests
     }
 
     private static async Task<FileEntry> AddFileAsync(
-        FileTracertDbContext ctx, int volumeId, int dirId, string name, string ext, FileCategory cat = FileCategory.Image)
+        FileTracertDbContext ctx, int volumeId, int dirId, string name, string ext,
+        FileCategory cat = FileCategory.Image, DateTime? modifiedUtc = null)
     {
         var f = new FileEntry
         {
@@ -69,7 +70,7 @@ public sealed class FileSearchIndexTests
             Category = cat,
             SizeBytes = 1024,
             FileCreatedUtc = DateTime.UtcNow,
-            FileModifiedUtc = DateTime.UtcNow,
+            FileModifiedUtc = modifiedUtc ?? DateTime.UtcNow,
             IsIncluded = true,
             IsPresent = true,
             LastIndexedUtc = DateTime.UtcNow,
@@ -249,5 +250,63 @@ public sealed class FileSearchIndexTests
 
         result.TotalCount.Should().Be(1);
         result.Items.Should().HaveCount(1);
+    }
+
+    /// <summary>
+    /// The date bounds are compared against a TEXT column, so they must be handed to
+    /// SQLite in the provider's storage format. An ISO-8601 round-trip string sorts
+    /// wrong against it (' ' 0x20 &lt; 'T' 0x54): midnight-from excluded the whole day
+    /// and midnight-to swallowed it (review finding #11).
+    /// </summary>
+    [Fact]
+    public async Task Search_modified_from_includes_files_modified_later_that_day()
+    {
+        var setup = await SetupAsync();
+        using var harness = setup.Harness;
+        var ctx = setup.Ctx;
+        var fts = setup.Fts;
+
+        var (volId, dirId) = await SeedVolumeAndDirAsync(ctx);
+        var afternoon = new DateTime(2026, 7, 3, 14, 20, 29, 912, DateTimeKind.Utc);
+        var file = await AddFileAsync(ctx, volId, dirId, "vacation.jpg", "jpg", modifiedUtc: afternoon);
+        await fts.SyncVolumeFromDbAsync(volId, CancellationToken.None);
+
+        var midnight = new DateTime(2026, 7, 3, 0, 0, 0, DateTimeKind.Utc);
+        var result = await fts.SearchAsync(
+            new FileSearchQuery("vacation", SearchScope.Name, null, null, null, null, midnight, null, null, false, SearchSort.Relevance, false, 0, 10),
+            CancellationToken.None);
+
+        result.TotalCount.Should().Be(1);
+        result.Items.Should().Contain(file.Id);
+    }
+
+    [Fact]
+    public async Task Search_modified_to_excludes_files_modified_after_the_bound()
+    {
+        var setup = await SetupAsync();
+        using var harness = setup.Harness;
+        var ctx = setup.Ctx;
+        var fts = setup.Fts;
+
+        var (volId, dirId) = await SeedVolumeAndDirAsync(ctx);
+        var afternoon = new DateTime(2026, 7, 3, 14, 20, 29, 912, DateTimeKind.Utc);
+        await AddFileAsync(ctx, volId, dirId, "vacation.jpg", "jpg", modifiedUtc: afternoon);
+        await fts.SyncVolumeFromDbAsync(volId, CancellationToken.None);
+
+        var midnight = new DateTime(2026, 7, 3, 0, 0, 0, DateTimeKind.Utc);
+        var excluded = await fts.SearchAsync(
+            new FileSearchQuery("vacation", SearchScope.Name, null, null, null, null, null, midnight, null, false, SearchSort.Relevance, false, 0, 10),
+            CancellationToken.None);
+
+        excluded.TotalCount.Should().Be(0);
+        excluded.Items.Should().BeEmpty();
+
+        // …and the natural "up to and including that whole day" bound still finds it.
+        var endOfDay = new DateTime(2026, 7, 3, 23, 59, 59, 999, DateTimeKind.Utc);
+        var included = await fts.SearchAsync(
+            new FileSearchQuery("vacation", SearchScope.Name, null, null, null, null, null, endOfDay, null, false, SearchSort.Relevance, false, 0, 10),
+            CancellationToken.None);
+
+        included.TotalCount.Should().Be(1);
     }
 }

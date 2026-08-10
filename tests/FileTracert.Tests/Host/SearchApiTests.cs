@@ -134,6 +134,31 @@ public sealed class SearchApiTests
             .Should().BeEmpty();
     }
 
+    /// <summary>
+    /// End-to-end counterpart of the FTS-level date-bound tests: a lower bound at
+    /// midnight must keep today's files, an upper bound at midnight must drop them
+    /// (review finding #11). The seeded file is stamped <c>UtcNow</c>.
+    /// </summary>
+    [Fact]
+    public async Task Post_search_date_bounds_filter_around_midnight()
+    {
+        using var factory = MakeFactory([("holiday.jpg", "jpg", FileCategory.Image)]);
+        var client = Authed(factory);
+        var midnightUtc = DateTime.SpecifyKind(DateTime.UtcNow.Date, DateTimeKind.Utc);
+
+        var fromMidnight = await (await client.PostAsJsonAsync("/api/search", new SearchRequest(
+            "holiday", SearchScope.Name, null, null, null, null, midnightUtc, null, null, false,
+            SearchSort.Relevance, false, 0, 10))).Content.ReadFromJsonAsync<PagedResult<SearchResultDto>>(JsonOpts);
+
+        fromMidnight!.TotalCount.Should().Be(1);
+
+        var toMidnight = await (await client.PostAsJsonAsync("/api/search", new SearchRequest(
+            "holiday", SearchScope.Name, null, null, null, null, null, midnightUtc, null, false,
+            SearchSort.Relevance, false, 0, 10))).Content.ReadFromJsonAsync<PagedResult<SearchResultDto>>(JsonOpts);
+
+        toMidnight!.TotalCount.Should().Be(0);
+    }
+
     [Fact]
     public async Task Post_search_returns_bad_request_for_empty_text()
     {
