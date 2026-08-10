@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
 using FileTracert.Contracts.Dtos;
 using FileTracert.Contracts.Enums;
 using FileTracert.Data;
@@ -207,6 +208,25 @@ public sealed class DomainApiTests
         var response = await client.GetAsync("/api/dev/token");
 
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    /// <summary>
+    /// Every DB-sourced timestamp must reach the client with the UTC designator:
+    /// without it the browser parses the string as local time and every relative
+    /// clock in the UI is off by the machine offset (review finding #12).
+    /// </summary>
+    [Fact]
+    public async Task Volume_timestamps_serialize_with_the_utc_designator()
+    {
+        using var factory = NewFactory();
+        using var client = Authed(factory);
+
+        var json = await client.GetStringAsync("/api/volumes");
+
+        using var document = JsonDocument.Parse(json);
+        var lastSeen = document.RootElement[0].GetProperty("lastSeenUtc").GetString();
+
+        lastSeen.Should().EndWith("Z");
     }
 
     private sealed record DevToken(string Token);
