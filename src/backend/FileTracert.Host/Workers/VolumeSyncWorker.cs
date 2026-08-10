@@ -1,4 +1,6 @@
+using FileTracert.Business.Operations;
 using FileTracert.Business.Volumes;
+using FileTracert.Contracts.Operations;
 using FileTracert.Host.Configuration;
 using Microsoft.Extensions.Options;
 
@@ -57,7 +59,30 @@ public sealed class VolumeSyncWorker : BackgroundService
     {
         using var scope = _services.CreateScope();
         var sync = scope.ServiceProvider.GetRequiredService<VolumeSyncService>();
-        await sync.SyncAsync(ct);
+        var cameOnline = await sync.SyncAsync(ct);
         _logger.LogDebug("Volume sync cycle completed.");
+
+        if (cameOnline.Count == 0)
+        {
+            return;
+        }
+
+        // FIX #13 — a volume coming back is the event that resurrects the jobs parked on it (§4).
+        // The sync has just refreshed FreeBytesLastKnown from the live probe, so the revaluator's
+        // hard space re-check runs on the drive's REAL free space, never on the stale estimate.
+        // Polling today; step 10 replaces this trigger with the device-watcher push.
+        int unblocked = await scope.ServiceProvider
+            .GetRequiredService<BlockedJobRevaluator>()
+            .RevaluateAsync(ct);
+
+        _logger.LogInformation(
+            "Volume sync: {Count} volume(s) back online → {Unblocked} job(s) returned to Pending.",
+            cameOnline.Count, unblocked);
+
+        if (unblocked > 0)
+        {
+            // Wake the processor now instead of leaving the job to the 30 s safety poll.
+            scope.ServiceProvider.GetRequiredService<IQueueSignal>().Signal();
+        }
     }
 }

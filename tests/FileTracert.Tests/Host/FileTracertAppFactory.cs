@@ -37,6 +37,7 @@ public sealed class FileTracertAppFactory : WebApplicationFactory<global::Progra
     /// <summary>Drop a worker so a focused test isn't disturbed by the other one's DB writes.</summary>
     public bool DisableVolumeSync { get; set; }
     public bool DisableScan { get; set; }
+    public bool DisableQueue { get; set; }
 
     public string Token => Services.GetRequiredService<IApiTokenAccessor>().Token!;
 
@@ -68,6 +69,11 @@ public sealed class FileTracertAppFactory : WebApplicationFactory<global::Progra
             if (DisableScan)
             {
                 RemoveHostedService<ScanWorker>(services);
+            }
+
+            if (DisableQueue)
+            {
+                RemoveHostedService<QueueProcessorWorker>(services);
             }
         });
     }

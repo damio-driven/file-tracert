@@ -62,6 +62,35 @@ public sealed class VolumeSyncServiceTests
     }
 
     [Fact]
+    public async Task Sync_reports_the_volumes_that_came_back_online()
+    {
+        using var harness = new SqliteInMemoryContext();
+
+        await using (var seed = harness.CreateContext())
+        {
+            // "Back": known but offline, and the probe sees it again → the mount event the queue waits for.
+            seed.Volumes.Add(new Volume { VolumeGuid = "Back", FileSystem = "NTFS", IsOnline = false });
+            // "Steady": already online, nothing changed → must NOT trigger a revaluation.
+            seed.Volumes.Add(new Volume { VolumeGuid = "Steady", FileSystem = "NTFS", IsOnline = true });
+            await seed.SaveChangesAsync();
+        }
+
+        IReadOnlyList<int> cameOnline;
+        await using (var ctx = harness.CreateContext())
+        {
+            var probe = new FakeVolumesProbe([Probed("Back"), Probed("Steady"), Probed("BrandNew")]);
+            cameOnline = await new VolumeSyncService(probe, ctx, NullLogger<VolumeSyncService>.Instance)
+                .SyncAsync(CancellationToken.None);
+        }
+
+        await using var read = harness.CreateContext();
+        var back = await read.Volumes.SingleAsync(v => v.VolumeGuid == "Back");
+
+        cameOnline.Should().Equal([back.Id],
+            "only an offline→online transition of a KNOWN volume can resurrect jobs parked on it");
+    }
+
+    [Fact]
     public async Task Sync_reclassifies_offline_unknown_cloud_drive_using_persisted_data()
     {
         using var harness = new SqliteInMemoryContext();
