@@ -9,6 +9,7 @@ import { BytesPipe } from '../../shared/pipes/bytes.pipe';
 import { RelativeTimePipe } from '../../shared/pipes/relative-time.pipe';
 import { FtPill } from '../../shared/components/ft-pill/ft-pill';
 import { FtPanel } from '../../shared/components/ft-panel/ft-panel';
+import { localDayEndToUtcIso, localDayStartToUtcIso, utcIsoToLocalDay } from '../../shared/date/day-range.util';
 import { OperationPicker } from '../../shared/components/operation-picker/operation-picker';
 import { FileCategory, SearchResultDto, SearchScope, SearchSort, SelectedItem } from '../../core/models/catalog.models';
 
@@ -30,6 +31,10 @@ export class Search implements OnInit {
   // The store keeps full SelectedItem objects, so the picker gets the whole selection
   // even when it spans results pages that are no longer visible (fix #6).
   protected readonly pickerItems = computed<SelectedItem[]>(() => this.store.selectedItems());
+
+  protected readonly modifiedFromDay = computed(() => utcIsoToLocalDay(this.store.filters().modifiedFrom));
+  protected readonly modifiedToDay = computed(() => utcIsoToLocalDay(this.store.filters().modifiedTo));
+  protected readonly hasDateFilter = computed(() => !!this.modifiedFromDay() || !!this.modifiedToDay());
 
   protected readonly CATEGORIES: { value: FileCategory; label: string; icon: string }[] = [
     { value: 'Image', label: 'Immagini', icon: 'IMG' },
@@ -74,6 +79,24 @@ export class Search implements OnInit {
 
   protected toggleOnlineOnly(): void {
     this.store.setFilters({ onlineOnly: !this.store.filters().onlineOnly });
+    if (this.store.text()) void this.store.search();
+  }
+
+  // The date inputs speak local calendar days; the API speaks UTC instants. The bounds
+  // widen to cover the whole picked day, so "fino al 3/7" keeps the files modified that
+  // afternoon (see day-range.util).
+  protected setModifiedFrom(day: string): void {
+    this.store.setFilters({ modifiedFrom: localDayStartToUtcIso(day) });
+    if (this.store.text()) void this.store.search();
+  }
+
+  protected setModifiedTo(day: string): void {
+    this.store.setFilters({ modifiedTo: localDayEndToUtcIso(day) });
+    if (this.store.text()) void this.store.search();
+  }
+
+  protected clearDates(): void {
+    this.store.setFilters({ modifiedFrom: null, modifiedTo: null });
     if (this.store.text()) void this.store.search();
   }
 

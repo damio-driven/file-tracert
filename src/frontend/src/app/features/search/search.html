@@ -56,6 +56,40 @@
     </div>
 
     <div class="filter-chips filter-chips--right">
+      <div class="date-range" [class.active]="hasDateFilter()" role="group" aria-label="Filtra per data di modifica">
+        <span class="date-range__label">Modificato</span>
+        <input
+          class="date-input"
+          [class.filled]="modifiedFromDay()"
+          type="date"
+          [value]="modifiedFromDay()"
+          [max]="modifiedToDay() || null"
+          (change)="setModifiedFrom($any($event.target).value)"
+          aria-label="Modificato dal giorno"
+          title="Includi i file modificati da questo giorno compreso"
+        />
+        <span class="date-range__sep" aria-hidden="true">→</span>
+        <input
+          class="date-input"
+          [class.filled]="modifiedToDay()"
+          type="date"
+          [value]="modifiedToDay()"
+          [min]="modifiedFromDay() || null"
+          (change)="setModifiedTo($any($event.target).value)"
+          aria-label="Modificato fino al giorno"
+          title="Includi i file modificati fino a tutto questo giorno"
+        />
+        @if (hasDateFilter()) {
+          <button
+            type="button"
+            class="date-range__clear"
+            (click)="clearDates()"
+            aria-label="Rimuovi il filtro data"
+            title="Rimuovi il filtro data"
+          >×</button>
+        }
+      </div>
+
       <button
         type="button"
         class="chip"

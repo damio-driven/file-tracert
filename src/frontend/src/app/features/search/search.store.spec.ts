@@ -4,7 +4,7 @@ import { of, throwError } from 'rxjs';
 import { vi } from 'vitest';
 
 import { SearchApi } from '../../core/api/search-api.service';
-import { PagedResult, SearchResultDto } from '../../core/models/catalog.models';
+import { PagedResult, SearchRequest, SearchResultDto } from '../../core/models/catalog.models';
 import { SearchStore } from './search.store';
 
 const mockResult: PagedResult<SearchResultDto> = {
@@ -58,6 +58,22 @@ describe('SearchStore', () => {
     const store = setup({ search: searchSpy });
     await store.search(); // text is ''
     expect(searchSpy).not.toHaveBeenCalled();
+  });
+
+  it('forwards the date bounds to the API untouched', async () => {
+    const searchSpy = vi.fn((_req: SearchRequest) => of(mockResult));
+    const store = setup({ search: searchSpy });
+    store.setQuery('photo');
+    store.setFilters({
+      modifiedFrom: '2026-07-03T00:00:00.000Z',
+      modifiedTo: '2026-07-03T23:59:59.999Z',
+    });
+
+    await store.search();
+
+    const request = searchSpy.mock.calls.at(-1)![0];
+    expect(request.modifiedFrom).toBe('2026-07-03T00:00:00.000Z');
+    expect(request.modifiedTo).toBe('2026-07-03T23:59:59.999Z');
   });
 
   it('setFilters merges partial filter state', () => {
