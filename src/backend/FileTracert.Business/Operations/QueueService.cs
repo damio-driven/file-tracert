@@ -379,11 +379,52 @@ public sealed class QueueService : IQueueService
                 throw new InvalidOperationException($"Unsupported job type: {request.Type}");
         }
 
+        // FIX #3 — a job whose volumes are not connected is BORN Blocked(offline): never rejected
+        // (§4 "non rifiutare mai un job all'enqueue"), never Pending-then-Failed. Applied after the
+        // type-specific build so it sees the resolved source/target, and after the space evaluation
+        // so an offline volume — the actionable blocker — wins over a deficit computed on an
+        // estimate that is stale by definition.
+        await ApplyOfflineGateAsync(job, ct);
+
         foreach (var item in items)
             item.Job = job;
 
         return (job, items, shouldReserve);
     }
+
+    /// <summary>
+    /// Parks the job when a volume it needs is offline. <c>shouldReserve</c> is deliberately left
+    /// as the space evaluation computed it: a job parked on offline keeps its reservation so the
+    /// bytes it will need at the remount stay committed to it and no other job overcommits them.
+    /// </summary>
+    private async Task ApplyOfflineGateAsync(OperationJob job, CancellationToken ct)
+    {
+        var source = await LoadVolumeAsync(job.SourceVolumeId, ct);
+        var target = job.TargetVolumeId == job.SourceVolumeId
+            ? source
+            : await LoadVolumeAsync(job.TargetVolumeId, ct);
+
+        var reason = VolumeOfflineGate.Evaluate(source, target);
+        if (reason == JobBlockReason.None)
+            return;
+
+        job.State = JobState.Blocked;
+        job.BlockReason = reason;
+        job.ErrorMessage = VolumeOfflineGate.Describe(reason, source, target);
+
+        // Whatever the estimate says about an unmounted target, it is not live data.
+        if (target is { IsOnline: false })
+            job.EstimateIsLive = false;
+
+        _logger.LogInformation(
+            "Enqueue of a {Type} job parked at birth: {Reason} (source={Src}, target={Tgt}).",
+            job.Type, reason, job.SourceVolumeId, job.TargetVolumeId);
+    }
+
+    private Task<Volume?> LoadVolumeAsync(int? volumeId, CancellationToken ct) =>
+        volumeId is null
+            ? Task.FromResult<Volume?>(null)
+            : _db.Volumes.AsNoTracking().FirstOrDefaultAsync(v => v.Id == volumeId.Value, ct);
 
     private async Task BuildCreateFolderAsync(CreateJobRequest req, OperationJob job, CancellationToken ct)
     {

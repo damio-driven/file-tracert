@@ -72,6 +72,20 @@ public sealed class JobExecutionEngine
 
         try
         {
+            // FIX #3 — offline gate. Checked HERE, immediately before any syscall, and not only at
+            // enqueue: a volume can disappear while the job sits in the queue or between two of its
+            // checkpoints. A parked job keeps its ledger reservation (see SetBlockedAsync) so the
+            // space it will need at the remount stays committed to it.
+            var offline = VolumeOfflineGate.Evaluate(job.SourceVolume, job.TargetVolume);
+            if (offline != JobBlockReason.None)
+            {
+                _logger.LogInformation(
+                    "Job {Id}: not attempted — {Reason}; parked until the volume comes back.", job.Id, offline);
+                await SetBlockedAsync(job, offline,
+                    VolumeOfflineGate.Describe(offline, job.SourceVolume, job.TargetVolume), ct);
+                return;
+            }
+
             bool simple = job.IsIntraVolume ||
                           job.Type is JobType.CreateFolder or JobType.RenameFile or JobType.RenameFolder;
 
