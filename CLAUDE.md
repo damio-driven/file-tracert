@@ -497,3 +497,80 @@ src/app/
 - Mockup UI navigabile: `filetracert-mockup.html`.
 - Primo task (scaffold): `TASK-step0-scaffold.md`.
 - Palette brand FAD.iT: teal `#2ec4b6`, lime `#a8e063`.
+
+---
+
+## Come si esegue un task
+- **Il piano è il file TASK.** Non usare la skill `writing-plans`: il documento di
+  task È il piano. Implementa direttamente, per commit.
+- **Un commit per preoccupazione.** Segui lo split di commit suggerito nel task;
+  se un file porta più fix, usa staging a livello di hunk (`git add -p`).
+- **Riverifica le righe sull'HEAD** prima di editare: i file:riga nei task/review
+  possono essere datati. Conferma prima di toccare.
+- **Sessioni pulite e segmentate.** Un task per sessione; per task densi, fermati
+  ai checkpoint indicati. Non affrontare tutto in un'unica risposta (limite output).
+- **Niente scope creep.** Se un fix richiede un pezzo di un altro work package,
+  fai il minimo indispensabile e **segnalalo**; non anticipare interi WP.
+
+## Test (non negoziabile)
+- **RED prima del GREEN:** ogni fix ha un test che riproduce il bug e fallisce
+  PRIMA del fix, poi diventa verde.
+- **Contro l'implementazione reale, mai mock del componente sotto esame.** Un test
+  che mocka il ledger non testa il ledger. Engine + ledger + Win32FileMover + SQLite
+  veri (su sandbox temp per la suite).
+- **Verifica sul ferro via harness, NON manuale.** L'utente non fa più collaudi a
+  mano. Ogni comportamento nuovo/fixato va coperto da uno scenario in
+  `FileTracert.HardwareSmoke`, che deve passare (PASS) sul ferro configurato.
+- **Suite verde + build pulita** (warnings-as-errors) a fine di ogni task.
+
+## Code review finale (obbligatoria)
+A fine task, code review indipendente delle modifiche: correttezza vs criteri e
+scenari di fallimento; no silent catch (§9); layering (§3); no duplicazione; test
+reali RED→GREEN; idempotenza/crash-safety dove si tocca la state machine o le
+operazioni su file. Riportare cosa ha trovato e cosa è stato corretto (o perché un
+rilievo è stato lasciato consapevolmente).
+
+## Lavoro in parallelo (attenzione)
+- **Due agenti nella stessa working directory DEVONO stare sullo stesso branch.**
+  Un `checkout -b` cambia i file su disco sotto l'altro agente. Mai creare/cambiare
+  branch se un altro agente lavora nella stessa cartella.
+- **Niente parallelo sui file caldi della coda** (`JobExecutionEngine`,
+  `SpaceLedger`, `QueueService`, `QueueProcessorWorker`): agente unico, in sequenza.
+  Il parallelo è ammesso solo tra progetti isolati (es. l'harness).
+- Isolamento vero della history = working directory separate (`git worktree`), non
+  branch nella stessa cartella.
+- **Host chiuso prima di ricompilare** (evita lock DLL / rebuild lenti).
+
+## Principi architetturali sempre validi (dai §3/§5/§6/§9)
+- **Layering:** `Business ↛ Platform`; tutta la P/Invoke in `Platform` dietro
+  interfacce; SQLite-specifics dietro `IFileSearchIndex`/`IBulkIndexWriter`.
+- **No hard-delete:** flag (`IsIncluded`/`IsPresent`/`IsMaterialized`), delete nel
+  cestino, mai cancellare ciò che non si è copiato+verificato.
+- **No silent catch:** resilienza sì (worker prosegue), silenzio no (log completo +
+  Notification dove è azione utente).
+- **Crash-safety:** ogni transizione idempotente e resume-aware; rilascio ledger
+  nella stessa transazione del cambio stato; `Blocked` riattivabile, non `Failed`
+  terminale, per condizioni recuperabili (spazio, offline, collisione).
+
+## Roadmap (ordine di lavoro)
+Stato: WP3 (perdita dati), WP1 (crash-safe), WP2 (offline gate) — **fatti**.
+Prossimo, in ordine:
+1. **Fix UX brucianti:** #12 converter UTC (timestamp UI sfalsati), #11 filtro date
+   ricerca (confronto lessicale rotto). Piccoli, alto impatto.
+2. **Step 9 — Proiezione:** overlay `Pending*` inline, dipendenze tra job, FTS sul
+   nome proiettato. Qui si saldano i **debiti §11**: truncate-per-volume → **merge**
+   che preserva l'overlay, E **spezzare la transazione monolitica dello scan** in
+   blocchi corti (chiude anche la contesa di lock SQLITE_BUSY). Prerequisito già
+   posato dai WP1/WP2.
+3. **Step 10 — Device-watcher + SignalR real-time:** sostituisce il trigger polling
+   del WP2 con push; remount istantaneo; progress/notifiche/coda in tempo reale.
+4. **Work package minori rimanenti** (dalla code review): guard enqueue, indice/
+   ricerca, spazio, resto UX, logging/shutdown, efficienza, cleanup (incl. eventuale
+   spostamento di `ScanPath` in `Contracts` come da review).
+5. **Step 12 — Test UI end-to-end (Playwright).**
+
+## Cosa resta all'umano (non delegabile al repo)
+Le **decisioni di prodotto e di priorità**: cosa promuovere a bloccante, cosa
+rimandare come debito datato, quali trade-off scegliere. L'agente esegue; la regia
+sulle scelte resta all'utente. In caso di decisione di prodotto ambigua, **fermarsi
+e chiedere** invece di scegliere per conto proprio.
