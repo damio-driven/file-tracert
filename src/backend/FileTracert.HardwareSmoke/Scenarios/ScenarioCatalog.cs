@@ -25,6 +25,8 @@ public static class ScenarioCatalog
         new InsufficientSpaceScenario(),
         new FifoAutoRecoveryScenario(),
         new OfflineSimulatedScenario(),
+        new OfflineEnqueueBlockedScenario(),
+        new OfflineRemountSpaceRecheckScenario(),
         new OfflineUnplugScenario(),
     ];
 

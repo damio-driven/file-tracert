@@ -153,6 +153,8 @@ di ogni assert fallito (con i path concreti) e dalle note del run.
 | `insufficient-space` | cross | Job che non ci sta: `Blocked(InsufficientSpace)`, **non** `Failed`, niente copiato. |
 | `fifo-auto-recovery` | cross | Il job A libera lo spazio che serve a B: B completa **da solo**, senza retry manuale. |
 | `offline-simulated` | cross | Volume di destinazione marcato offline nel catalogo: il job **attende** (mai `Failed`) e parte da solo quando torna online. |
+| `offline-enqueue-blocked` | cross | Enqueue con la destinazione offline: job **nato** `Blocked(TargetVolumeOffline)`, stima non live, **riserva mantenuta**, worker che lo ignora, niente sul target. |
+| `offline-remount-space-recheck` | cross | Il volume torna più pieno della stima: il ricontrollo **hard** lo tiene `Blocked(InsufficientSpace)` invece di copiare; quando lo spazio c'è davvero completa da solo. |
 | `offline-unplug` | cross, `SemiAutomatic` | L'operatore stacca fisicamente il drive esterno: il job sopravvive e completa al ricollegamento, anche con lettera diversa (la coda segue il Volume GUID). |
 
 ### Scenari attesi RED
@@ -161,11 +163,13 @@ Alcuni scenari descrivono il comportamento **corretto**, non quello attuale: res
 finché il relativo pacchetto di lavoro non atterra. Un FAIL su questi è la specifica che
 parla, non l'harness rotto.
 
-Stato all'ultimo run di collaudo (2 volumi interni, `SemiAutomatic=false`) —
-**27 PASS / 1 FAIL**:
+Stato all'ultimo run di collaudo (2026-08-10, 2 volumi interni, `SemiAutomatic=false`) —
+**30 PASS / 0 FAIL / 0 SKIP**:
 
-- `offline-simulated` e `offline-unplug` → **WP2** (gate offline + block reason offline):
-  **ancora rossi**, il job viene eseguito anche con il volume marcato offline;
+- gli scenari **WP2** (`offline-simulated`, `offline-enqueue-blocked`,
+  `offline-remount-space-recheck`) → **verdi** da quando il gate offline è atterrato:
+  il job viene parcheggiato, non eseguito, e riparte da solo al ritorno del volume.
+  `offline-unplug` resta fuori dal conteggio: gira solo con `SemiAutomatic=true`;
 - `move-folder-excluded-files`, `move-folder-nothing-to-copy`,
   `move-folder-rejected-at-enqueue` → **WP3** (MoveFolder sicuro): **verdi**;
 - tutti gli scenari **WP1** (crash/resume ai tre step, cancel-before-delete,
