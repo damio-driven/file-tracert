@@ -20,6 +20,7 @@ public static class ScenarioCatalog
         new CrashResumeDeletingSourceScenario(),
         new CrashResumeSimpleOpScenario(),
         new IntraVolumeCollisionScenario(),
+        new SearchDateFilterScenario(),
         new IndexUpdateFailOnceScenario(),
         new PhantomReservationScenario(),
         new InsufficientSpaceScenario(),
