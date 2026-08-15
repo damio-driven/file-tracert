@@ -1,4 +1,4 @@
-using FileTracert.Business.Operations;
+﻿using FileTracert.Business.Operations;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Operations;
 using FileTracert.Data.Entities;
@@ -176,6 +176,7 @@ public sealed class LedgerTerminalReleaseTests : IDisposable
             Substitute.For<FileTracert.Contracts.Platform.IFileMover>(),
             new QueueSignal(),
             TestProjection.Index(db), TestProjection.Overlay(db),
+            TestProjection.Guard(db),
             NullLogger<QueueService>.Instance);
 
         await queue.CancelAsync(jobId, CancellationToken.None);

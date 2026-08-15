@@ -1,4 +1,4 @@
-using FileTracert.Business.Operations;
+﻿using FileTracert.Business.Operations;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Operations;
 using FileTracert.Contracts.Platform;
@@ -90,6 +90,7 @@ public sealed class QueueFifoRecoveryTests : IDisposable
     private QueueService MakeQueueService(FileTracertDbContext db) =>
         new(db, _ledger, _cancellation, Substitute.For<IFileMover>(), new QueueSignal(),
             TestProjection.Index(db), TestProjection.Overlay(db),
+            TestProjection.Guard(db),
             NullLogger<QueueService>.Instance);
 
     private JobExecutionEngine MakeEngine(IFileMover mover, FileTracertDbContext db)

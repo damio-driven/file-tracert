@@ -1,4 +1,4 @@
-using FileTracert.Business.Operations;
+﻿using FileTracert.Business.Operations;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Operations;
 using FileTracert.Contracts.Platform;
@@ -135,6 +135,7 @@ public sealed class JobOfflineGateTests : IDisposable
         return new QueueService(
             db, _ledger, new JobCancellationRegistry(), mover, new QueueSignal(),
             TestProjection.Index(db), TestProjection.Overlay(db),
+            TestProjection.Guard(db),
             NullLogger<QueueService>.Instance);
     }
 

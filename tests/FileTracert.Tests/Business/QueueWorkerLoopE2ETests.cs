@@ -1,4 +1,4 @@
-using FileTracert.Business.Operations;
+﻿using FileTracert.Business.Operations;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Operations;
 using FileTracert.Data;
@@ -105,6 +105,7 @@ public sealed class QueueWorkerLoopE2ETests : IDisposable
     private QueueService MakeQueue(FileTracertDbContext db) =>
         new(db, _ledger, _cancellation, _mover, new QueueSignal(),
             TestProjection.Index(db), TestProjection.Overlay(db),
+            TestProjection.Guard(db),
             NullLogger<QueueService>.Instance);
 
     private JobExecutionEngine MakeEngine(FileTracertDbContext db)

@@ -19,6 +19,9 @@ internal static class TestProjection
         new(db, new DirectoryResolver(db), fts ?? new FakeFileSearchIndex(),
             NullLogger<OverlayWriter>.Instance);
 
+    /// <summary>The real enqueue guard — never a stub: the tests are largely ABOUT what it decides.</summary>
+    public static PendingWorkGuard Guard(FileTracertDbContext db) => new(db);
+
     public static IndexUpdater Index(FileTracertDbContext db, IFileSearchIndex? fts = null) =>
         new(db, fts ?? new FakeFileSearchIndex(), new DirectoryResolver(db),
             NullLogger<IndexUpdater>.Instance);

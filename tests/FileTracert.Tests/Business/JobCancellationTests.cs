@@ -1,4 +1,4 @@
-using FileTracert.Business.Operations;
+﻿using FileTracert.Business.Operations;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Operations;
 using FileTracert.Contracts.Platform;
@@ -87,6 +87,7 @@ public sealed class JobCancellationTests : IDisposable
         return new QueueService(db, NoopLedger(), _registry, Substitute.For<IFileMover>(),
             new QueueSignal(),
             TestProjection.Index(db), TestProjection.Overlay(db),
+            TestProjection.Guard(db),
             NullLogger<QueueService>.Instance);
     }
 

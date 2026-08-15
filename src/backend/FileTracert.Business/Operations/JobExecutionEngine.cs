@@ -356,9 +356,8 @@ public sealed class JobExecutionEngine
         if (job.SourceVolumeId is null) return;
 
         var srcRoot = marker.SourceRelativePath;
-        var prefixWithSep = srcRoot + "\\";
         var subDirPaths = await _db.Directories.AsNoTracking()
-            .Where(d => d.VolumeId == job.SourceVolumeId.Value && d.MaterializedPath.StartsWith(prefixWithSep))
+            .InSubtree(job.SourceVolumeId.Value, srcRoot, includeRoot: false)
             .Select(d => d.MaterializedPath)
             .ToListAsync(ct);
 
@@ -527,10 +526,8 @@ public sealed class JobExecutionEngine
         if (string.IsNullOrEmpty(srcRoot) || job.SourceVolumeId is null)
             return removed;
 
-        var prefixWithSep = srcRoot + "\\";
         var dirPaths = await _db.Directories.AsNoTracking()
-            .Where(d => d.VolumeId == job.SourceVolumeId.Value &&
-                        (d.MaterializedPath == srcRoot || d.MaterializedPath.StartsWith(prefixWithSep)))
+            .InSubtree(job.SourceVolumeId.Value, srcRoot)
             .Select(d => d.MaterializedPath)
             .ToListAsync(ct);
 

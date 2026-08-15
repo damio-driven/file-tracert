@@ -1,4 +1,4 @@
-using FileTracert.Business.Operations;
+﻿using FileTracert.Business.Operations;
 using FileTracert.Business.Projection;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Operations;
@@ -80,6 +80,7 @@ public sealed class ProjectionOverlayTests : IDisposable
             new QueueSignal(),
             TestProjection.Index(db, new FileSearchIndex(db)),
             TestProjection.Overlay(db, new FileSearchIndex(db)),
+            TestProjection.Guard(db),
             NullLogger<QueueService>.Instance);
     }
 

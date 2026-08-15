@@ -26,6 +26,7 @@ public sealed class QueueService : IQueueService
     private readonly IQueueSignal _signal;
     private readonly IndexUpdater _indexUpdater;
     private readonly OverlayWriter _overlay;
+    private readonly PendingWorkGuard _guard;
     private readonly ILogger<QueueService> _logger;
 
     public QueueService(
@@ -36,6 +37,7 @@ public sealed class QueueService : IQueueService
         IQueueSignal signal,
         IndexUpdater indexUpdater,
         OverlayWriter overlay,
+        PendingWorkGuard guard,
         ILogger<QueueService> logger)
     {
         _db = db;
@@ -45,6 +47,7 @@ public sealed class QueueService : IQueueService
         _signal = signal;
         _indexUpdater = indexUpdater;
         _overlay = overlay;
+        _guard = guard;
         _logger = logger;
     }
 
@@ -414,6 +417,10 @@ public sealed class QueueService : IQueueService
         // estimate that is stale by definition.
         await ApplyOfflineGateAsync(job, ct);
 
+        // Finding 8 — ONE guard, run once on the finished job instead of a per-type half-check:
+        // it now sees source AND target of every non-terminal job, CreateFolder included.
+        await ApplyPendingWorkGuardAsync(request, job, items, ct);
+
         foreach (var item in items)
             item.Job = job;
 
@@ -449,6 +456,26 @@ public sealed class QueueService : IQueueService
             job.Type, reason, job.SourceVolumeId, job.TargetVolumeId);
     }
 
+    /// <summary>
+    /// Serializes operations that touch the same place. Behaviour unchanged for now (the second
+    /// operation is still rejected); what changed is WHO sees it — one predicate over the source
+    /// and target paths of every non-terminal job, instead of two partial per-type queries.
+    /// </summary>
+    private async Task ApplyPendingWorkGuardAsync(
+        CreateJobRequest request, OperationJob job, List<OperationJobItem> items, CancellationToken ct)
+    {
+        var claims = PendingWorkGuard.ClaimsOf(
+            job.Type, job.SourceVolumeId, job.TargetVolumeId, job.TargetRelativePath, items);
+
+        var conflict = await _guard.FindConflictAsync(claims, excludeJobId: null, ct);
+        if (conflict is null) return;
+
+        var (entityType, entityId) = request.SourceFileId is { } fileId
+            ? ("File", fileId)
+            : ("Directory", request.SourceDirectoryId ?? 0);
+        throw new EntityAlreadyPendingException(entityType, entityId);
+    }
+
     private Task<Volume?> LoadVolumeAsync(int? volumeId, CancellationToken ct) =>
         volumeId is null
             ? Task.FromResult<Volume?>(null)
@@ -478,8 +505,6 @@ public sealed class QueueService : IQueueService
 
         if (!OperationName.TryValidateLeaf(req.NewName, out var nameError))
             throw new ArgumentException(nameError);
-
-        await GuardFileAsync(req.SourceFileId.Value, ct);
 
         var file = await _db.Files
             .Include(f => f.Directory)
@@ -516,8 +541,6 @@ public sealed class QueueService : IQueueService
 
         var dir = await LoadSourceDirectoryAsync(req.SourceDirectoryId.Value, ct);
 
-        await GuardDirectoryAsync(req.SourceDirectoryId.Value, dir.MaterializedPath, dir.VolumeId, ct);
-
         var parentPath = ScanPath.Parent(dir.MaterializedPath);
         var dstPath = ScanPath.Join(parentPath, req.NewName);
 
@@ -543,8 +566,6 @@ public sealed class QueueService : IQueueService
 
         if (!OperationName.TryValidatePath(req.TargetRelativePath, allowRoot: true, out var targetPath, out var pathError))
             throw new ArgumentException(pathError);
-
-        await GuardFileAsync(req.SourceFileId.Value, ct);
 
         var file = await _db.Files
             .Include(f => f.Directory)
@@ -605,8 +626,6 @@ public sealed class QueueService : IQueueService
             throw new ArgumentException(pathError);
 
         var dir = await LoadSourceDirectoryAsync(req.SourceDirectoryId.Value, ct);
-
-        await GuardDirectoryAsync(req.SourceDirectoryId.Value, dir.MaterializedPath, dir.VolumeId, ct);
 
         var targetVol = await _db.Volumes.AsNoTracking()
             .FirstOrDefaultAsync(v => v.Id == req.TargetVolumeId.Value, ct)
@@ -692,11 +711,9 @@ public sealed class QueueService : IQueueService
         DirectoryNode sourceDir, string dstDirPath, CancellationToken ct)
     {
         var srcPath = sourceDir.MaterializedPath;
-        var prefixWithSep = srcPath + "\\";
 
         var dirIds = await _db.Directories
-            .Where(d => d.VolumeId == sourceDir.VolumeId &&
-                        (d.Id == sourceDir.Id || d.MaterializedPath.StartsWith(prefixWithSep)))
+            .InSubtree(sourceDir.VolumeId, srcPath)
             .Select(d => new { d.Id, d.MaterializedPath })
             .ToListAsync(ct);
 
@@ -755,53 +772,6 @@ public sealed class QueueService : IQueueService
         return dir;
     }
 
-    private async Task GuardFileAsync(int fileId, CancellationToken ct)
-    {
-        bool busy = await _db.OperationJobItems
-            .AnyAsync(i => i.FileId == fileId &&
-                           !TerminalStates.Contains(i.Job.State), ct);
-        if (busy)
-            throw new EntityAlreadyPendingException("File", fileId);
-    }
-
-    private async Task GuardDirectoryAsync(int directoryId, string materializedPath,
-        int volumeId, CancellationToken ct)
-    {
-        // Overlap, not just exact match: a pending op on an ancestor OR a descendant of this
-        // directory makes the two operations touch the same subtree, which must be serialized
-        // (MVP: one op per subtree). Two cases, both segment-boundary aware so "Docs" never
-        // matches "Documents":
-        //   • an existing op sits on this dir or one of its ANCESTORS  → its path ∈ our ancestor set
-        //   • an existing op sits on one of our DESCENDANTS            → its path starts with "us\"
-        var ancestors = AncestorPaths(materializedPath);
-        var descendantPrefix = materializedPath + "\\";
-
-        bool busy = await _db.OperationJobItems
-            .AnyAsync(i => i.Job.SourceVolumeId == volumeId &&
-                           !TerminalStates.Contains(i.Job.State) &&
-                           (ancestors.Contains(i.SourceRelativePath) ||
-                            i.SourceRelativePath.StartsWith(descendantPrefix)), ct);
-        if (busy)
-            throw new EntityAlreadyPendingException("Directory", directoryId);
-    }
-
-    /// <summary>
-    /// Every path from <paramref name="path"/> up to (and including) the volume root, e.g.
-    /// <c>A\B\C</c> → <c>[A\B\C, A\B, A]</c>. Used to detect an ancestor op in a single SQL <c>IN</c>.
-    /// </summary>
-    private static List<string> AncestorPaths(string path)
-    {
-        var result = new List<string>();
-        var current = path;
-        while (!string.IsNullOrEmpty(current))
-        {
-            result.Add(current);
-            var idx = current.LastIndexOf('\\');
-            current = idx < 0 ? string.Empty : current[..idx];
-        }
-        return result;
-    }
-
     // ── private: preview meta (no guards, no side effects) ────────────────────
 
     private async Task<(int? targetVolumeId, long totalBytes)> ResolvePreviewMetaAsync(
@@ -835,10 +805,8 @@ public sealed class QueueService : IQueueService
                 bool intra = dir.VolumeId == req.TargetVolumeId.Value;
                 if (intra) return (req.TargetVolumeId, 0);
 
-                var prefixWithSep = dir.MaterializedPath + "\\";
                 var dirIds = await _db.Directories
-                    .Where(d => d.VolumeId == dir.VolumeId &&
-                                (d.Id == dir.Id || d.MaterializedPath.StartsWith(prefixWithSep)))
+                    .InSubtree(dir.VolumeId, dir.MaterializedPath)
                     .Select(d => d.Id)
                     .ToListAsync(ct);
 

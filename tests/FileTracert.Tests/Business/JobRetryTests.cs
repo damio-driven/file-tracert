@@ -1,4 +1,4 @@
-using FileTracert.Business.Operations;
+﻿using FileTracert.Business.Operations;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Operations;
 using FileTracert.Data;
@@ -76,6 +76,7 @@ public sealed class JobRetryTests : IDisposable
         return new QueueService(db, _ledger, new JobCancellationRegistry(), _mover,
             new QueueSignal(),
             TestProjection.Index(db), TestProjection.Overlay(db),
+            TestProjection.Guard(db),
             NullLogger<QueueService>.Instance);
     }
 
