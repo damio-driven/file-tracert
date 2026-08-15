@@ -407,6 +407,11 @@ public sealed class ScanService
             await using var tx = await _db.Database.BeginTransactionAsync(ct);
             var result = await _bulkWriter.MergeScannedFilesAsync(volume.Id, entities, DateTime.UtcNow, ct);
 
+            // Search entries follow the rows inside the same transaction, so the index is
+            // never out of step with a committed batch — and only the batch's own rows are
+            // rewritten, instead of the whole volume once per scan.
+            await _ftsIndex.SyncFilesAsync(result.AffectedFileIds, ct);
+
             // The commit is the checkpoint: once the batch is merged, cancelling must not
             // throw the work away (§3, "checkpoint the state and stop cleanly"). Shutdown is
             // observed at the top of the next iteration instead.
@@ -421,6 +426,10 @@ public sealed class ScanService
         await using (var tx = await _db.Database.BeginTransactionAsync(ct))
         {
             var absent = await _bulkWriter.MarkAbsentFilesAsync(volume.Id, scanStartedUtc, ct);
+
+            // …and out of the search index with them, in the same transaction: a file that is
+            // no longer on disk must stop being a search hit.
+            await _ftsIndex.PruneVolumeAsync(volume.Id, ct);
             await tx.CommitAsync(ct);
 
             if (absent > 0)
@@ -428,16 +437,6 @@ public sealed class ScanService
                 _logger.LogInformation(
                     "Volume {VolumeId}: {Count} file(s) no longer on disk, marked absent.", volume.Id, absent);
             }
-        }
-
-        // FTS is rebuilt for the volume once the rows have settled. (Per-batch sync is the
-        // next commit; keeping it here first means this refactor changes transactions, not
-        // search behaviour.)
-        await using (var tx = await _db.Database.BeginTransactionAsync(ct))
-        {
-            await _ftsIndex.ClearVolumeAsync(volume.Id, ct);
-            await _ftsIndex.SyncVolumeFromDbAsync(volume.Id, ct);
-            await tx.CommitAsync(ct);
         }
 
         await using (var tx = await _db.Database.BeginTransactionAsync(ct))

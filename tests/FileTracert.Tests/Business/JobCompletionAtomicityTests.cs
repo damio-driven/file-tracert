@@ -251,6 +251,8 @@ public sealed class JobCompletionAtomicityTests : IDisposable
         public Task ClearVolumeAsync(int volumeId, CancellationToken ct) => Task.CompletedTask;
         public Task SyncVolumeFromDbAsync(int volumeId, CancellationToken ct) => Task.CompletedTask;
         public Task RebuildAsync(CancellationToken ct) => Task.CompletedTask;
+        public Task SyncFilesAsync(IReadOnlyCollection<int> fileIds, CancellationToken ct) => Task.CompletedTask;
+        public Task PruneVolumeAsync(int volumeId, CancellationToken ct) => Task.CompletedTask;
         public Task RemoveAsync(int fileId, CancellationToken ct) => Task.CompletedTask;
         public Task<PagedResult<int>> SearchAsync(FileSearchQuery query, CancellationToken ct)
             => Task.FromResult(new PagedResult<int>([], 0, query.Skip, query.Take));
@@ -274,6 +276,8 @@ public sealed class JobCompletionAtomicityTests : IDisposable
         public Task ClearVolumeAsync(int volumeId, CancellationToken ct) => Task.CompletedTask;
         public Task SyncVolumeFromDbAsync(int volumeId, CancellationToken ct) => Task.CompletedTask;
         public Task RebuildAsync(CancellationToken ct) => Task.CompletedTask;
+        public Task SyncFilesAsync(IReadOnlyCollection<int> fileIds, CancellationToken ct) => Task.CompletedTask;
+        public Task PruneVolumeAsync(int volumeId, CancellationToken ct) => Task.CompletedTask;
         public Task RemoveAsync(int fileId, CancellationToken ct) => Task.CompletedTask;
         public Task<PagedResult<int>> SearchAsync(FileSearchQuery query, CancellationToken ct)
             => Task.FromResult(new PagedResult<int>([], 0, query.Skip, query.Take));

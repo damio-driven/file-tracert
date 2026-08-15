@@ -69,6 +69,58 @@ public sealed class FileSearchIndex : IFileSearchIndex
             ct);
     }
 
+    /// <summary>
+    /// Ids are inlined rather than parameterised: they are <see cref="int"/> values (nothing to
+    /// escape) and SQLite has no array-valued parameter, so a parameter per id would hit the
+    /// statement's variable ceiling on a full batch. Chunked to keep each statement small.
+    /// </summary>
+    private const int IdChunkSize = 500;
+
+    public async Task SyncFilesAsync(IReadOnlyCollection<int> fileIds, CancellationToken ct)
+    {
+        if (fileIds.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var chunk in fileIds.Chunk(IdChunkSize))
+        {
+            var list = string.Join(", ", chunk);
+
+            // Built as locals, not interpolated at the call site: the id list is the one thing
+            // that cannot be parameterised here, and the analyzer (EF1002) rightly objects to
+            // interpolation inline. The values are ints straight from the merge — nothing to
+            // escape and nothing user-supplied.
+            var deleteSql = "DELETE FROM FileSearchIndex WHERE rowid IN (" + list + ")";
+            var insertSql =
+                """
+                INSERT INTO FileSearchIndex(rowid, name, path)
+                SELECT f.Id,
+                       f.Name,
+                       CASE WHEN d.MaterializedPath = '' THEN f.Name
+                            ELSE d.MaterializedPath || '\' || f.Name END
+                FROM Files f
+                JOIN Directories d ON d.Id = f.DirectoryId
+                WHERE f.Id IN (
+                """ + list + ") AND f.IsIncluded = 1 AND f.IsPresent = 1";
+
+            // Delete first, always: FTS5 has no ON CONFLICT, and re-syncing a file that is
+            // still indexed would otherwise leave two entries for one rowid.
+            await _db.Database.ExecuteSqlRawAsync(deleteSql, ct);
+            await _db.Database.ExecuteSqlRawAsync(insertSql, ct);
+        }
+    }
+
+    public async Task PruneVolumeAsync(int volumeId, CancellationToken ct)
+    {
+        await _db.Database.ExecuteSqlAsync(
+            $"""
+            DELETE FROM FileSearchIndex
+             WHERE rowid IN (SELECT Id FROM Files
+                              WHERE VolumeId = {volumeId} AND (IsIncluded = 0 OR IsPresent = 0))
+            """, ct);
+    }
+
     // -------------------------------------------------------------------------
     // Single-file upsert / remove (for incremental USN updates)
     // -------------------------------------------------------------------------

@@ -38,6 +38,8 @@ public sealed class IndexUpdaterTests : IDisposable
         public Task ClearVolumeAsync(int volumeId, CancellationToken ct) => Task.CompletedTask;
         public Task SyncVolumeFromDbAsync(int volumeId, CancellationToken ct) => Task.CompletedTask;
         public Task RebuildAsync(CancellationToken ct) => Task.CompletedTask;
+        public Task SyncFilesAsync(IReadOnlyCollection<int> fileIds, CancellationToken ct) => Task.CompletedTask;
+        public Task PruneVolumeAsync(int volumeId, CancellationToken ct) => Task.CompletedTask;
         public Task UpsertAsync(int fileId, string name, string path, CancellationToken ct)
         { Upserts.Add((fileId, name, path)); return Task.CompletedTask; }
         public Task RemoveAsync(int fileId, CancellationToken ct) => Task.CompletedTask;
