@@ -27,6 +27,7 @@ public sealed class QueueService : IQueueService
     private readonly IndexUpdater _indexUpdater;
     private readonly OverlayWriter _overlay;
     private readonly PendingWorkGuard _guard;
+    private readonly JobUnblocker _unblocker;
     private readonly ILogger<QueueService> _logger;
 
     public QueueService(
@@ -38,6 +39,7 @@ public sealed class QueueService : IQueueService
         IndexUpdater indexUpdater,
         OverlayWriter overlay,
         PendingWorkGuard guard,
+        JobUnblocker unblocker,
         ILogger<QueueService> logger)
     {
         _db = db;
@@ -48,6 +50,7 @@ public sealed class QueueService : IQueueService
         _indexUpdater = indexUpdater;
         _overlay = overlay;
         _guard = guard;
+        _unblocker = unblocker;
         _logger = logger;
     }
 
@@ -265,15 +268,45 @@ public sealed class QueueService : IQueueService
             item.ErrorMessage = null;
         }
 
-        job.State = JobState.Pending;
-        job.BlockReason = JobBlockReason.None;
-        job.ErrorMessage = null;
+        // «Riprova» is also the reactivation path of a job parked behind another one — including
+        // one whose prerequisite was cancelled (DependencyCancelled), where the user's retry IS
+        // the decision that voids the dependency. So the guard is re-asked from scratch: if
+        // something is still in the way the job goes straight back to Blocked(DependencyPending)
+        // on the CURRENT obstacle instead of running out of order.
+        var conflict = await _unblocker.FindConflictAsync(job, ct);
+        string? problem = null;
+
+        await using var tx = await _db.Database.BeginTransactionAsync(ct);
+
+        if (conflict is null)
+        {
+            // Fresh snapshots before anything is committed (finding 8a): the paths this job was
+            // queued with may name places the jobs it waited for have since moved.
+            problem = await _unblocker.RefreshSnapshotsAsync(job, ct);
+        }
+
+        if (conflict is not null || problem is not null)
+        {
+            job.State = JobState.Blocked;
+            job.BlockReason = conflict is not null
+                ? JobBlockReason.DependencyPending
+                : job.BlockReason;
+            job.ErrorMessage = conflict is not null ? DescribeDependency(conflict) : problem;
+            job.DependsOnJobId = conflict?.JobId;
+        }
+        else
+        {
+            job.State = JobState.Pending;
+            job.BlockReason = JobBlockReason.None;
+            job.ErrorMessage = null;
+            job.DependsOnJobId = null;
+        }
+
         job.CompletedUtc = null;
         job.RetryCount++;
         // The state change and the overlay rewrite commit together: a Failed job dropped its
         // overlay, so putting it back in the queue without putting the projection back would
         // leave a queued operation invisible in Catalogo/Ricerca.
-        await using var tx = await _db.Database.BeginTransactionAsync(ct);
         try
         {
             await _db.SaveChangesAsync(ct);
@@ -291,8 +324,10 @@ public sealed class QueueService : IQueueService
         }
 
         // Same single entry point as the enqueue, and idempotent: a Blocked job still carries
-        // its overlay, so this rewrites the same values instead of doubling anything.
-        await _overlay.ApplyAsync(job, [.. job.Items], ct);
+        // its overlay, so this rewrites the same values instead of doubling anything. A job that
+        // goes back to Blocked on a dependency owns no entity and therefore writes nothing.
+        if (JobDependencies.OwnsItsEntity(job))
+            await _unblocker.TakeOverlayAsync(job, ct);
         // Committed before the ledger calls: those run on their own scope and connection, and
         // holding this write transaction open across them would be a self-inflicted SQLITE_BUSY.
         await tx.CommitAsync(ct);

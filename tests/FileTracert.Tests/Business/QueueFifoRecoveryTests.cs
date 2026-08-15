@@ -90,7 +90,7 @@ public sealed class QueueFifoRecoveryTests : IDisposable
     private QueueService MakeQueueService(FileTracertDbContext db) =>
         new(db, _ledger, _cancellation, Substitute.For<IFileMover>(), new QueueSignal(),
             TestProjection.Index(db), TestProjection.Overlay(db),
-            TestProjection.Guard(db),
+            TestProjection.Guard(db), TestProjection.Unblocker(db),
             NullLogger<QueueService>.Instance);
 
     private JobExecutionEngine MakeEngine(IFileMover mover, FileTracertDbContext db)
@@ -102,7 +102,7 @@ public sealed class QueueFifoRecoveryTests : IDisposable
     }
 
     private BlockedJobRevaluator MakeRevaluator(FileTracertDbContext db) =>
-        new(db, _ledger, NullLogger<BlockedJobRevaluator>.Instance);
+        new(db, _ledger, TestProjection.Unblocker(db), NullLogger<BlockedJobRevaluator>.Instance);
 
     private static IFileMover HappyMover()
     {

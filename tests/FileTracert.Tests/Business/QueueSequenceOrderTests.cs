@@ -1,4 +1,4 @@
-using FileTracert.Business.Operations;
+﻿using FileTracert.Business.Operations;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Operations;
 using FileTracert.Contracts.Platform;
@@ -57,7 +57,7 @@ public sealed class QueueSequenceOrderTests : IDisposable
         var db = _harness.CreateContext(interceptors);
         return new QueueService(db, _ledger, _cancellation,
             NSubstitute.Substitute.For<IFileMover>(), new QueueSignal(),
-            TestProjection.Index(db), TestProjection.Overlay(db), TestProjection.Guard(db),
+            TestProjection.Index(db), TestProjection.Overlay(db), TestProjection.Guard(db), TestProjection.Unblocker(db),
             NullLogger<QueueService>.Instance);
     }
 

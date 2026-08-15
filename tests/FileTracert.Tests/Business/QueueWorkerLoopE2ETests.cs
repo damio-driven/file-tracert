@@ -105,7 +105,7 @@ public sealed class QueueWorkerLoopE2ETests : IDisposable
     private QueueService MakeQueue(FileTracertDbContext db) =>
         new(db, _ledger, _cancellation, _mover, new QueueSignal(),
             TestProjection.Index(db), TestProjection.Overlay(db),
-            TestProjection.Guard(db),
+            TestProjection.Guard(db), TestProjection.Unblocker(db),
             NullLogger<QueueService>.Instance);
 
     private JobExecutionEngine MakeEngine(FileTracertDbContext db)
@@ -117,7 +117,7 @@ public sealed class QueueWorkerLoopE2ETests : IDisposable
     }
 
     private BlockedJobRevaluator MakeRevaluator(FileTracertDbContext db) =>
-        new(db, _ledger, NullLogger<BlockedJobRevaluator>.Instance);
+        new(db, _ledger, TestProjection.Unblocker(db), NullLogger<BlockedJobRevaluator>.Instance);
 
     /// <summary>Directly seed a cross-volume MoveFile job over one real source file.</summary>
     private async Task<int> EnqueueMoveAsync(int fileId, int srcVol, int tgtVol, string tgtDirRel)

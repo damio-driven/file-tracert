@@ -135,12 +135,15 @@ public sealed class JobOfflineGateTests : IDisposable
         return new QueueService(
             db, _ledger, new JobCancellationRegistry(), mover, new QueueSignal(),
             TestProjection.Index(db), TestProjection.Overlay(db),
-            TestProjection.Guard(db),
+            TestProjection.Guard(db), TestProjection.Unblocker(db),
             NullLogger<QueueService>.Instance);
     }
 
     private BlockedJobRevaluator MakeRevaluator() =>
-        new(_harness.CreateContext(), _ledger, NullLogger<BlockedJobRevaluator>.Instance);
+        MakeRevaluator(_harness.CreateContext());
+
+    private BlockedJobRevaluator MakeRevaluator(FileTracertDbContext db) =>
+        new(db, _ledger, TestProjection.Unblocker(db), NullLogger<BlockedJobRevaluator>.Instance);
 
     /// <summary>Cross-volume MoveFile job, one item, sized <see cref="FileSize"/>.</summary>
     private int SeedCrossVolumeJob(

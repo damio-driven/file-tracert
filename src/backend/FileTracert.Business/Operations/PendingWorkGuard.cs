@@ -117,8 +117,16 @@ public sealed class PendingWorkGuard
     /// LAST in queue order is returned: everything ahead of it resolves first anyway, and the
     /// revaluation re-asks this question before actually unblocking anybody.
     /// </summary>
+    /// <param name="excludeJobId">The job asking, when it is already in the queue.</param>
+    /// <param name="beforeSequenceOrder">
+    /// Only jobs AHEAD of this position count. Null while enqueueing (the new job goes last, so
+    /// everything is ahead of it). Passing it on a re-ask is what keeps the queue a queue: a job
+    /// can only ever wait for something in front of it, so two jobs that overlap can never end up
+    /// waiting for each other — which, without this, is a permanent deadlock of both.
+    /// </param>
     public async Task<PendingConflict?> FindConflictAsync(
-        IReadOnlyCollection<PathClaim> claims, int? excludeJobId, CancellationToken ct)
+        IReadOnlyCollection<PathClaim> claims, int? excludeJobId, CancellationToken ct,
+        int? beforeSequenceOrder = null)
     {
         if (claims.Count == 0) return null;
 
@@ -127,6 +135,7 @@ public sealed class PendingWorkGuard
         var heads = await _db.OperationJobs
             .Where(j => !JobStates.Terminal.Contains(j.State) &&
                         (excludeJobId == null || j.Id != excludeJobId) &&
+                        (beforeSequenceOrder == null || j.SequenceOrder < beforeSequenceOrder) &&
                         ((j.SourceVolumeId != null && volumeIds.Contains(j.SourceVolumeId.Value)) ||
                          (j.TargetVolumeId != null && volumeIds.Contains(j.TargetVolumeId.Value))))
             .Select(j => new JobHead(

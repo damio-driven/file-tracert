@@ -176,7 +176,7 @@ public sealed class LedgerTerminalReleaseTests : IDisposable
             Substitute.For<FileTracert.Contracts.Platform.IFileMover>(),
             new QueueSignal(),
             TestProjection.Index(db), TestProjection.Overlay(db),
-            TestProjection.Guard(db),
+            TestProjection.Guard(db), TestProjection.Unblocker(db),
             NullLogger<QueueService>.Instance);
 
         await queue.CancelAsync(jobId, CancellationToken.None);

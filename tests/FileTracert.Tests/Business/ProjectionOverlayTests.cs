@@ -80,7 +80,7 @@ public sealed class ProjectionOverlayTests : IDisposable
             new QueueSignal(),
             TestProjection.Index(db, new FileSearchIndex(db)),
             TestProjection.Overlay(db, new FileSearchIndex(db)),
-            TestProjection.Guard(db),
+            TestProjection.Guard(db), TestProjection.Unblocker(db, new FileSearchIndex(db)),
             NullLogger<QueueService>.Instance);
     }
 

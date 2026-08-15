@@ -76,7 +76,7 @@ public sealed class JobRetryTests : IDisposable
         return new QueueService(db, _ledger, new JobCancellationRegistry(), _mover,
             new QueueSignal(),
             TestProjection.Index(db), TestProjection.Overlay(db),
-            TestProjection.Guard(db),
+            TestProjection.Guard(db), TestProjection.Unblocker(db),
             NullLogger<QueueService>.Instance);
     }
 

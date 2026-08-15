@@ -1,4 +1,4 @@
-using FileTracert.Business.Operations;
+﻿using FileTracert.Business.Operations;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Operations;
 using FileTracert.Contracts.Platform;
@@ -13,7 +13,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace FileTracert.Tests.Business;
 
 /// <summary>
-/// Step 9c — dependencies between jobs at ENQUEUE time (§5, finding 8).
+/// Step 9c — dependencies between jobs: how they are detected at enqueue, and how they resolve.
 ///
 /// The contract: an operation that touches something another queued job is already touching is
 /// never rejected (§4 «non rifiutare mai un job all'enqueue»). It goes into the queue
@@ -22,7 +22,7 @@ namespace FileTracert.Tests.Business;
 ///
 /// Real services throughout: real SQLite, the real ledger, the real guard.
 /// </summary>
-public sealed class JobDependencyEnqueueTests : IDisposable
+public sealed class JobDependencyTests : IDisposable
 {
     private const int Vol1Id = 1;
     private const int Vol2Id = 2;
@@ -38,7 +38,7 @@ public sealed class JobDependencyEnqueueTests : IDisposable
     private readonly SpaceLedger _ledger;
     private readonly JobCancellationRegistry _cancellation = new();
 
-    public JobDependencyEnqueueTests()
+    public JobDependencyTests()
     {
         using (var setup = _harness.CreateContext())
             setup.Database.ExecuteSqlRaw("PRAGMA foreign_keys = OFF");
@@ -54,12 +54,27 @@ public sealed class JobDependencyEnqueueTests : IDisposable
 
     public void Dispose() => _harness.Dispose();
 
+    private JobExecutionEngine Engine()
+    {
+        var db = _harness.CreateContext();
+        return new JobExecutionEngine(db, NSubstitute.Substitute.For<IFileMover>(), _ledger,
+            TestProjection.Index(db), TestProjection.Overlay(db), new FakeNotificationPublisher(),
+            TimeProvider.System, NullLogger<JobExecutionEngine>.Instance);
+    }
+
+    private BlockedJobRevaluator Revaluator()
+    {
+        var db = _harness.CreateContext();
+        return new BlockedJobRevaluator(db, _ledger, TestProjection.Unblocker(db),
+            NullLogger<BlockedJobRevaluator>.Instance);
+    }
+
     private QueueService Svc()
     {
         var db = _harness.CreateContext();
         return new QueueService(db, _ledger, _cancellation,
             NSubstitute.Substitute.For<IFileMover>(), new QueueSignal(),
-            TestProjection.Index(db), TestProjection.Overlay(db), TestProjection.Guard(db),
+            TestProjection.Index(db), TestProjection.Overlay(db), TestProjection.Guard(db), TestProjection.Unblocker(db),
             NullLogger<QueueService>.Instance);
     }
 
@@ -318,6 +333,112 @@ public sealed class JobDependencyEnqueueTests : IDisposable
         using var db = _harness.CreateContext();
         return await db.Directories.AsNoTracking()
             .Where(d => d.MaterializedPath == path).Select(d => d.Id).FirstAsync(None);
+    }
+
+    // ── release: what happens when the prerequisite is done ───────────────────
+
+    [Fact]
+    public async Task Completing_the_prerequisite_releases_the_dependent_and_hands_it_the_overlay()
+    {
+        var first = await RenameFileAsync(ReportId, "v2.txt");
+        var second = await RenameFileAsync(ReportId, "v3.txt");
+
+        await Engine().ExecuteJobAsync(first.Id, None);
+        (await ReloadJobAsync(first.Id)).State.Should().Be(JobState.Completed);
+
+        (await Revaluator().RevaluateAsync(None)).Should().Be(1);
+
+        var released = await ReloadJobAsync(second.Id);
+        released.State.Should().Be(JobState.Pending);
+        released.BlockReason.Should().Be(JobBlockReason.None);
+        released.DependsOnJobId.Should().BeNull();
+
+        using var db = _harness.CreateContext();
+        var file = await db.Files.AsNoTracking().FirstAsync(f => f.Id == ReportId, None);
+        file.PendingJobId.Should().Be(second.Id, "the released job is now the queue's promise");
+        file.PendingName.Should().Be("v3.txt");
+    }
+
+    [Fact]
+    public async Task A_dependent_does_not_move_while_its_prerequisite_is_still_queued()
+    {
+        var first = await RenameFileAsync(ReportId, "v2.txt");
+        var second = await RenameFileAsync(ReportId, "v3.txt");
+
+        (await Revaluator().RevaluateAsync(None)).Should().Be(0);
+
+        var still = await ReloadJobAsync(second.Id);
+        still.State.Should().Be(JobState.Blocked);
+        still.BlockReason.Should().Be(JobBlockReason.DependencyPending);
+        still.DependsOnJobId.Should().Be(first.Id);
+    }
+
+    [Fact]
+    public async Task A_released_dependent_runs_on_fresh_snapshots_not_dead_paths()
+    {
+        // Finding 8a, the whole point: the folder job runs first (FIFO) and moves the ground
+        // under the file job's snapshot. Before 9c the file job then died on a
+        // FileNotFoundException — permanently, because the retry re-used the same dead path.
+        var folderJob = await RenameFolderAsync(DocsId, "Documenti");
+        var fileJob = await MoveFileAsync(DataId, "Media");
+
+        ShouldDependOn(fileJob, folderJob);
+
+        await Engine().ExecuteJobAsync(folderJob.Id, None);
+        (await ReloadJobAsync(folderJob.Id)).State.Should().Be(JobState.Completed);
+
+        (await Revaluator().RevaluateAsync(None)).Should().Be(1);
+
+        using var db = _harness.CreateContext();
+        var item = await db.OperationJobItems.AsNoTracking().FirstAsync(i => i.JobId == fileJob.Id, None);
+        item.SourceRelativePath.Should().Be(@"Documenti\Sub\data.csv",
+            "the file is where the completed rename left it, not where it was queued from");
+        item.TargetRelativePath.Should().Be(@"Media\data.csv");
+    }
+
+    [Fact]
+    public async Task A_released_folder_job_follows_the_rename_that_moved_it()
+    {
+        // Same, for the item that has no FileId to resolve: the folder marker of a MoveFolder.
+        var renameParent = await RenameFolderAsync(DocsId, "Documenti");
+        var moveChild = await Svc().EnqueueAsync(new CreateJobRequest
+        {
+            Type = JobType.MoveFolder, SourceDirectoryId = SubId,
+            TargetVolumeId = Vol1Id, TargetRelativePath = "Media"
+        }, None);
+
+        ShouldDependOn(moveChild, renameParent);
+
+        await Engine().ExecuteJobAsync(renameParent.Id, None);
+        (await Revaluator().RevaluateAsync(None)).Should().Be(1);
+
+        using var db = _harness.CreateContext();
+        var item = await db.OperationJobItems.AsNoTracking()
+            .FirstAsync(i => i.JobId == moveChild.Id, None);
+        item.SourceRelativePath.Should().Be(@"Documenti\Sub");
+        item.TargetRelativePath.Should().Be(@"Media\Sub");
+    }
+
+    [Fact]
+    public async Task The_dependency_is_repointed_when_someone_else_is_still_in_the_way()
+    {
+        var onSub = await RenameFolderAsync(SubId, "SubRinominata");     // Docs\Sub
+        var onData = await RenameFileAsync(DataId, "v2.csv");            // Docs\Sub\data.csv
+        var onDocs = await RenameFolderAsync(DocsId, "Documenti");       // Docs
+
+        ShouldDependOn(onData, onSub);
+        ShouldDependOn(onDocs, onData);
+
+        await Engine().ExecuteJobAsync(onSub.Id, None);
+        await Revaluator().RevaluateAsync(None);
+
+        // onData is free; onDocs is not — it now waits for onData instead of onSub.
+        (await ReloadJobAsync(onData.Id)).State.Should().Be(JobState.Pending);
+
+        var repointed = await ReloadJobAsync(onDocs.Id);
+        repointed.State.Should().Be(JobState.Blocked);
+        repointed.BlockReason.Should().Be(JobBlockReason.DependencyPending);
+        repointed.DependsOnJobId.Should().Be(onData.Id);
     }
 
     // ── still refused: the requests that are wrong, not merely queued behind ──

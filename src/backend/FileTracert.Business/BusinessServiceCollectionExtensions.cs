@@ -1,4 +1,4 @@
-using FileTracert.Business.Notifications;
+﻿using FileTracert.Business.Notifications;
 using FileTracert.Business.Operations;
 using FileTracert.Business.Projection;
 using FileTracert.Business.Scanning;
@@ -43,8 +43,12 @@ public static class BusinessServiceCollectionExtensions
         // Queue service is scoped: each API request gets its own DbContext.
         services.AddScoped<IQueueService, QueueService>();
 
-        // The single "is anything already working on this place?" predicate (finding 8 / K5).
+        // The single "is anything already working on this place?" predicate (finding 8 / K5),
+        // and the one path that puts a parked job back in the queue (guard re-ask, fresh
+        // snapshots, overlay) shared by the revaluation and the user's Riprova.
         services.AddScoped<PendingWorkGuard>();
+        services.AddScoped<JobSnapshotRefresher>();
+        services.AddScoped<JobUnblocker>();
 
         // Projection (§5): the overlay writer is the single point that stamps and clears the
         // Pending* fields, the directory resolver the single walk that materializes a path.

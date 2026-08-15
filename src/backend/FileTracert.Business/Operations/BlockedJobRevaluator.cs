@@ -1,4 +1,4 @@
-using FileTracert.Contracts.Enums;
+﻿using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Operations;
 using FileTracert.Data;
 using FileTracert.Data.Entities;
@@ -25,24 +25,36 @@ namespace FileTracert.Business.Operations;
 /// </summary>
 public sealed class BlockedJobRevaluator
 {
+    /// <summary>
+    /// Block reasons that can resolve without the user doing anything.
+    /// <see cref="JobBlockReason.DependencyCancelled"/> is deliberately NOT here: the
+    /// prerequisite was cancelled or failed, which is a decision (or a fact) the user has to
+    /// acknowledge. Releasing such a job automatically is precisely the failure finding 9
+    /// describes — the folder whose creation was cancelled gets silently recreated by the
+    /// dependent move. «Riprova» is its reactivation path, and it re-asks the guard.
+    /// </summary>
     private static readonly JobBlockReason[] RevaluableReasons =
     [
         JobBlockReason.InsufficientSpace,
         JobBlockReason.TargetVolumeOffline,
         JobBlockReason.SourceVolumeOffline,
+        JobBlockReason.DependencyPending,
     ];
 
     private readonly FileTracertDbContext _db;
     private readonly ISpaceLedger _ledger;
+    private readonly JobUnblocker _unblocker;
     private readonly ILogger<BlockedJobRevaluator> _logger;
 
     public BlockedJobRevaluator(
         FileTracertDbContext db,
         ISpaceLedger ledger,
+        JobUnblocker unblocker,
         ILogger<BlockedJobRevaluator> logger)
     {
         _db = db;
         _ledger = ledger;
+        _unblocker = unblocker;
         _logger = logger;
     }
 
@@ -50,6 +62,7 @@ public sealed class BlockedJobRevaluator
     public async Task<int> RevaluateAsync(CancellationToken ct)
     {
         var blocked = await _db.OperationJobs
+            .Include(j => j.Items)
             .Include(j => j.SourceVolume)
             .Include(j => j.TargetVolume)
             .Where(j => j.State == JobState.Blocked && RevaluableReasons.Contains(j.BlockReason))
@@ -62,11 +75,22 @@ public sealed class BlockedJobRevaluator
         // feasibility of the next candidate must account for.
         foreach (var job in blocked)
         {
+            // A job waiting for another job is not waiting for the WORLD: the offline and space
+            // gates below would overwrite DependencyPending with a reason that is true but not
+            // the blocking one, and lose track of the prerequisite. Settle the dependency first;
+            // only a job whose path is clear falls through to the other two gates.
+            if (job.BlockReason == JobBlockReason.DependencyPending &&
+                !await DependencyIsSettledAsync(job, ct))
+            {
+                continue;
+            }
+
             var offline = VolumeOfflineGate.Evaluate(job.SourceVolume, job.TargetVolume);
             if (offline != JobBlockReason.None)
             {
                 await KeepBlockedAsync(job, offline,
-                    VolumeOfflineGate.Describe(offline, job.SourceVolume, job.TargetVolume), ct);
+                    VolumeOfflineGate.Describe(offline, job.SourceVolume, job.TargetVolume),
+                    job.DependsOnJobId, ct);
                 continue;
             }
 
@@ -74,7 +98,8 @@ public sealed class BlockedJobRevaluator
             if (deficit > 0)
             {
                 await KeepBlockedAsync(job, JobBlockReason.InsufficientSpace,
-                    $"Insufficient space: {deficit} bytes short on volume {job.TargetVolumeId}.", ct);
+                    $"Insufficient space: {deficit} bytes short on volume {job.TargetVolumeId}.",
+                    job.DependsOnJobId, ct);
                 continue;
             }
 
@@ -103,15 +128,87 @@ public sealed class BlockedJobRevaluator
         return feasibility.DeficitBytes;
     }
 
+    /// <summary>
+    /// Decides what to do with a job parked behind another one. Returns true — and leaves the job
+    /// with no dependency — only when the path is genuinely clear; otherwise the job is left (or
+    /// re-parked) <c>Blocked</c> and the caller moves on.
+    ///
+    /// The prerequisite is not trusted as a single yes/no: when it is done, the GUARD is asked
+    /// again. That is what makes one <c>DependsOnJobId</c> sufficient — several jobs can overlap
+    /// a subtree, and the dependency is simply re-pointed at whoever is still in the way.
+    /// </summary>
+    private async Task<bool> DependencyIsSettledAsync(OperationJob job, CancellationToken ct)
+    {
+        if (job.DependsOnJobId is { } prerequisiteId)
+        {
+            var prerequisite = await _db.OperationJobs.AsNoTracking()
+                .Where(j => j.Id == prerequisiteId)
+                .Select(j => new { j.Id, j.State, j.Type })
+                .FirstOrDefaultAsync(ct);
+
+            if (prerequisite is not null)
+            {
+                if (!JobStates.Terminal.Contains(prerequisite.State))
+                    return false;   // still running or still queued: nothing to do, no write
+
+                if (prerequisite.State is JobState.Cancelled or JobState.Failed)
+                {
+                    // §5: never a cascade of cancellations — the dependent stays in the queue,
+                    // parked on a reason that says why, reactivatable with «Riprova».
+                    await KeepBlockedAsync(job, JobBlockReason.DependencyCancelled,
+                        $"L'operazione #{prerequisite.Id} ({prerequisite.Type}) da cui dipendeva " +
+                        $"è terminata come {prerequisite.State}: verificare e riprovare.",
+                        prerequisiteId, ct);
+                    return false;
+                }
+            }
+        }
+
+        var conflict = await _unblocker.FindConflictAsync(job, ct);
+        if (conflict is not null)
+        {
+            await KeepBlockedAsync(job, JobBlockReason.DependencyPending,
+                QueueService.DescribeDependency(conflict), conflict.JobId, ct);
+            return false;
+        }
+
+        return true;
+    }
+
     /// <summary>Returns the job to Pending and normalizes its reservation. False if a concurrent write won.</summary>
     private async Task<bool> UnblockAsync(OperationJob job, CancellationToken ct)
     {
         var previousReason = job.BlockReason;
+
+        // A job that waited behind another one was queued with paths the other job has since
+        // invalidated (finding 8a), and owns no projection overlay. Both are fixed here, in the
+        // SAME transaction as the state change: a crash must never leave a runnable job with a
+        // dead snapshot or an invisible operation. Nothing is written until the refresh has
+        // succeeded — if it cannot, the job stays parked with an explicit reason, never Failed.
+        await using var tx = await _db.Database.BeginTransactionAsync(ct);
+
+        var problem = await _unblocker.RefreshSnapshotsAsync(job, ct);
+        if (problem is not null)
+        {
+            await tx.RollbackAsync(ct);
+            await DiscardPendingEditsAsync(job, ct);
+            await KeepBlockedAsync(job, job.BlockReason, problem, job.DependsOnJobId, ct);
+            return false;
+        }
+
         job.State = JobState.Pending;
         job.BlockReason = JobBlockReason.None;
         job.ErrorMessage = null;
+        job.DependsOnJobId = null;
         if (!await SaveOrFollowConcurrentStateAsync(job, ct))
+        {
+            await tx.RollbackAsync(ct);
+            await DiscardPendingEditsAsync(job, ct);
             return false;
+        }
+
+        await _unblocker.TakeOverlayAsync(job, ct);
+        await tx.CommitAsync(ct);
 
         // Guarantee exactly one active reservation: a job blocked at enqueue for lack of space
         // never reserved (shouldReserve was false), one blocked by the engine — or parked by the
@@ -130,20 +227,37 @@ public sealed class BlockedJobRevaluator
     }
 
     /// <summary>
+    /// Throws away the tracked-but-unsaved edits of an aborted release (refreshed snapshots, the
+    /// half-set state) by re-reading the committed rows. Cheaper and far safer than clearing the
+    /// change tracker, which would detach the other jobs this pass still has to work on.
+    /// </summary>
+    private async Task DiscardPendingEditsAsync(OperationJob job, CancellationToken ct)
+    {
+        await _db.Entry(job).ReloadAsync(ct);
+        foreach (var item in job.Items)
+            await _db.Entry(item).ReloadAsync(ct);
+    }
+
+    /// <summary>
     /// The job stays blocked, but possibly for a different reason than before — the target came
     /// back while the source is still missing, or a remount revealed the drive is now too full.
     /// Persisted only when something actually changed, so a quiet revaluation writes nothing.
     /// </summary>
-    private async Task KeepBlockedAsync(OperationJob job, JobBlockReason reason, string message, CancellationToken ct)
+    private async Task KeepBlockedAsync(
+        OperationJob job, JobBlockReason reason, string message, int? dependsOnJobId, CancellationToken ct)
     {
-        if (job.BlockReason == reason && job.ErrorMessage == message)
+        if (job.BlockReason == reason && job.ErrorMessage == message &&
+            job.DependsOnJobId == dependsOnJobId)
+        {
             return;
+        }
 
         _logger.LogInformation(
             "Job {Id} stays blocked: {Old} → {New}.", job.Id, job.BlockReason, reason);
 
         job.BlockReason = reason;
         job.ErrorMessage = message;
+        job.DependsOnJobId = dependsOnJobId;
         await SaveOrFollowConcurrentStateAsync(job, ct);
     }
 

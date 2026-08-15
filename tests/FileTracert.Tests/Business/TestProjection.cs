@@ -22,6 +22,12 @@ internal static class TestProjection
     /// <summary>The real enqueue guard — never a stub: the tests are largely ABOUT what it decides.</summary>
     public static PendingWorkGuard Guard(FileTracertDbContext db) => new(db);
 
+    /// <summary>The real release path: guard re-ask + snapshot refresh + overlay.</summary>
+    public static JobUnblocker Unblocker(FileTracertDbContext db, IFileSearchIndex? fts = null) =>
+        new(db, Guard(db), Overlay(db, fts),
+            new JobSnapshotRefresher(db, NullLogger<JobSnapshotRefresher>.Instance),
+            NullLogger<JobUnblocker>.Instance);
+
     public static IndexUpdater Index(FileTracertDbContext db, IFileSearchIndex? fts = null) =>
         new(db, fts ?? new FakeFileSearchIndex(), new DirectoryResolver(db),
             NullLogger<IndexUpdater>.Instance);
