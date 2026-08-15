@@ -60,7 +60,7 @@ public sealed class QueueServiceTests : IDisposable
         return new QueueService(db, _ledger, _cancellation,
             NSubstitute.Substitute.For<FileTracert.Contracts.Platform.IFileMover>(),
             new QueueSignal(),
-            new IndexUpdater(db, new FakeFileSearchIndex(), NullLogger<IndexUpdater>.Instance),
+            TestProjection.Index(db), TestProjection.Overlay(db),
             NullLogger<QueueService>.Instance);
     }
 

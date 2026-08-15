@@ -89,7 +89,7 @@ public sealed class IndexUpdaterTests : IDisposable
         await using (var db = _harness.CreateContext())
         {
             var job = await db.OperationJobs.Include(j => j.Items).SingleAsync();
-            var updater = new IndexUpdater(db, fts, NullLogger<IndexUpdater>.Instance);
+            var updater = TestProjection.Index(db, fts);
             await updater.UpdateAfterCompletionAsync(job, CancellationToken.None);
         }
 

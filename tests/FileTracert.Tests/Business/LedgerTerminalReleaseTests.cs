@@ -75,9 +75,9 @@ public sealed class LedgerTerminalReleaseTests : IDisposable
     private JobExecutionEngine MakeEngine()
     {
         var db = _harness.CreateContext();
-        var indexUpdater = new IndexUpdater(db, new FakeFileSearchIndex(), NullLogger<IndexUpdater>.Instance);
+        var indexUpdater = TestProjection.Index(db);
         var notifications = new FileTracert.Business.Notifications.NotificationService(db);
-        return new JobExecutionEngine(db, _mover, NoopLedger(), indexUpdater, notifications,
+        return new JobExecutionEngine(db, _mover, NoopLedger(), indexUpdater, TestProjection.Overlay(db), notifications,
             TimeProvider.System, NullLogger<JobExecutionEngine>.Instance);
     }
 
@@ -175,7 +175,7 @@ public sealed class LedgerTerminalReleaseTests : IDisposable
         var queue = new QueueService(db, NoopLedger(), _registry,
             Substitute.For<FileTracert.Contracts.Platform.IFileMover>(),
             new QueueSignal(),
-            new IndexUpdater(db, new FakeFileSearchIndex(), NullLogger<IndexUpdater>.Instance),
+            TestProjection.Index(db), TestProjection.Overlay(db),
             NullLogger<QueueService>.Instance);
 
         await queue.CancelAsync(jobId, CancellationToken.None);

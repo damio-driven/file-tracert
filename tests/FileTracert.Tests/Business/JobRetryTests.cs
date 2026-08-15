@@ -75,16 +75,16 @@ public sealed class JobRetryTests : IDisposable
         var db = _harness.CreateContext();
         return new QueueService(db, _ledger, new JobCancellationRegistry(), _mover,
             new QueueSignal(),
-            new IndexUpdater(db, new FakeFileSearchIndex(), NullLogger<IndexUpdater>.Instance),
+            TestProjection.Index(db), TestProjection.Overlay(db),
             NullLogger<QueueService>.Instance);
     }
 
     private JobExecutionEngine MakeEngine()
     {
         var db = _harness.CreateContext();
-        var indexUpdater = new IndexUpdater(db, new FakeFileSearchIndex(), NullLogger<IndexUpdater>.Instance);
+        var indexUpdater = TestProjection.Index(db);
         var notifications = new FileTracert.Business.Notifications.NotificationService(db);
-        return new JobExecutionEngine(db, _mover, _ledger, indexUpdater, notifications,
+        return new JobExecutionEngine(db, _mover, _ledger, indexUpdater, TestProjection.Overlay(db), notifications,
             TimeProvider.System, NullLogger<JobExecutionEngine>.Instance);
     }
 

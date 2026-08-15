@@ -72,9 +72,9 @@ public sealed class JobPartialCleanupTests : IDisposable
               .ReturnsForAnyArgs(new FeasibilityResult(0, 0, long.MaxValue, 0, true, null, true));
 
         var db = _harness.CreateContext();
-        var indexUpdater = new IndexUpdater(db, new FakeFileSearchIndex(), NullLogger<IndexUpdater>.Instance);
+        var indexUpdater = TestProjection.Index(db);
         var notifications = new FileTracert.Business.Notifications.NotificationService(db);
-        return new JobExecutionEngine(db, _mover, ledger, indexUpdater, notifications,
+        return new JobExecutionEngine(db, _mover, ledger, indexUpdater, TestProjection.Overlay(db), notifications,
             TimeProvider.System, NullLogger<JobExecutionEngine>.Instance);
     }
 
@@ -85,7 +85,7 @@ public sealed class JobPartialCleanupTests : IDisposable
         var db = _harness.CreateContext();
         return new QueueService(db, ledger, new JobCancellationRegistry(),
             _mover, new QueueSignal(),
-            new IndexUpdater(db, new FakeFileSearchIndex(), NullLogger<IndexUpdater>.Instance),
+            TestProjection.Index(db), TestProjection.Overlay(db),
             NullLogger<QueueService>.Instance);
     }
 

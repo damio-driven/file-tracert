@@ -104,14 +104,14 @@ public sealed class QueueWorkerLoopE2ETests : IDisposable
 
     private QueueService MakeQueue(FileTracertDbContext db) =>
         new(db, _ledger, _cancellation, _mover, new QueueSignal(),
-            new IndexUpdater(db, new FakeFileSearchIndex(), NullLogger<IndexUpdater>.Instance),
+            TestProjection.Index(db), TestProjection.Overlay(db),
             NullLogger<QueueService>.Instance);
 
     private JobExecutionEngine MakeEngine(FileTracertDbContext db)
     {
-        var indexUpdater = new IndexUpdater(db, new FakeFileSearchIndex(), NullLogger<IndexUpdater>.Instance);
+        var indexUpdater = TestProjection.Index(db);
         var notifications = new FileTracert.Business.Notifications.NotificationService(db);
-        return new JobExecutionEngine(db, _mover, _ledger, indexUpdater, notifications,
+        return new JobExecutionEngine(db, _mover, _ledger, indexUpdater, TestProjection.Overlay(db), notifications,
             TimeProvider.System, NullLogger<JobExecutionEngine>.Instance);
     }
 

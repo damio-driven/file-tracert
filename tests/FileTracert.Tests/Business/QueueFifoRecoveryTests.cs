@@ -89,14 +89,14 @@ public sealed class QueueFifoRecoveryTests : IDisposable
 
     private QueueService MakeQueueService(FileTracertDbContext db) =>
         new(db, _ledger, _cancellation, Substitute.For<IFileMover>(), new QueueSignal(),
-            new IndexUpdater(db, new FakeFileSearchIndex(), NullLogger<IndexUpdater>.Instance),
+            TestProjection.Index(db), TestProjection.Overlay(db),
             NullLogger<QueueService>.Instance);
 
     private JobExecutionEngine MakeEngine(IFileMover mover, FileTracertDbContext db)
     {
-        var indexUpdater = new IndexUpdater(db, new FakeFileSearchIndex(), NullLogger<IndexUpdater>.Instance);
+        var indexUpdater = TestProjection.Index(db);
         var notifications = new FileTracert.Business.Notifications.NotificationService(db);
-        return new JobExecutionEngine(db, mover, _ledger, indexUpdater, notifications,
+        return new JobExecutionEngine(db, mover, _ledger, indexUpdater, TestProjection.Overlay(db), notifications,
             TimeProvider.System, NullLogger<JobExecutionEngine>.Instance);
     }
 

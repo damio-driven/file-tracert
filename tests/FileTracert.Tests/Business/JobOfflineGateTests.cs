@@ -124,7 +124,7 @@ public sealed class JobOfflineGateTests : IDisposable
         var db = _harness.CreateContext();
         return new JobExecutionEngine(
             db, mover, _ledger,
-            new IndexUpdater(db, new FakeFileSearchIndex(), NullLogger<IndexUpdater>.Instance),
+            TestProjection.Index(db), TestProjection.Overlay(db),
             new FileTracert.Business.Notifications.NotificationService(db),
             TimeProvider.System, NullLogger<JobExecutionEngine>.Instance);
     }
@@ -134,7 +134,7 @@ public sealed class JobOfflineGateTests : IDisposable
         var db = _harness.CreateContext();
         return new QueueService(
             db, _ledger, new JobCancellationRegistry(), mover, new QueueSignal(),
-            new IndexUpdater(db, new FakeFileSearchIndex(), NullLogger<IndexUpdater>.Instance),
+            TestProjection.Index(db), TestProjection.Overlay(db),
             NullLogger<QueueService>.Instance);
     }
 

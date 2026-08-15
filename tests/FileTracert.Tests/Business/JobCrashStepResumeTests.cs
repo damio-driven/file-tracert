@@ -68,9 +68,9 @@ public sealed class JobCrashStepResumeTests : IDisposable
         ledger.ReleaseAsync(default, default).ReturnsForAnyArgs(Task.CompletedTask);
 
         var db = _harness.CreateContext();
-        var indexUpdater = new IndexUpdater(db, new FakeFileSearchIndex(), NullLogger<IndexUpdater>.Instance);
+        var indexUpdater = TestProjection.Index(db);
         var notifications = new FileTracert.Business.Notifications.NotificationService(db);
-        return new JobExecutionEngine(db, _mover, ledger, indexUpdater, notifications,
+        return new JobExecutionEngine(db, _mover, ledger, indexUpdater, TestProjection.Overlay(db), notifications,
             TimeProvider.System, NullLogger<JobExecutionEngine>.Instance);
     }
 

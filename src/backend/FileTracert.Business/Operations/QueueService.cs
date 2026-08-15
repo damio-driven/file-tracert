@@ -1,3 +1,4 @@
+using FileTracert.Business.Projection;
 using FileTracert.Business.Scanning;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Operations;
@@ -24,6 +25,7 @@ public sealed class QueueService : IQueueService
     private readonly IFileMover _mover;
     private readonly IQueueSignal _signal;
     private readonly IndexUpdater _indexUpdater;
+    private readonly OverlayWriter _overlay;
     private readonly ILogger<QueueService> _logger;
 
     public QueueService(
@@ -33,6 +35,7 @@ public sealed class QueueService : IQueueService
         IFileMover mover,
         IQueueSignal signal,
         IndexUpdater indexUpdater,
+        OverlayWriter overlay,
         ILogger<QueueService> logger)
     {
         _db = db;
@@ -41,6 +44,7 @@ public sealed class QueueService : IQueueService
         _mover = mover;
         _signal = signal;
         _indexUpdater = indexUpdater;
+        _overlay = overlay;
         _logger = logger;
     }
 
@@ -55,6 +59,14 @@ public sealed class QueueService : IQueueService
         foreach (var item in items)
             _db.OperationJobItems.Add(item);
         await _db.SaveChangesAsync(ct);   // assigns job.Id, still inside the open transaction
+
+        // §5 — queuing an operation mutates the PROJECTION immediately: the entity is shown at
+        // once under its new name / in its new folder / on its new volume. Written here, inside
+        // the job's own transaction, so job and overlay commit together or not at all — an
+        // overlay without a job would point at a job that never existed.
+        // Applied AFTER the offline gate and regardless of its verdict: a job parked
+        // Blocked(volume offline) is still in the queue, therefore still in the projection.
+        await _overlay.ApplyAsync(job, items, ct);
 
         // C3: stage the ledger reservation in the SAME transaction as the job, so the two commit
         // atomically. The old code reserved AFTER the commit — a throw or aborted request between

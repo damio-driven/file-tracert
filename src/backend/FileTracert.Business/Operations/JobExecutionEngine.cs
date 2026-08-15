@@ -1,3 +1,4 @@
+using FileTracert.Business.Projection;
 using FileTracert.Business.Scanning;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Notifications;
@@ -32,6 +33,7 @@ public sealed class JobExecutionEngine
     private readonly IFileMover _mover;
     private readonly ISpaceLedger _ledger;
     private readonly IndexUpdater _indexUpdater;
+    private readonly OverlayWriter _overlay;
     private readonly INotificationPublisher _notifications;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<JobExecutionEngine> _logger;
@@ -41,6 +43,7 @@ public sealed class JobExecutionEngine
         IFileMover mover,
         ISpaceLedger ledger,
         IndexUpdater indexUpdater,
+        OverlayWriter overlay,
         INotificationPublisher notifications,
         TimeProvider timeProvider,
         ILogger<JobExecutionEngine> logger)
@@ -49,6 +52,7 @@ public sealed class JobExecutionEngine
         _mover = mover;
         _ledger = ledger;
         _indexUpdater = indexUpdater;
+        _overlay = overlay;
         _notifications = notifications;
         _timeProvider = timeProvider;
         _logger = logger;

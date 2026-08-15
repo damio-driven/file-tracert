@@ -1,5 +1,6 @@
 using FileTracert.Business.Notifications;
 using FileTracert.Business.Operations;
+using FileTracert.Business.Projection;
 using FileTracert.Business.Scanning;
 using FileTracert.Business.Setup;
 using FileTracert.Business.Volumes;
@@ -41,6 +42,11 @@ public static class BusinessServiceCollectionExtensions
 
         // Queue service is scoped: each API request gets its own DbContext.
         services.AddScoped<IQueueService, QueueService>();
+
+        // Projection (§5): the overlay writer is the single point that stamps and clears the
+        // Pending* fields, the directory resolver the single walk that materializes a path.
+        services.AddScoped<DirectoryResolver>();
+        services.AddScoped<OverlayWriter>();
 
         // Execution engine + index updater are scoped: resolved per job execution.
         services.AddScoped<IndexUpdater>();

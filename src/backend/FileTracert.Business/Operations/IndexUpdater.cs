@@ -1,3 +1,4 @@
+using FileTracert.Business.Projection;
 using FileTracert.Business.Scanning;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Search;
@@ -17,12 +18,18 @@ public sealed class IndexUpdater
 {
     private readonly FileTracertDbContext _db;
     private readonly IFileSearchIndex _fts;
+    private readonly DirectoryResolver _directories;
     private readonly ILogger<IndexUpdater> _logger;
 
-    public IndexUpdater(FileTracertDbContext db, IFileSearchIndex fts, ILogger<IndexUpdater> logger)
+    public IndexUpdater(
+        FileTracertDbContext db,
+        IFileSearchIndex fts,
+        DirectoryResolver directories,
+        ILogger<IndexUpdater> logger)
     {
         _db = db;
         _fts = fts;
+        _directories = directories;
         _logger = logger;
     }
 
@@ -284,32 +291,15 @@ public sealed class IndexUpdater
 
     // ── helpers ───────────────────────────────────────────────────────────────
 
-    /// <summary>Finds or recursively creates all directories in <paramref name="path"/> on the given volume.</summary>
-    private async Task<DirectoryNode> FindOrCreateDirAsync(int volumeId, string path, CancellationToken ct)
-    {
-        var existing = await _db.Directories
-            .FirstOrDefaultAsync(d => d.VolumeId == volumeId && d.MaterializedPath == path, ct);
-        if (existing is not null) return existing;
-
-        var name = string.IsNullOrEmpty(path) ? string.Empty : ScanPath.Name(path);
-        var parentPath = ScanPath.Parent(path);
-
-        DirectoryNode? parent = null;
-        if (!string.IsNullOrEmpty(path))  // non-root
-            parent = await FindOrCreateDirAsync(volumeId, parentPath, ct);
-
-        var newDir = new DirectoryNode
-        {
-            VolumeId = volumeId,
-            ParentId = parent?.Id,
-            Name = name,
-            MaterializedPath = path,
-            IsMaterialized = true
-        };
-        _db.Directories.Add(newDir);
-        await _db.SaveChangesAsync(ct);
-        return newDir;
-    }
+    /// <summary>
+    /// Finds or recursively creates all directories in <paramref name="path"/> on the given volume,
+    /// as folders that now exist ON DISK. Delegates to <see cref="DirectoryResolver"/>: the enqueue
+    /// creates the very same rows as mere projection placeholders (§5), and this call is what
+    /// promotes them to materialized once the engine really created them — one walk, one set of
+    /// flags, no second row appearing next to the first.
+    /// </summary>
+    private Task<DirectoryNode> FindOrCreateDirAsync(int volumeId, string path, CancellationToken ct) =>
+        _directories.FindOrCreateMaterializedAsync(volumeId, path, ct);
 
     /// <summary>Cascades a directory rename/move across the subtree and updates FTS.</summary>
     private async Task CascadeDirRenameAsync(int volumeId, string oldPath, string newPath, CancellationToken ct)

@@ -161,7 +161,7 @@ public sealed class MoveFolderSafetyTests : IDisposable
         var db = _harness.CreateContext();
         return new QueueService(db, _ledger, new JobCancellationRegistry(),
             _mover, new QueueSignal(),
-            new IndexUpdater(db, new FakeFileSearchIndex(), NullLogger<IndexUpdater>.Instance),
+            TestProjection.Index(db), TestProjection.Overlay(db),
             NullLogger<QueueService>.Instance);
     }
 
@@ -170,7 +170,7 @@ public sealed class MoveFolderSafetyTests : IDisposable
         var db = _harness.CreateContext();
         return new JobExecutionEngine(
             db, _mover, _ledger,
-            new IndexUpdater(db, new FakeFileSearchIndex(), NullLogger<IndexUpdater>.Instance),
+            TestProjection.Index(db), TestProjection.Overlay(db),
             new NotificationService(db),
             TimeProvider.System, NullLogger<JobExecutionEngine>.Instance);
     }

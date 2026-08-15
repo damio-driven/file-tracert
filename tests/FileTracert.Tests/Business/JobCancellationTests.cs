@@ -75,9 +75,9 @@ public sealed class JobCancellationTests : IDisposable
     private JobExecutionEngine MakeEngine(IFileMover mover)
     {
         var db = _harness.CreateContext();
-        var indexUpdater = new IndexUpdater(db, new FakeFileSearchIndex(), NullLogger<IndexUpdater>.Instance);
+        var indexUpdater = TestProjection.Index(db);
         var notifications = new FileTracert.Business.Notifications.NotificationService(db);
-        return new JobExecutionEngine(db, mover, NoopLedger(), indexUpdater, notifications,
+        return new JobExecutionEngine(db, mover, NoopLedger(), indexUpdater, TestProjection.Overlay(db), notifications,
             TimeProvider.System, NullLogger<JobExecutionEngine>.Instance);
     }
 
@@ -86,7 +86,7 @@ public sealed class JobCancellationTests : IDisposable
         var db = _harness.CreateContext();
         return new QueueService(db, NoopLedger(), _registry, Substitute.For<IFileMover>(),
             new QueueSignal(),
-            new IndexUpdater(db, new FakeFileSearchIndex(), NullLogger<IndexUpdater>.Instance),
+            TestProjection.Index(db), TestProjection.Overlay(db),
             NullLogger<QueueService>.Instance);
     }
 
