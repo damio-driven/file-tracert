@@ -26,6 +26,14 @@ public sealed class RescanPreservesOverlayScenario : Scenario
     private const string VanishFile = @"rescan\rescanprobe-vanish.dat";
     private const string PendingRenameTo = "rescanprobe-renamed.dat";
 
+    /// <summary>
+    /// Filler files, so the two scan timings say something about a real workload instead of
+    /// timing two rows. Small on purpose: the merge cost is per row, not per byte.
+    /// </summary>
+    private const int FillerFiles = 2_000;
+
+    private const int FillerFileBytes = 1024;
+
     public override string Name => "rescan-preserves-overlay";
 
     public override string Description =>
@@ -35,10 +43,18 @@ public sealed class RescanPreservesOverlayScenario : Scenario
 
     public override async Task RunAsync(ScenarioContext ctx)
     {
-        // ── arrange ───────────────────────────────────────────────────────────
+        // ── arrange (through the real scan, so both scan costs are measured) ──
         ctx.Source.CreateFile(KeepFile, 64 * 1024);
         var vanishFullPath = ctx.Source.CreateFile(VanishFile, 32 * 1024);
-        await ctx.IndexSourceAsync(AllowEverything());
+        for (var i = 0; i < FillerFiles; i++)
+        {
+            ctx.Source.CreateFile($@"rescan\filler\f{i:D5}.dat", FillerFileBytes);
+        }
+
+        await EnsureWatchedRootAsync(ctx);
+        var firstScan = await ScanAsync(ctx);
+        ctx.Log($"first scan of {FillerFiles + 2} files (empty catalog, bulk-insert path): " +
+                $"{firstScan.TotalSeconds:0.00}s");
 
         var keepPath = ctx.Source.RelativePath(KeepFile);
         var vanishPath = ctx.Source.RelativePath(VanishFile);
@@ -59,14 +75,13 @@ public sealed class RescanPreservesOverlayScenario : Scenario
         // not delete it.
         File.Delete(vanishFullPath);
 
-        // ── act (a real, complete scan of the volume) ─────────────────────────
-        await EnsureWatchedRootAsync(ctx);
-        await ctx.Env.WithScopeAsync<object?>(async sp =>
-        {
-            await sp.GetRequiredService<ScanService>().ScanVolumeAsync(ctx.SourceVolumeId, ctx.Ct);
-            return null;
-        });
-        ctx.Log("full scan of the source volume finished");
+        // ── act (a second complete scan of the same volume) ───────────────────
+        var reScan = await ScanAsync(ctx);
+
+        // Before 9a a re-scan was a truncate + full bulk insert, i.e. it cost what the first
+        // scan costs here — so these two numbers are the before/after of the same operation.
+        ctx.Log($"re-scan (merge path): {reScan.TotalSeconds:0.00}s " +
+                $"— before 9a a re-scan cost a full rebuild, i.e. the first-scan number above.");
 
         // ── assert (identity, overlay, absence) ───────────────────────────────
         var keepAfter = await AssertCatalogHasFileAsync(ctx, ctx.SourceVolumeId, keepPath, "after the re-scan");
@@ -110,6 +125,19 @@ public sealed class RescanPreservesOverlayScenario : Scenario
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────
+
+    /// <summary>Runs one real full scan of the source volume and reports how long it took.</summary>
+    private static async Task<TimeSpan> ScanAsync(ScenarioContext ctx)
+    {
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        await ctx.Env.WithScopeAsync<object?>(async sp =>
+        {
+            await sp.GetRequiredService<ScanService>().ScanVolumeAsync(ctx.SourceVolumeId, ctx.Ct);
+            return null;
+        });
+        started.Stop();
+        return started.Elapsed;
+    }
 
     /// <summary>Writes the overlay step 9b will write at enqueue time.</summary>
     private static Task StampOverlayAsync(ScenarioContext ctx, int fileId) =>
