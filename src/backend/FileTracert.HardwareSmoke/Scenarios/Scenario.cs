@@ -1,9 +1,12 @@
 using FileTracert.Business.Filtering;
+using FileTracert.Business.Scanning;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Operations;
+using FileTracert.Contracts.Search;
 using FileTracert.Data.Entities;
 using FileTracert.HardwareSmoke.Harness;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace FileTracert.HardwareSmoke.Scenarios;
 
@@ -186,6 +189,59 @@ public abstract class Scenario
             await db.SaveChangesAsync(ctx.Ct);
         });
     }
+
+    /// <summary>
+    /// Runs one real full scan of a volume through the product's own <see cref="ScanService"/>,
+    /// and reports how long it took. The slowest thing a scenario can do (an NTFS scan walks the
+    /// MFT), so only the scenarios that are ABOUT the scan should call it.
+    /// </summary>
+    protected static async Task<TimeSpan> ScanVolumeAsync(ScenarioContext ctx, int volumeId)
+    {
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        await ctx.Env.WithScopeAsync<object?>(async sp =>
+        {
+            await sp.GetRequiredService<ScanService>().ScanVolumeAsync(volumeId, ctx.Ct);
+            return null;
+        });
+        started.Stop();
+        return started.Elapsed;
+    }
+
+    /// <summary>
+    /// Scopes a scan to one fixture area. Without an active watched root
+    /// <see cref="ScanService"/> has nothing to scan, and with the volume root it would index the
+    /// operator's whole drive into the throwaway harness database.
+    /// </summary>
+    protected static Task EnsureWatchedRootAsync(ScenarioContext ctx, FixtureArea area, int volumeId) =>
+        ctx.Env.WithDbAsync(async db =>
+        {
+            var root = area.RootRelativePath;
+            var exists = await db.WatchedRoots
+                .AnyAsync(r => r.VolumeId == volumeId && r.RelativePath == root, ctx.Ct);
+            if (exists) return;
+
+            db.WatchedRoots.Add(new WatchedRoot
+            {
+                VolumeId = volumeId,
+                RelativePath = root,
+                IsActive = true,
+            });
+            await db.SaveChangesAsync(ctx.Ct);
+        });
+
+    /// <summary>Runs a name-scoped search through the real FTS index and returns the file ids.</summary>
+    protected static Task<IReadOnlyList<int>> SearchByNameAsync(ScenarioContext ctx, string text) =>
+        ctx.Env.WithScopeAsync<IReadOnlyList<int>>(async sp =>
+        {
+            var result = await sp.GetRequiredService<IFileSearchIndex>().SearchAsync(
+                new FileSearchQuery(
+                    Text: text, Scope: SearchScope.Name, Category: null, Extensions: null,
+                    SizeBytesMin: null, SizeBytesMax: null, ModifiedFrom: null, ModifiedTo: null,
+                    VolumeId: null, OnlineOnly: false, Sort: SearchSort.Relevance, Desc: false,
+                    Skip: 0, Take: 50),
+                ctx.Ct);
+            return result.Items;
+        });
 
     /// <summary>Builds a move-file request against the target area's root.</summary>
     protected static CreateJobRequest MoveFileTo(ScenarioContext ctx, int fileId, string targetSubfolder = "") =>

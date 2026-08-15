@@ -1,9 +1,7 @@
 using FileTracert.Business.Scanning;
 using FileTracert.Contracts.Enums;
-using FileTracert.Contracts.Search;
-using FileTracert.Data.Entities;
+using FileTracert.Contracts.Operations;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.DependencyInjection;
 
 namespace FileTracert.HardwareSmoke.Scenarios;
 
@@ -12,10 +10,11 @@ namespace FileTracert.HardwareSmoke.Scenarios;
 /// (while <c>OperationJobItems.FileId</c> kept pointing at the old one) and every <c>Pending*</c>
 /// field was wiped. This runs the real <see cref="ScanService"/> a second time over a volume that
 /// has already been indexed and checks the three things that must survive it: the row identity,
-/// the pending overlay, and the ability to run a real job against that same row afterwards.
+/// the pending overlay, and the ability to run the very job that wrote that overlay afterwards.
 ///
-/// Until step 9b writes the overlay at enqueue, the scenario stamps the <c>Pending*</c> fields by
-/// hand — the point under test is the scan, not who wrote them.
+/// The overlay comes from a real enqueue — since step 9b that is what writes it — so the scenario
+/// covers the whole loop: queue an operation, re-scan under it, execute it, and find both the
+/// physical fact applied and the overlay gone.
 ///
 /// Note for the operator: this is the one scenario that runs a full volume scan, so it is the
 /// slowest in the suite. On a very large volume, raise <c>ScenarioTimeoutSeconds</c>.
@@ -51,8 +50,8 @@ public sealed class RescanPreservesOverlayScenario : Scenario
             ctx.Source.CreateFile($@"rescan\filler\f{i:D5}.dat", FillerFileBytes);
         }
 
-        await EnsureWatchedRootAsync(ctx);
-        var firstScan = await ScanAsync(ctx);
+        await EnsureWatchedRootAsync(ctx, ctx.Source, ctx.SourceVolumeId);
+        var firstScan = await ScanVolumeAsync(ctx, ctx.SourceVolumeId);
         ctx.Log($"first scan of {FillerFiles + 2} files (empty catalog, bulk-insert path): " +
                 $"{firstScan.TotalSeconds:0.00}s");
 
@@ -69,14 +68,20 @@ public sealed class RescanPreservesOverlayScenario : Scenario
         var vanishId = vanish.Id;
         var dirId = dir.Id;
 
-        await StampOverlayAsync(ctx, keepId);
+        // The overlay is written by the real enqueue (step 9b) — no hand-stamped Pending* fields.
+        var job = await ctx.Queue.EnqueueAsync(new CreateJobRequest
+        {
+            Type = JobType.RenameFile,
+            SourceFileId = keepId,
+            NewName = PendingRenameTo,
+        }, ctx.Ct);
 
         // The file leaves the disk between the two scans: the merge must mark the row absent,
         // not delete it.
         File.Delete(vanishFullPath);
 
         // ── act (a second complete scan of the same volume) ───────────────────
-        var reScan = await ScanAsync(ctx);
+        var reScan = await ScanVolumeAsync(ctx, ctx.SourceVolumeId);
 
         // Before 9a a re-scan was a truncate + full bulk insert, i.e. it cost what the first
         // scan costs here — so these two numbers are the before/after of the same operation.
@@ -94,7 +99,17 @@ public sealed class RescanPreservesOverlayScenario : Scenario
         ctx.Assert.Equal(PendingRenameTo, keepAfter.PendingName ?? "(null)", "PendingName after the re-scan");
         ctx.Assert.Equal(
             EntityPendingState.PendingRename, keepAfter.PendingState, "PendingState after the re-scan");
+        ctx.Assert.Equal(job.Id, keepAfter.PendingJobId ?? -1, "PendingJobId after the re-scan");
         ctx.Assert.True(keepAfter.IsPresent, "the re-found file must stay present");
+
+        // The search index followed the merge batch by batch — and it carries the PROJECTED name,
+        // so the queued rename is what answers.
+        var hits = await SearchByNameAsync(ctx, "rescanprobe-renamed");
+        ctx.Assert.True(hits.Contains(keepId),
+            $"the re-scanned file must still be searchable under its projected name; hits [{string.Join(", ", hits)}], expected id {keepId}");
+        var vanishHits = await SearchByNameAsync(ctx, "rescanprobe-vanish");
+        ctx.Assert.True(!vanishHits.Contains(vanishId),
+            $"the vanished file must not be a search hit any more; hits [{string.Join(", ", vanishHits)}]");
 
         var vanishAfter = await ctx.Env.WithDbAsync(db => db.Files.AsNoTracking()
             .FirstOrDefaultAsync(f => f.Id == vanishId, ctx.Ct));
@@ -103,84 +118,19 @@ public sealed class RescanPreservesOverlayScenario : Scenario
         else
             ctx.Assert.True(!vanishAfter.IsPresent, "the file deleted from disk must be marked absent");
 
-        // The search index followed the merge batch by batch.
-        var hits = await SearchAsync(ctx, "rescanprobe-keep");
-        ctx.Assert.True(hits.Contains(keepId),
-            $"the re-found file must still be searchable; hits [{string.Join(", ", hits)}], expected id {keepId}");
-        ctx.Assert.True(!hits.Contains(vanishId),
-            $"the vanished file must not be a search hit any more; hits [{string.Join(", ", hits)}]");
-
-        // ── assert (the row is still operable) ────────────────────────────────
-        // The hand-written overlay is a marker, not a queue state, so the enqueue guard (which
-        // reads OperationJobItems) lets this through — exactly as it would for a fresh row.
-        var job = await ctx.Queue.EnqueueAsync(MoveFileTo(ctx, keepId), ctx.Ct);
+        // ── assert (the job that wrote the overlay still runs) ────────────────
         await ctx.Queue.StartWorkerAsync(ctx.Ct);
         var finished = await ctx.Queue.WaitForTerminalAsync(job.Id, ctx.Timeout, ctx.Ct);
 
         ctx.Assert.Equal(JobState.Completed, finished.State,
-            $"a job enqueued on a re-scanned row must complete; {Harness.QueueDriver.Describe(finished)}");
-        ctx.Assert.True(File.Exists(ctx.Target.FullPath("rescanprobe-keep.dat")),
-            "the moved file must exist in the target area");
+            $"a job enqueued before a re-scan must still complete after it; {Harness.QueueDriver.Describe(finished)}");
+        ctx.Assert.FileExists(
+            ctx.Source.FullPath($@"rescan\{PendingRenameTo}"), "the renamed file on disk");
+
+        var keepDone = await ctx.Env.WithDbAsync(db => db.Files.AsNoTracking()
+            .FirstAsync(f => f.Id == keepId, ctx.Ct));
+        ctx.Assert.Equal(PendingRenameTo, keepDone.Name, "the physical name after the rename ran");
+        ctx.Assert.Equal(EntityPendingState.None, keepDone.PendingState, "the overlay after completion");
         AssertNoPartialsAnywhere(ctx);
     }
-
-    // ── helpers ───────────────────────────────────────────────────────────────
-
-    /// <summary>Runs one real full scan of the source volume and reports how long it took.</summary>
-    private static async Task<TimeSpan> ScanAsync(ScenarioContext ctx)
-    {
-        var started = System.Diagnostics.Stopwatch.StartNew();
-        await ctx.Env.WithScopeAsync<object?>(async sp =>
-        {
-            await sp.GetRequiredService<ScanService>().ScanVolumeAsync(ctx.SourceVolumeId, ctx.Ct);
-            return null;
-        });
-        started.Stop();
-        return started.Elapsed;
-    }
-
-    /// <summary>Writes the overlay step 9b will write at enqueue time.</summary>
-    private static Task StampOverlayAsync(ScenarioContext ctx, int fileId) =>
-        ctx.Env.WithDbAsync(async db =>
-        {
-            var row = await db.Files.FirstAsync(f => f.Id == fileId, ctx.Ct);
-            row.PendingName = PendingRenameTo;
-            row.PendingState = EntityPendingState.PendingRename;
-            await db.SaveChangesAsync(ctx.Ct);
-        });
-
-    /// <summary>
-    /// Scopes the scan to the scenario's own fixture area. Without an active watched root
-    /// <see cref="ScanService"/> has nothing to scan, and with the volume root it would index the
-    /// operator's whole drive into the throwaway harness database.
-    /// </summary>
-    private static Task EnsureWatchedRootAsync(ScenarioContext ctx) =>
-        ctx.Env.WithDbAsync(async db =>
-        {
-            var root = ctx.Source.RootRelativePath;
-            var exists = await db.WatchedRoots
-                .AnyAsync(r => r.VolumeId == ctx.SourceVolumeId && r.RelativePath == root, ctx.Ct);
-            if (exists) return;
-
-            db.WatchedRoots.Add(new WatchedRoot
-            {
-                VolumeId = ctx.SourceVolumeId,
-                RelativePath = root,
-                IsActive = true,
-            });
-            await db.SaveChangesAsync(ctx.Ct);
-        });
-
-    private static Task<IReadOnlyList<int>> SearchAsync(ScenarioContext ctx, string text) =>
-        ctx.Env.WithScopeAsync<IReadOnlyList<int>>(async sp =>
-        {
-            var result = await sp.GetRequiredService<IFileSearchIndex>().SearchAsync(
-                new FileSearchQuery(
-                    Text: text, Scope: SearchScope.Name, Category: null, Extensions: null,
-                    SizeBytesMin: null, SizeBytesMax: null, ModifiedFrom: null, ModifiedTo: null,
-                    VolumeId: ctx.SourceVolumeId, OnlineOnly: false, Sort: SearchSort.Relevance, Desc: false,
-                    Skip: 0, Take: 50),
-                ctx.Ct);
-            return result.Items;
-        });
 }
