@@ -13,8 +13,18 @@ namespace FileTracert.Data.Search;
 /// the risk of LINQ leaking SQLite-specific expressions.
 ///
 /// Row identity: <c>rowid = Files.Id</c>.
+///
+/// PROJECTED name (§5): the <c>name</c> column holds <c>PendingName ?? Name</c>, so a queued
+/// rename is searchable under its new name the moment it is queued and stops answering to the
+/// old one. Expressed here as <see cref="ProjectedNameSql"/> — the rule itself lives in
+/// <c>FileTracert.Business/Projection/Projected.cs</c>, this is its SQL mirror.
+/// The <c>path</c> column is the PHYSICAL directory path joined with that projected name: a
+/// queued FOLDER rename deliberately does not touch this index (§5 — no file name changes, and
+/// the alternative is tens of thousands of writes per enqueue); the projected path is what the
+/// search RESULT shows, computed at read time.
+///
 /// Path formula: if <c>Directories.MaterializedPath = ''</c> the path is just
-/// the file name; otherwise <c>dir_path \ file_name</c>.
+/// the projected file name; otherwise <c>dir_path \ projected_name</c>.
 /// Count is capped at 10 000 — large result sets are slow to count fully and
 /// the UI shows "10 000+" when totalCount reaches the cap.
 /// bm25 score: lower = more relevant, so Relevance sorts ASC.
@@ -24,6 +34,37 @@ public sealed class FileSearchIndex : IFileSearchIndex
     private readonly FileTracertDbContext _db;
 
     public FileSearchIndex(FileTracertDbContext db) => _db = db;
+
+    /// <summary>
+    /// The projected file name in SQL. <c>NULLIF</c> guards the empty string as well as NULL:
+    /// an overlay is either a real new name or absent, never a blank that would erase the row
+    /// from every search.
+    /// </summary>
+    private const string ProjectedNameSql = "COALESCE(NULLIF(f.PendingName, ''), f.Name)";
+
+    /// <summary>Physical directory path + projected file name — the <c>path</c> column.</summary>
+    private const string ProjectedPathSql =
+        $"CASE WHEN d.MaterializedPath = '' THEN {ProjectedNameSql} " +
+        $"ELSE d.MaterializedPath || '\\' || {ProjectedNameSql} END";
+
+    /// <summary>
+    /// The insert shared by every population path (per-volume sync, full rebuild, per-batch sync).
+    /// One definition so a change to the projected-name rule cannot land on two of the three.
+    /// Callers append their own <c>WHERE</c>; the inclusion filter is spelled out by
+    /// <see cref="IndexableSql"/>.
+    /// </summary>
+    private const string InsertProjectedSql =
+        $"""
+        INSERT INTO FileSearchIndex(rowid, name, path)
+        SELECT f.Id,
+               {ProjectedNameSql},
+               {ProjectedPathSql}
+        FROM Files f
+        JOIN Directories d ON d.Id = f.DirectoryId
+        """;
+
+    /// <summary>Only included, still-present files belong in the index.</summary>
+    private const string IndexableSql = "f.IsIncluded = 1 AND f.IsPresent = 1";
 
     // -------------------------------------------------------------------------
     // Bulk / volume-level operations
@@ -38,35 +79,17 @@ public sealed class FileSearchIndex : IFileSearchIndex
 
     public async Task SyncVolumeFromDbAsync(int volumeId, CancellationToken ct)
     {
-        await _db.Database.ExecuteSqlAsync(
-            $"""
-            INSERT INTO FileSearchIndex(rowid, name, path)
-            SELECT f.Id,
-                   f.Name,
-                   CASE WHEN d.MaterializedPath = '' THEN f.Name
-                        ELSE d.MaterializedPath || '\' || f.Name END
-            FROM Files f
-            JOIN Directories d ON d.Id = f.DirectoryId
-            WHERE f.VolumeId = {volumeId} AND f.IsIncluded = 1 AND f.IsPresent = 1
-            """,
-            ct);
+        // Built as a local, not interpolated at the call site: the SQL body is a compile-time
+        // constant and the only runtime value stays a real parameter ({0}).
+        var sql = $"{InsertProjectedSql} WHERE f.VolumeId = {{0}} AND {IndexableSql}";
+        await _db.Database.ExecuteSqlRawAsync(sql, [volumeId], ct);
     }
 
     public async Task RebuildAsync(CancellationToken ct)
     {
+        var sql = $"{InsertProjectedSql} WHERE {IndexableSql}";
         await _db.Database.ExecuteSqlRawAsync("DELETE FROM FileSearchIndex;", ct);
-        await _db.Database.ExecuteSqlRawAsync(
-            """
-            INSERT INTO FileSearchIndex(rowid, name, path)
-            SELECT f.Id,
-                   f.Name,
-                   CASE WHEN d.MaterializedPath = '' THEN f.Name
-                        ELSE d.MaterializedPath || '\' || f.Name END
-            FROM Files f
-            JOIN Directories d ON d.Id = f.DirectoryId
-            WHERE f.IsIncluded = 1 AND f.IsPresent = 1
-            """,
-            ct);
+        await _db.Database.ExecuteSqlRawAsync(sql, ct);
     }
 
     /// <summary>
@@ -92,17 +115,7 @@ public sealed class FileSearchIndex : IFileSearchIndex
             // interpolation inline. The values are ints straight from the merge — nothing to
             // escape and nothing user-supplied.
             var deleteSql = "DELETE FROM FileSearchIndex WHERE rowid IN (" + list + ")";
-            var insertSql =
-                """
-                INSERT INTO FileSearchIndex(rowid, name, path)
-                SELECT f.Id,
-                       f.Name,
-                       CASE WHEN d.MaterializedPath = '' THEN f.Name
-                            ELSE d.MaterializedPath || '\' || f.Name END
-                FROM Files f
-                JOIN Directories d ON d.Id = f.DirectoryId
-                WHERE f.Id IN (
-                """ + list + ") AND f.IsIncluded = 1 AND f.IsPresent = 1";
+            var insertSql = $"{InsertProjectedSql} WHERE f.Id IN ({list}) AND {IndexableSql}";
 
             // Delete first, always: FTS5 has no ON CONFLICT, and re-syncing a file that is
             // still indexed would otherwise leave two entries for one rowid.

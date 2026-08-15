@@ -158,6 +158,17 @@ public sealed class ProjectionOverlayTests : IDisposable
             .FirstOrDefaultAsync(d => d.VolumeId == volumeId && d.MaterializedPath == path, None);
     }
 
+    private async Task<IReadOnlyList<int>> SearchNameAsync(string text)
+    {
+        await using var db = _harness.CreateContext();
+        var result = await new FileSearchIndex(db).SearchAsync(new FileSearchQuery(
+            Text: text, Scope: SearchScope.Name, Category: null, Extensions: null,
+            SizeBytesMin: null, SizeBytesMax: null, ModifiedFrom: null, ModifiedTo: null,
+            VolumeId: null, OnlineOnly: false, Sort: SearchSort.Relevance, Desc: false,
+            Skip: 0, Take: 50), None);
+        return result.Items;
+    }
+
     // ── write: the five job types stamp the overlay ──────────────────────────
 
     [Fact]
@@ -307,6 +318,58 @@ public sealed class ProjectionOverlayTests : IDisposable
         var albumAfter = await DirAsync(Vol1Id, @"Docs\Album 2026");
         albumAfter!.PendingJobId.Should().Be(createJob.Id);
         albumAfter.PendingState.Should().Be(EntityPendingState.PendingCreate);
+    }
+
+    // ── write: search sees the projected name ────────────────────────────────
+
+    [Fact]
+    public async Task Search_finds_the_projected_name_and_stops_finding_the_old_one()
+    {
+        (await SearchNameAsync("report")).Should().Contain(File1Id, "arrange");
+
+        await Svc().EnqueueAsync(new CreateJobRequest
+        {
+            Type = JobType.RenameFile, SourceFileId = File1Id, NewName = "tramonto.txt"
+        }, None);
+
+        (await SearchNameAsync("tramonto")).Should().Contain(File1Id);
+        (await SearchNameAsync("report")).Should().NotContain(File1Id);
+    }
+
+    /// <summary>
+    /// A queued FOLDER rename must not touch the FTS index (§5): no file name changes, and
+    /// rewriting the path column for every file underneath would be tens of thousands of writes
+    /// per enqueue. The projected path is what the search RESULT shows, not what it matches on.
+    /// </summary>
+    [Fact]
+    public async Task A_queued_folder_rename_leaves_the_search_index_alone()
+    {
+        await Svc().EnqueueAsync(new CreateJobRequest
+        {
+            Type = JobType.RenameFolder, SourceDirectoryId = DocsDirId, NewName = "Documenti"
+        }, None);
+
+        (await SearchNameAsync("report")).Should().Contain(File1Id);
+        (await SearchNameAsync("data")).Should().Contain(File2Id);
+    }
+
+    /// <summary>
+    /// A full rebuild (the startup backfill) must produce the same projected names as the
+    /// incremental sync, or a restart would silently undo every queued rename in the index.
+    /// </summary>
+    [Fact]
+    public async Task A_full_rebuild_indexes_the_projected_name_too()
+    {
+        await Svc().EnqueueAsync(new CreateJobRequest
+        {
+            Type = JobType.RenameFile, SourceFileId = File1Id, NewName = "tramonto.txt"
+        }, None);
+
+        await using (var db = _harness.CreateContext())
+            await new FileSearchIndex(db).RebuildAsync(None);
+
+        (await SearchNameAsync("tramonto")).Should().Contain(File1Id);
+        (await SearchNameAsync("report")).Should().NotContain(File1Id);
     }
 
     // ── write: atomicity with the job ────────────────────────────────────────
