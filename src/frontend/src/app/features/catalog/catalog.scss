@@ -333,6 +333,12 @@
   font-size: 11px;
 }
 
+// The badge is a sibling of the open button, not a child: it is itself a link to the
+// queue row, and an anchor nested in a button is neither valid nor clickable.
+.dir-badge {
+  padding: 0 var(--sp-3) var(--sp-3);
+}
+
 .dir-counts-sep {
   opacity: 0.5;
 }

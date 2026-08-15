@@ -18,7 +18,8 @@ const mockVolume: VolumeDto = {
 
 const rootChildren: CatalogChildrenDto = {
   directories: [
-    { id: 10, name: 'Photos', materializedPath: 'Photos', childDirectoryCount: 2, fileCount: 50 },
+    { id: 10, name: 'Photos', materializedPath: 'Photos', childDirectoryCount: 2, fileCount: 50,
+      projectedState: 'None', pendingJobId: null },
   ],
   files: { items: [], totalCount: 0, skip: 0, take: 50 },
   volumeIsOnline: true,
@@ -31,7 +32,10 @@ const rootChildren: CatalogChildrenDto = {
 const photoChildren: CatalogChildrenDto = {
   directories: [],
   files: {
-    items: [{ id: 1, name: 'beach.jpg', sizeBytes: 2048, modifiedUtc: '2026-01-01T00:00:00Z', category: 'Image', projectedState: 'None' }],
+    items: [{
+      id: 1, name: 'beach.jpg', sizeBytes: 2048, modifiedUtc: '2026-01-01T00:00:00Z',
+      category: 'Image', projectedState: 'None', pendingJobId: null,
+    }],
     totalCount: 1,
     skip: 0,
     take: 50,
@@ -170,7 +174,10 @@ describe('CatalogStore', () => {
     const { store } = setup((_v, dirId) => dirId === 10 ? photoChildren : rootChildren);
     await store.selectVolume(mockVolume);
     // Select folder id=10, then a file that also has id... beachFile is id=1; craft a clash:
-    store.toggleDirSelection({ id: 1, name: 'Clash', materializedPath: 'Clash', childDirectoryCount: 0, fileCount: 0 });
+    store.toggleDirSelection({
+      id: 1, name: 'Clash', materializedPath: 'Clash', childDirectoryCount: 0, fileCount: 0,
+      projectedState: 'None', pendingJobId: null,
+    });
     await store.openDirectory(10, 'Photos', 'Photos');
     store.toggleSelection(beachFile); // file id=1
 

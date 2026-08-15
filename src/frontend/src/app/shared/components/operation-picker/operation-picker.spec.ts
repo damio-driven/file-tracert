@@ -23,7 +23,10 @@ const feasibility: FeasibilityResult = {
 };
 
 function dir(id: number, name: string): CatalogDirDto {
-  return { id, name, materializedPath: name, childDirectoryCount: 0, fileCount: 0 };
+  return {
+    id, name, materializedPath: name, childDirectoryCount: 0, fileCount: 0,
+    projectedState: 'None', pendingJobId: null,
+  };
 }
 
 function childrenResult(directories: CatalogDirDto[]): CatalogChildrenDto {

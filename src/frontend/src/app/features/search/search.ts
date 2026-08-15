@@ -11,12 +11,16 @@ import { FtPill } from '../../shared/components/ft-pill/ft-pill';
 import { FtPanel } from '../../shared/components/ft-panel/ft-panel';
 import { localDayEndToUtcIso, localDayStartToUtcIso, utcIsoToLocalDay } from '../../shared/date/day-range.util';
 import { OperationPicker } from '../../shared/components/operation-picker/operation-picker';
+import { FtProjectionBadge } from '../../shared/components/ft-projection-badge/ft-projection-badge';
 import { FileCategory, SearchResultDto, SearchScope, SearchSort, SelectedItem } from '../../core/models/catalog.models';
 
 @Component({
   selector: 'ft-search',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [FormsModule, ScrollingModule, LowerCasePipe, BytesPipe, RelativeTimePipe, FtPill, FtPanel, OperationPicker],
+  imports: [
+    FormsModule, ScrollingModule, LowerCasePipe, BytesPipe, RelativeTimePipe, FtPill, FtPanel,
+    FtProjectionBadge, OperationPicker,
+  ],
   templateUrl: './search.html',
   styleUrl: './search.scss',
 })

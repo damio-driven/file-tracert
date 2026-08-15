@@ -99,9 +99,11 @@
         </thead>
         <tbody>
           @for (job of store.jobs(); track job.id) {
-            <tr class="job-row" [class.job-row--active]="isActive(job.state)"
+            <tr class="job-row" [id]="'job-' + job.id"
+                                [class.job-row--active]="isActive(job.state)"
                                 [class.job-row--blocked]="job.state === 'Blocked'"
-                                [class.job-row--terminal]="isTerminal(job.state)">
+                                [class.job-row--terminal]="isTerminal(job.state)"
+                                [class.job-row--focused]="job.id === focusedJobId()">
 
               <!-- Sequence -->
               <td class="col-seq mono txt-faint">{{ job.sequenceOrder }}</td>

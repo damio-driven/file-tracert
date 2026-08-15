@@ -1,0 +1,61 @@
+// Inline annotation on a dense row, so it sits one notch below ft-pill in weight and
+// size while keeping the same vocabulary: pill radius, dot + label, tinted state bg.
+// display: contents, not inline-flex — the host must vanish from the layout when the state
+// is 'None'. An empty host would still count as a flex item next to the file name and leave
+// the row's 8px gap hanging after every non-pending file.
+:host {
+  display: contents;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  // Sits beside an ellipsizing file name: never be the thing that shrinks.
+  flex-shrink: 0;
+  gap: 5px;
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--r-pill);
+  background: var(--wait-bg);
+  color: var(--amber);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.45;
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+.dot {
+  width: 5px;
+  height: 5px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+a.badge {
+  cursor: pointer;
+  transition:
+    background var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out);
+
+  &:hover {
+    background: color-mix(in srgb, var(--amber) 20%, transparent);
+    border-color: color-mix(in srgb, var(--amber) 42%, transparent);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--amber);
+    outline-offset: 2px;
+  }
+
+  &:active {
+    background: color-mix(in srgb, var(--amber) 26%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  a.badge {
+    transition: none;
+  }
+}

@@ -9,6 +9,7 @@ import { FtPill } from '../../shared/components/ft-pill/ft-pill';
 import { FtPanel } from '../../shared/components/ft-panel/ft-panel';
 import { OperationPicker } from '../../shared/components/operation-picker/operation-picker';
 import { NameDialog } from '../../shared/components/name-dialog/name-dialog';
+import { FtProjectionBadge } from '../../shared/components/ft-projection-badge/ft-projection-badge';
 import { CatalogDirDto, CatalogFileDto, FileCategory, SelectedItem, VolumeDto } from '../../core/models/catalog.models';
 
 const CATEGORY_LABELS: Record<FileCategory, string> = {
@@ -24,7 +25,10 @@ const CATEGORY_ICONS: Record<FileCategory, string> = {
 @Component({
   selector: 'ft-catalog',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [ScrollingModule, BytesPipe, RelativeTimePipe, FtPill, FtPanel, OperationPicker, NameDialog],
+  imports: [
+    ScrollingModule, BytesPipe, RelativeTimePipe, FtPill, FtPanel,
+    FtProjectionBadge, OperationPicker, NameDialog,
+  ],
   templateUrl: './catalog.html',
   styleUrl: './catalog.scss',
 })

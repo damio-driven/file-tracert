@@ -201,6 +201,16 @@ export interface SearchRequest {
   take: number;
 }
 
+/**
+ * What the queue is about to do to a catalog row (§5 projection model). 'None' means the
+ * row is exactly what the last scan found on disk.
+ */
+export type EntityPendingState = 'None' | 'PendingCreate' | 'PendingRename' | 'PendingMove';
+
+/**
+ * `name`, `relativePath` and `volumeId` are PROJECTED: a queued rename/move is reflected
+ * here immediately, while the file still physically sits where it was.
+ */
 export interface SearchResultDto {
   fileId: number;
   name: string;
@@ -212,24 +222,31 @@ export interface SearchResultDto {
   sizeBytes: number;
   modifiedUtc: string;
   category: FileCategory;
-  projectedState: string;
+  projectedState: EntityPendingState;
+  /** The queued job behind `projectedState`, for the link to the Coda. */
+  pendingJobId: number | null;
 }
 
+/** `name` is projected; `materializedPath` stays the physical path (the row's identity). */
 export interface CatalogDirDto {
   id: number;
   name: string;
   materializedPath: string;
   childDirectoryCount: number;
   fileCount: number;
+  projectedState: EntityPendingState;
+  pendingJobId: number | null;
 }
 
+/** `name` is projected: a queued rename shows the new name at once. */
 export interface CatalogFileDto {
   id: number;
   name: string;
   sizeBytes: number;
   modifiedUtc: string;
   category: FileCategory;
-  projectedState: string;
+  projectedState: EntityPendingState;
+  pendingJobId: number | null;
 }
 
 export interface CatalogChildrenDto {

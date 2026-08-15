@@ -36,7 +36,8 @@
   height: 14px;
 }
 
-// ---- File name cell + projected-state badge ----
+// ---- File name cell ----
+// The projected-state badge is <ft-projection-badge>, which owns its own styling.
 .file-name-cell {
   display: flex;
   align-items: center;
@@ -52,19 +53,6 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.proj-badge {
-  flex-shrink: 0;
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0.4px;
-  padding: 1px 6px;
-  border-radius: var(--r-tag);
-  background: var(--wait-bg);
-  color: var(--amber);
-  text-transform: uppercase;
 }
 
 // ---- Category tag ----

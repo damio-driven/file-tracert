@@ -254,9 +254,7 @@
                       {{ catIcon(file.category) }}
                     </span>
                     <span class="file-name" [title]="file.name">{{ file.name }}</span>
-                    @if (file.projectedState !== 'None') {
-                      <span class="proj-badge">{{ file.projectedState }}</span>
-                    }
+                    <ft-projection-badge [state]="file.projectedState" [jobId]="file.pendingJobId" />
                   </div>
                 </td>
                 <td class="col-vol">
