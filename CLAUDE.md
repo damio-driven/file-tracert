@@ -553,21 +553,36 @@ rilievo è stato lasciato consapevolmente).
   terminale, per condizioni recuperabili (spazio, offline, collisione).
 
 ## Roadmap (ordine di lavoro)
-Stato: WP3 (perdita dati), WP1 (crash-safe), WP2 (offline gate) — **fatti**.
+Stato: WP3 (perdita dati), WP1 (crash-safe), WP2 (offline gate), **fix UX date/UTC**
+(#12, #11, C31) — **fatti**.
 Prossimo, in ordine:
-1. **Fix UX brucianti:** #12 converter UTC (timestamp UI sfalsati), #11 filtro date
-   ricerca (confronto lessicale rotto). Piccoli, alto impatto.
-2. **Step 9 — Proiezione:** overlay `Pending*` inline, dipendenze tra job, FTS sul
+1. **Step 9 — Proiezione:** overlay `Pending*` inline, dipendenze tra job, FTS sul
    nome proiettato. Qui si saldano i **debiti §11**: truncate-per-volume → **merge**
    che preserva l'overlay, E **spezzare la transazione monolitica dello scan** in
    blocchi corti (chiude anche la contesa di lock SQLITE_BUSY). Prerequisito già
    posato dai WP1/WP2.
-3. **Step 10 — Device-watcher + SignalR real-time:** sostituisce il trigger polling
+2. **Step 10 — Device-watcher + SignalR real-time:** sostituisce il trigger polling
    del WP2 con push; remount istantaneo; progress/notifiche/coda in tempo reale.
-4. **Work package minori rimanenti** (dalla code review): guard enqueue, indice/
-   ricerca, spazio, resto UX, logging/shutdown, efficienza, cleanup (incl. eventuale
-   spostamento di `ScanPath` in `Contracts` come da review).
-5. **Step 12 — Test UI end-to-end (Playwright).**
+3. **Work package minori rimanenti** (dalla code review): guard enqueue, indice/
+   ricerca (#6 `UsnFileRef` al move cross-volume, C19 `Extension`/`Category` al
+   rename, C16 esclusione ereditata, P2 collation), spazio, resto UX, logging/
+   shutdown, efficienza, cleanup (incl. eventuale spostamento di `ScanPath` in
+   `Contracts` come da review).
+4. **Step 12 — Test UI end-to-end (Playwright).**
+
+### Fatto nel giro «date/UTC» (2026-08-10, commit `f523938`…`b627fc4`)
+Converter UTC globale in `ConfigureConventions` (write condizionale: solo `Local`
+convertito, altrimenti si sposterebbero gli `Unspecified` già su disco); bound date
+passati come `DateTime` al provider invece che come stringa ISO; filtro data esposto
+in Ricerca con `shared/date/day-range.util` (giorno locale → istante UTC, bound alto
+fino all'ultimo tick); scenario harness `search-date-filter` (PASS sul ferro).
+**Aperti consapevolmente** dalla review: (a) `FileSearchIndex.AsUtc` timbra un bound
+`Unspecified` come UTC invece di rifiutarlo — non è una regressione (il vecchio
+`ToString("o")` faceva lo stesso) ma va deciso col filtro data del Catalogo, primo
+vero caller in-process; (b) l'harness asserisce il `Kind` sull'entità EF, non sul DTO
+serializzato: il path JSON della ricerca resta scoperto fino allo step 12.
+**Nota UI:** i filtri **dimensione** (`sizeBytesMin/Max`) esistono nello store ma non
+hanno ancora un controllo in Ricerca.
 
 ## Cosa resta all'umano (non delegabile al repo)
 Le **decisioni di prodotto e di priorità**: cosa promuovere a bloccante, cosa
