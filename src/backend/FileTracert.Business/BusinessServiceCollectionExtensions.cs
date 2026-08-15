@@ -17,6 +17,7 @@ public static class BusinessServiceCollectionExtensions
     {
         services.AddScoped<VolumeSyncService>();
         services.AddScoped<ScanService>();
+        services.AddScoped<DirectoryMerger>();
 
         // The scan-progress tracker is volatile in-memory state shared across scopes:
         // the worker's ScanService writes it, the API reads it → singleton.

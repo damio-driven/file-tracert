@@ -3,6 +3,7 @@ using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Notifications;
 using FileTracert.Contracts.Platform;
 using FileTracert.Contracts.Scanning;
+using FileTracert.Contracts.Search;
 using FileTracert.Data;
 using FileTracert.Data.Entities;
 using FileTracert.Data.Indexing;
@@ -51,11 +52,16 @@ public sealed class ScanServiceTests
 
     private static ScanService Build(SqliteInMemoryContext harness, FileTracertDbContext ctx,
         IVolumeProbe probe, IUsnReader usn, IDirectoryEnumerator enumerator, IFileMetadataReader meta,
-        INotificationPublisher? notifications = null, IScanStatusTracker? tracker = null) =>
+        INotificationPublisher? notifications = null, IScanStatusTracker? tracker = null,
+        IFileSearchIndex? fts = null, int batchSize = 5_000) =>
         new(ctx, probe, usn, enumerator, meta, new BulkIndexWriter(ctx),
-            new FakeFileSearchIndex(),
+            new DirectoryMerger(ctx, new BulkIndexWriter(ctx), NullLogger<DirectoryMerger>.Instance),
+            fts ?? new FakeFileSearchIndex(),
             notifications ?? new FakeNotificationPublisher(),
-            tracker ?? new ScanStatusTracker(), NullLogger<ScanService>.Instance);
+            tracker ?? new ScanStatusTracker(), NullLogger<ScanService>.Instance)
+        {
+            FileBatchSize = batchSize,
+        };
 
     [Fact]
     public async Task Full_scan_via_enumeration_builds_tree_applies_filters_and_sizes()
@@ -314,6 +320,266 @@ public sealed class ScanServiceTests
         tracker.Begun.Should().Equal(volumeId);
         tracker.Failed.Should().Equal(volumeId);
         tracker.Completed.Should().BeEmpty();
+    }
+
+    // ── re-scan merges instead of truncating (step 9a) ────────────────────────
+
+    /// <summary>Runs a scan over a fixed set of entries, so a test can re-scan at will.</summary>
+    private static async Task ScanAsync(
+        SqliteInMemoryContext harness, int volumeId, List<ScanEntry> entries,
+        Func<FileTracertDbContext, IBulkIndexWriter>? writerOverride = null, int batchSize = 5_000,
+        CancellationToken ct = default)
+    {
+        await using var ctx = harness.CreateContext();
+
+        // The writer must be built on the SAME context the scan runs on: its raw SQLite
+        // commands enlist in that context's ambient transaction.
+        var bulk = writerOverride?.Invoke(ctx) ?? new BulkIndexWriter(ctx);
+        var sut = new ScanService(ctx,
+            new FakeVolumeProbe(ProbedFor("exFAT")),
+            new FakeUsnReader([], 0),
+            new FakeDirectoryEnumerator(entries),
+            new FakeFileMetadataReader(new Dictionary<string, FileMetadata>()),
+            bulk,
+            new DirectoryMerger(ctx, new BulkIndexWriter(ctx), NullLogger<DirectoryMerger>.Instance),
+            new FakeFileSearchIndex(),
+            new FakeNotificationPublisher(),
+            new ScanStatusTracker(),
+            NullLogger<ScanService>.Instance)
+        {
+            FileBatchSize = batchSize,
+        };
+        await sut.ScanVolumeAsync(volumeId, ct);
+    }
+
+    private static List<ScanEntry> TwoFiles() =>
+    [
+        new(@"A", "A", true, 0, T, T, FileAttributes.Directory),
+        new(@"A\f1.dat", "f1.dat", false, 1, T, T, FileAttributes.Normal),
+        new(@"A\f2.dat", "f2.dat", false, 2, T, T, FileAttributes.Normal),
+    ];
+
+    [Fact]
+    public async Task Re_scan_preserves_the_pending_overlay()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, VolumeScanEngine.Enumeration, "exFAT", []);
+        var entries = TwoFiles();
+
+        await ScanAsync(harness, volumeId, entries);
+
+        // Stand-in for what enqueue will write in 9b: the overlay lives inline on the row.
+        await using (var ctx = harness.CreateContext())
+        {
+            var file = await ctx.Files.SingleAsync(f => f.Name == "f1.dat");
+            file.PendingName = "renamed.dat";
+            file.PendingState = EntityPendingState.PendingRename;
+            file.PendingJobId = 7;
+
+            var dir = await ctx.Directories.SingleAsync(d => d.MaterializedPath == "A");
+            dir.PendingName = "B";
+            dir.PendingState = EntityPendingState.PendingRename;
+            dir.PendingJobId = 7;
+            await ctx.SaveChangesAsync();
+        }
+
+        await ScanAsync(harness, volumeId, entries);
+
+        await using var read = harness.CreateContext();
+        var merged = await read.Files.SingleAsync(f => f.Name == "f1.dat");
+        merged.PendingName.Should().Be("renamed.dat");
+        merged.PendingState.Should().Be(EntityPendingState.PendingRename);
+        merged.PendingJobId.Should().Be(7);
+
+        var mergedDir = await read.Directories.SingleAsync(d => d.MaterializedPath == "A");
+        mergedDir.PendingName.Should().Be("B");
+        mergedDir.PendingState.Should().Be(EntityPendingState.PendingRename);
+    }
+
+    [Fact]
+    public async Task Re_scan_preserves_row_identities()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, VolumeScanEngine.Enumeration, "exFAT", []);
+        var entries = TwoFiles();
+
+        await ScanAsync(harness, volumeId, entries);
+
+        Dictionary<string, int> fileIds, dirIds;
+        await using (var ctx = harness.CreateContext())
+        {
+            fileIds = await ctx.Files.ToDictionaryAsync(f => f.Name, f => f.Id);
+            dirIds = await ctx.Directories.ToDictionaryAsync(d => d.MaterializedPath, d => d.Id);
+        }
+
+        await ScanAsync(harness, volumeId, entries);
+
+        await using var read = harness.CreateContext();
+        // Identities are what OperationJobItems.FileId points at: a re-scan must not renumber them.
+        (await read.Files.ToDictionaryAsync(f => f.Name, f => f.Id)).Should().Equal(fileIds);
+        (await read.Directories.ToDictionaryAsync(d => d.MaterializedPath, d => d.Id)).Should().Equal(dirIds);
+    }
+
+    [Fact]
+    public async Task A_file_that_disappeared_is_marked_absent_and_keeps_its_row_and_overlay()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, VolumeScanEngine.Enumeration, "exFAT", []);
+
+        await ScanAsync(harness, volumeId, TwoFiles());
+
+        int goneId;
+        await using (var ctx = harness.CreateContext())
+        {
+            var file = await ctx.Files.SingleAsync(f => f.Name == "f2.dat");
+            goneId = file.Id;
+            file.PendingState = EntityPendingState.PendingMove;
+            file.PendingJobId = 11;
+            await ctx.SaveChangesAsync();
+        }
+
+        // f2.dat is no longer on disk.
+        await ScanAsync(harness, volumeId,
+        [
+            new(@"A", "A", true, 0, T, T, FileAttributes.Directory),
+            new(@"A\f1.dat", "f1.dat", false, 1, T, T, FileAttributes.Normal),
+        ]);
+
+        await using var read = harness.CreateContext();
+        var gone = await read.Files.SingleAsync(f => f.Id == goneId);
+        gone.IsPresent.Should().BeFalse();
+        gone.PendingState.Should().Be(EntityPendingState.PendingMove);   // the job still references it
+        gone.PendingJobId.Should().Be(11);
+        (await read.Files.SingleAsync(f => f.Name == "f1.dat")).IsPresent.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task A_directory_that_disappeared_is_marked_absent_instead_of_deleted()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, VolumeScanEngine.Enumeration, "exFAT", []);
+
+        await ScanAsync(harness, volumeId,
+        [
+            new(@"A", "A", true, 0, T, T, FileAttributes.Directory),
+            new(@"B", "B", true, 0, T, T, FileAttributes.Directory),
+            new(@"B\x.dat", "x.dat", false, 1, T, T, FileAttributes.Normal),
+        ]);
+
+        var bId = await ReadDirIdAsync(harness, "B");
+
+        await ScanAsync(harness, volumeId,
+        [
+            new(@"A", "A", true, 0, T, T, FileAttributes.Directory),
+        ]);
+
+        await using var read = harness.CreateContext();
+        var b = await read.Directories.SingleAsync(d => d.Id == bId);
+        b.IsPresent.Should().BeFalse();
+        (await read.Directories.SingleAsync(d => d.MaterializedPath == "A")).IsPresent.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task A_file_that_reappears_gets_its_row_back_without_a_new_identity()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, VolumeScanEngine.Enumeration, "exFAT", []);
+        var entries = TwoFiles();
+
+        await ScanAsync(harness, volumeId, entries);
+        int id;
+        await using (var ctx = harness.CreateContext())
+            id = await ctx.Files.Where(f => f.Name == "f2.dat").Select(f => f.Id).SingleAsync();
+
+        await ScanAsync(harness, volumeId,
+        [
+            new(@"A", "A", true, 0, T, T, FileAttributes.Directory),
+            new(@"A\f1.dat", "f1.dat", false, 1, T, T, FileAttributes.Normal),
+        ]);
+        await ScanAsync(harness, volumeId, entries);
+
+        await using var read = harness.CreateContext();
+        var back = await read.Files.SingleAsync(f => f.Name == "f2.dat");
+        back.Id.Should().Be(id);
+        back.IsPresent.Should().BeTrue();
+        (await read.Files.CountAsync()).Should().Be(2);
+    }
+
+    [Fact]
+    public async Task A_scan_cancelled_between_batches_does_not_claim_to_be_complete()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, VolumeScanEngine.Enumeration, "exFAT", []);
+        var entries = TwoFiles();
+
+        using var cts = new CancellationTokenSource();
+
+        // The real writer still does the work; the wrapper only trips the token after the
+        // first batch has committed, which is the crash-in-the-middle case.
+        var act = async () => await ScanAsync(
+            harness, volumeId, entries,
+            ctx => new CancelAfterFirstBatchWriter(new BulkIndexWriter(ctx), cts),
+            batchSize: 1, cts.Token);
+        await act.Should().ThrowAsync<OperationCanceledException>();
+
+        await using (var read = harness.CreateContext())
+        {
+            var volume = await read.Volumes.SingleAsync();
+            volume.LastFullScanUtc.Should().BeNull();     // never advertise a partial scan as complete
+            volume.LastUsn.Should().BeNull();
+            (await read.Files.CountAsync()).Should().Be(1); // the committed batch survived
+        }
+
+        // The merge is idempotent, so a plain re-scan converges — nothing to repair.
+        await ScanAsync(harness, volumeId, entries);
+
+        await using var final = harness.CreateContext();
+        (await final.Files.CountAsync()).Should().Be(2);
+        (await final.Files.CountAsync(f => f.IsPresent)).Should().Be(2);
+        (await final.Volumes.SingleAsync()).LastFullScanUtc.Should().NotBeNull();
+    }
+
+    private static async Task<int> ReadDirIdAsync(SqliteInMemoryContext harness, string path)
+    {
+        await using var ctx = harness.CreateContext();
+        return await ctx.Directories.Where(d => d.MaterializedPath == path).Select(d => d.Id).SingleAsync();
+    }
+
+    private sealed class CancelAfterFirstBatchWriter : IBulkIndexWriter
+    {
+        private readonly IBulkIndexWriter _inner;
+        private readonly CancellationTokenSource _cts;
+        private int _batches;
+
+        public CancelAfterFirstBatchWriter(IBulkIndexWriter inner, CancellationTokenSource cts)
+        {
+            _inner = inner;
+            _cts = cts;
+        }
+
+        public Task BulkInsertDirectoriesAsync(IReadOnlyCollection<DirectoryNode> nodes, CancellationToken ct) =>
+            _inner.BulkInsertDirectoriesAsync(nodes, ct);
+
+        public Task BulkInsertFilesAsync(IReadOnlyCollection<FileEntry> files, CancellationToken ct) =>
+            _inner.BulkInsertFilesAsync(files, ct);
+
+        public Task BulkUpsertFilesAsync(IReadOnlyCollection<FileEntry> files, CancellationToken ct) =>
+            _inner.BulkUpsertFilesAsync(files, ct);
+
+        public async Task<ScanMergeBatchResult> MergeScannedFilesAsync(
+            int volumeId, IReadOnlyCollection<FileEntry> batch, DateTime indexedUtc, CancellationToken ct)
+        {
+            var result = await _inner.MergeScannedFilesAsync(volumeId, batch, indexedUtc, ct);
+            if (++_batches == 1)
+            {
+                await _cts.CancelAsync();
+            }
+
+            return result;
+        }
+
+        public Task<int> MarkAbsentFilesAsync(int volumeId, DateTime scanStartedUtc, CancellationToken ct) =>
+            _inner.MarkAbsentFilesAsync(volumeId, scanStartedUtc, ct);
     }
 
     [Fact]

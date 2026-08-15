@@ -30,6 +30,7 @@ public sealed class ScanService
     private readonly IDirectoryEnumerator _enumerator;
     private readonly IFileMetadataReader _metadataReader;
     private readonly IBulkIndexWriter _bulkWriter;
+    private readonly DirectoryMerger _directoryMerger;
     private readonly IFileSearchIndex _ftsIndex;
     private readonly INotificationPublisher _notifications;
     private readonly IScanStatusTracker _statusTracker;
@@ -38,6 +39,14 @@ public sealed class ScanService
     /// <summary>Push a running count to the tracker every this many enumerated items.</summary>
     private const int SeenReportInterval = 5_000;
 
+    /// <summary>
+    /// How many files are merged (and committed) per transaction. Big enough that the
+    /// per-batch overhead disappears, small enough that another writer never waits more
+    /// than a moment for SQLite's single write lock. Settable so tests can drive the
+    /// multi-batch paths with a handful of files.
+    /// </summary>
+    public int FileBatchSize { get; init; } = 5_000;
+
     public ScanService(
         FileTracertDbContext db,
         IVolumeProbe probe,
@@ -45,6 +54,7 @@ public sealed class ScanService
         IDirectoryEnumerator enumerator,
         IFileMetadataReader metadataReader,
         IBulkIndexWriter bulkWriter,
+        DirectoryMerger directoryMerger,
         IFileSearchIndex ftsIndex,
         INotificationPublisher notifications,
         IScanStatusTracker statusTracker,
@@ -56,6 +66,7 @@ public sealed class ScanService
         _enumerator = enumerator;
         _metadataReader = metadataReader;
         _bulkWriter = bulkWriter;
+        _directoryMerger = directoryMerger;
         _ftsIndex = ftsIndex;
         _notifications = notifications;
         _statusTracker = statusTracker;
@@ -102,6 +113,12 @@ public sealed class ScanService
         Volume volume, ProbedVolume probed, string mountRoot, List<WatchedRoot> roots, CancellationToken ct)
     {
         var volumeId = volume.Id;
+
+        // Generation marker taken BEFORE anything is read: every row the merge touches gets
+        // a later LastIndexedUtc, so what is still older at the end is exactly what this scan
+        // did not find on disk.
+        var scanStartedUtc = DateTime.UtcNow;
+
         var settings = await _db.AppSettings.FirstOrDefaultAsync(ct);
         var categoryMap = await _db.ExtensionCategories.ToDictionaryAsync(e => e.Extension, e => e.Category, ct);
 
@@ -156,8 +173,7 @@ public sealed class ScanService
         var resolvedFiles = await ResolveFilesAsync(volume, mountRoot, fileItems, categoryMap, ct);
 
         _statusTracker.SetPhase(volumeId, ScanPhase.Writing);
-        await PersistAsync(volume, dirItems, resolvedFiles, checkpointUsn, ct);
-        _statusTracker.ReportWritten(volumeId, resolvedFiles.Count);
+        await PersistAsync(volume, dirItems, resolvedFiles, checkpointUsn, scanStartedUtc, ct);
 
         _logger.LogInformation(
             "Scanned volume {VolumeId}: {Dirs} directories, {Files} files.",
@@ -352,74 +368,123 @@ public sealed class ScanService
         return resolved;
     }
 
+    /// <summary>
+    /// Reconciles what the scan saw with what is already in the catalog, in short
+    /// transactions.
+    /// </summary>
+    /// <remarks>
+    /// <para><b>Merge, not replace.</b> The previous implementation truncated the volume and
+    /// reinserted it. That destroyed the <c>Pending*</c> overlay (§5) and the row identities
+    /// <c>OperationJobItems.FileId</c> points at, on every single re-scan.</para>
+    /// <para><b>Short transactions.</b> The truncate + reinsert also held SQLite's single
+    /// write lock for the entire scan — minutes on a system drive — so the sync worker, the
+    /// queue and the API all took SQLITE_BUSY ("database is locked"). Each batch now commits
+    /// on its own and the lock is released in between.</para>
+    /// <para><b>Checkpoint last.</b> <c>LastFullScanUtc</c> / <c>LastUsn</c> are written in
+    /// their own final transaction: a scan interrupted halfway must not look complete, or the
+    /// incremental USN pass would resume from a position covering rows that were never
+    /// written. Nothing needs repairing after a crash — the merge is idempotent, so the next
+    /// scan simply converges.</para>
+    /// </remarks>
     private async Task PersistAsync(
         Volume volume,
         List<ScanItem> dirItems,
         List<ResolvedFile> files,
         long? checkpointUsn,
+        DateTime scanStartedUtc,
         CancellationToken ct)
     {
-        await using var tx = await _db.Database.BeginTransactionAsync(ct);
+        var scannedDirs = BuildDirectoryTree(dirItems, files);
+        var merge = await _directoryMerger.MergeAsync(volume.Id, scannedDirs, FileBatchSize, ct);
 
-        // Defer FK checks to commit so we can truncate (self-referencing tree) and
-        // reinsert in any order within the transaction.
-        await _db.Database.ExecuteSqlRawAsync("PRAGMA defer_foreign_keys=ON;", ct);
-
-        // Clear FTS entries BEFORE deleting Files rows (FTS rowids reference Files.Id;
-        // once the rows are gone we can no longer identify what to remove).
-        await _ftsIndex.ClearVolumeAsync(volume.Id, ct);
-
-        // Idempotent re-scan: replace this volume's index.
-        await _db.Files.Where(f => f.VolumeId == volume.Id).ExecuteDeleteAsync(ct);
-        await _db.Directories.Where(d => d.VolumeId == volume.Id).ExecuteDeleteAsync(ct);
-
-        var nodeByPath = BuildDirectoryTree(volume.Id, dirItems, files);
-
-        // Directories go through EF (few rows; self-referencing identity/order is
-        // handled by the change tracker), files through the bulk hot path.
-        _db.Directories.AddRange(nodeByPath.Values);
-        await _db.SaveChangesAsync(ct);
-
-        var now = DateTime.UtcNow;
-        var fileEntities = files.Select(f => new FileEntry
+        var written = 0;
+        foreach (var chunk in files.Chunk(FileBatchSize))
         {
-            VolumeId = volume.Id,
-            DirectoryId = nodeByPath[ScanPath.Parent(f.Item.RelativePath)].Id,
-            Name = f.Item.Name,
-            Extension = f.Extension,
-            Category = f.Category,
-            SizeBytes = f.SizeBytes,
-            FileCreatedUtc = f.CreatedUtc,
-            FileModifiedUtc = f.ModifiedUtc,
-            Attributes = f.Item.Attributes,
-            UsnFileRef = f.Item.Frn is { } frn ? unchecked((long)frn) : null,
-            IsIncluded = true,
-            IsPresent = true,
-            LastIndexedUtc = now,
-        }).ToList();
+            ct.ThrowIfCancellationRequested();
 
-        await _bulkWriter.BulkInsertFilesAsync(fileEntities, ct);
+            var entities = chunk.Select(f => ToEntity(volume.Id, f, merge.IdByPath)).ToList();
 
-        // Populate FTS5 index from the newly inserted Files rows for this volume.
-        await _ftsIndex.SyncVolumeFromDbAsync(volume.Id, ct);
+            await using var tx = await _db.Database.BeginTransactionAsync(ct);
+            var result = await _bulkWriter.MergeScannedFilesAsync(volume.Id, entities, DateTime.UtcNow, ct);
 
-        volume.LastFullScanUtc = now;
-        if (checkpointUsn is { } usn)
-        {
-            volume.LastUsn = usn;
+            // The commit is the checkpoint: once the batch is merged, cancelling must not
+            // throw the work away (§3, "checkpoint the state and stop cleanly"). Shutdown is
+            // observed at the top of the next iteration instead.
+            await tx.CommitAsync(CancellationToken.None);
+
+            written += result.Inserted + result.Updated;
+            _statusTracker.ReportWritten(volume.Id, written);
         }
 
-        await _db.SaveChangesAsync(ct);
-        await tx.CommitAsync(ct);
+        // Everything the scan did not touch this run is gone from disk — flagged, never
+        // deleted (§6), so a queued operation still finds the row it references.
+        await using (var tx = await _db.Database.BeginTransactionAsync(ct))
+        {
+            var absent = await _bulkWriter.MarkAbsentFilesAsync(volume.Id, scanStartedUtc, ct);
+            await tx.CommitAsync(ct);
+
+            if (absent > 0)
+            {
+                _logger.LogInformation(
+                    "Volume {VolumeId}: {Count} file(s) no longer on disk, marked absent.", volume.Id, absent);
+            }
+        }
+
+        // FTS is rebuilt for the volume once the rows have settled. (Per-batch sync is the
+        // next commit; keeping it here first means this refactor changes transactions, not
+        // search behaviour.)
+        await using (var tx = await _db.Database.BeginTransactionAsync(ct))
+        {
+            await _ftsIndex.ClearVolumeAsync(volume.Id, ct);
+            await _ftsIndex.SyncVolumeFromDbAsync(volume.Id, ct);
+            await tx.CommitAsync(ct);
+        }
+
+        await using (var tx = await _db.Database.BeginTransactionAsync(ct))
+        {
+            volume.LastFullScanUtc = scanStartedUtc;
+            if (checkpointUsn is { } usn)
+            {
+                volume.LastUsn = usn;
+            }
+
+            await _db.SaveChangesAsync(ct);
+            await tx.CommitAsync(ct);
+        }
+    }
+
+    private static FileEntry ToEntity(int volumeId, ResolvedFile file, IReadOnlyDictionary<string, int> dirIdByPath)
+    {
+        var parentPath = ScanPath.Parent(file.Item.RelativePath);
+        if (!dirIdByPath.TryGetValue(parentPath, out var directoryId))
+        {
+            throw new InvalidOperationException(
+                $"File '{file.Item.RelativePath}' on volume {volumeId} has no directory row for '{parentPath}'.");
+        }
+
+        return new FileEntry
+        {
+            VolumeId = volumeId,
+            DirectoryId = directoryId,
+            Name = file.Item.Name,
+            Extension = file.Extension,
+            Category = file.Category,
+            SizeBytes = file.SizeBytes,
+            FileCreatedUtc = file.CreatedUtc,
+            FileModifiedUtc = file.ModifiedUtc,
+            Attributes = file.Item.Attributes,
+            UsnFileRef = file.Item.Frn is { } frn ? unchecked((long)frn) : null,
+            IsIncluded = true,
+            IsPresent = true,
+        };
     }
 
     /// <summary>
-    /// Builds the directory nodes (keyed by relative path) for the volume,
-    /// including the synthetic root ("") and every ancestor of a kept directory
-    /// or file, wiring the <see cref="DirectoryNode.Parent"/> navigation.
+    /// The directory tree the scan saw: the synthetic root (""), every kept directory and
+    /// every ancestor of a kept directory or file. Paths only — identities and parent wiring
+    /// belong to <see cref="DirectoryMerger"/>, which reconciles them with the existing rows.
     /// </summary>
-    private static Dictionary<string, DirectoryNode> BuildDirectoryTree(
-        int volumeId,
+    private static List<ScannedDirectory> BuildDirectoryTree(
         List<ScanItem> dirItems,
         List<ResolvedFile> files)
     {
@@ -432,37 +497,14 @@ public sealed class ScanService
             }
         }
 
-        var nodeByPath = new Dictionary<string, DirectoryNode>(StringComparer.OrdinalIgnoreCase)
-        {
-            [string.Empty] = new DirectoryNode
-            {
-                VolumeId = volumeId,
-                Name = string.Empty,
-                MaterializedPath = string.Empty,
-                ParentId = null,
-                IsMaterialized = true,
-            },
-        };
+        var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { string.Empty };
 
         void Ensure(string path)
         {
-            if (path.Length == 0 || nodeByPath.ContainsKey(path))
+            while (path.Length > 0 && paths.Add(path))
             {
-                return;
+                path = ScanPath.Parent(path);
             }
-
-            var parent = ScanPath.Parent(path);
-            Ensure(parent);
-
-            nodeByPath[path] = new DirectoryNode
-            {
-                VolumeId = volumeId,
-                Name = ScanPath.Name(path),
-                MaterializedPath = path,
-                Parent = nodeByPath[parent],
-                IsMaterialized = true,
-                UsnFileRef = frnByPath.TryGetValue(path, out var frn) ? unchecked((long)frn) : null,
-            };
         }
 
         foreach (var dir in dirItems)
@@ -475,7 +517,10 @@ public sealed class ScanService
             Ensure(ScanPath.Parent(file.Item.RelativePath));
         }
 
-        return nodeByPath;
+        return paths
+            .Select(p => new ScannedDirectory(
+                p, frnByPath.TryGetValue(p, out var frn) ? unchecked((long)frn) : null))
+            .ToList();
     }
 
     private sealed record ResolvedFile(
