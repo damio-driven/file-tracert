@@ -22,6 +22,7 @@ public static class ScenarioCatalog
         new IntraVolumeCollisionScenario(),
         new SearchDateFilterScenario(),
         new ProjectionOverlayScenario(),
+        new JobDependenciesScenario(),
         new RescanPreservesOverlayScenario(),
         new IndexUpdateFailOnceScenario(),
         new PhantomReservationScenario(),
