@@ -183,6 +183,11 @@ public sealed class QueueService : IQueueService
                 // between must not leave a phantom IsActive reservation.
                 await using var tx = await _db.Database.BeginTransactionAsync(ct);
                 await _db.SaveChangesAsync(ct);
+                // §5 — the overlay dies with the job, in the same transaction as the terminal
+                // state: an overlay that outlives its job shows a file in a folder it will
+                // never reach. Cleared AFTER the state save, so a tripped concurrency token
+                // (someone else owns the state) leaves the projection untouched.
+                await _overlay.ClearForJobAsync(jobId, ct);
                 await SpaceLedger.DeactivateEntriesAsync(_db, jobId, ct);
                 await tx.CommitAsync(ct);
                 break;
@@ -257,6 +262,10 @@ public sealed class QueueService : IQueueService
         job.ErrorMessage = null;
         job.CompletedUtc = null;
         job.RetryCount++;
+        // The state change and the overlay rewrite commit together: a Failed job dropped its
+        // overlay, so putting it back in the queue without putting the projection back would
+        // leave a queued operation invisible in Catalogo/Ricerca.
+        await using var tx = await _db.Database.BeginTransactionAsync(ct);
         try
         {
             await _db.SaveChangesAsync(ct);
@@ -272,6 +281,13 @@ public sealed class QueueService : IQueueService
             throw new InvalidOperationException(
                 $"Job {jobId} changed state concurrently (now {current}) — retry it again if still applicable.");
         }
+
+        // Same single entry point as the enqueue, and idempotent: a Blocked job still carries
+        // its overlay, so this rewrites the same values instead of doubling anything.
+        await _overlay.ApplyAsync(job, [.. job.Items], ct);
+        // Committed before the ledger calls: those run on their own scope and connection, and
+        // holding this write transaction open across them would be a self-inflicted SQLITE_BUSY.
+        await tx.CommitAsync(ct);
 
         // Ledger coherence (same principle as the atomic enqueue, fix #2): a Failed job
         // released its reservation, an engine-Blocked one kept it, an enqueue-Blocked one

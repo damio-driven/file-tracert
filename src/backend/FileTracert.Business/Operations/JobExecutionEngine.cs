@@ -670,6 +670,9 @@ public sealed class JobExecutionEngine
                 "Job {Id}: cancelled concurrently during a state transition — aborting; source left untouched.",
                 job.Id);
             await CleanupPartialsAsync(job);
+            // The API's CancelAsync clears the overlay in its own transaction; repeating it here
+            // is idempotent and covers the cancel path that never reached that clear.
+            await _overlay.ClearForJobAsync(job.Id, CancellationToken.None);
             await _indexUpdater.ReconcileCancelledJobAsync(job, CancellationToken.None);
             return;
         }
@@ -712,11 +715,14 @@ public sealed class JobExecutionEngine
         //   with it, a retry can never subtract RequiredBytesTarget twice.
         // - ledger release INSIDE it (finding #5): a crash can't leave a phantom IsActive
         //   reservation on a terminal job. The in-memory mirror follows after the commit.
+        // - overlay clear INSIDE it (§5): the projection stops being an overlay the instant the
+        //   physical fact it stood for is applied — never a window where both are on screen.
         try
         {
             await using var tx = await _db.Database.BeginTransactionAsync(ct);
             await _indexUpdater.UpdateAfterCompletionAsync(job, removedSourceDirPaths, ct);
             await _db.SaveChangesAsync(ct);
+            await _overlay.ClearForJobAsync(job.Id, ct);
             await SpaceLedger.DeactivateEntriesAsync(_db, job.Id, ct);
             await tx.CommitAsync(ct);
         }
@@ -818,9 +824,13 @@ public sealed class JobExecutionEngine
         job.CompletedUtc = DateTime.UtcNow;
         try
         {
-            // Same-transaction release as CompleteJobAsync (finding #5).
+            // Same-transaction release as CompleteJobAsync (finding #5), and the same
+            // same-transaction overlay clear (§5): Failed is terminal, so the projection must
+            // stop promising an operation that will not happen unless the user retries — and
+            // RetryAsync writes the overlay back when they do.
             await using var tx = await _db.Database.BeginTransactionAsync(ct);
             await _db.SaveChangesAsync(ct);
+            await _overlay.ClearForJobAsync(job.Id, ct);
             await SpaceLedger.DeactivateEntriesAsync(_db, job.Id, ct);
             await tx.CommitAsync(ct);
         }

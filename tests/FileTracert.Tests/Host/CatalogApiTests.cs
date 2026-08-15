@@ -185,10 +185,23 @@ public sealed class CatalogApiTests
                 // Gone from disk and nothing pending on it → not navigable.
                 db.Directories.Add(new DirectoryNode { VolumeId = vol.Id, ParentId = root.Id, Name = "Gone", MaterializedPath = "Gone", IsMaterialized = true, IsPresent = false });
                 // Gone from disk but a queued operation still references it → must stay visible.
+                // The overlay has to name a LIVE job: since step 9b the startup reconciliation
+                // clears any overlay whose job is missing or already terminal, and rightly so —
+                // a jobless overlay promises an operation nobody is going to run.
+                var job = new OperationJob
+                {
+                    Type = JobType.RenameFolder, State = JobState.Pending,
+                    SourceVolumeId = vol.Id, TargetVolumeId = vol.Id,
+                    TargetRelativePath = "StillQueued", IsIntraVolume = true, SequenceOrder = 1,
+                };
+                db.OperationJobs.Add(job);
+                await db.SaveChangesAsync(ct);
+
                 db.Directories.Add(new DirectoryNode
                 {
                     VolumeId = vol.Id, ParentId = root.Id, Name = "GoneButQueued", MaterializedPath = "GoneButQueued",
-                    IsMaterialized = true, IsPresent = false, PendingState = EntityPendingState.PendingRename,
+                    IsMaterialized = true, IsPresent = false,
+                    PendingState = EntityPendingState.PendingRename, PendingJobId = job.Id,
                 });
                 await db.SaveChangesAsync(ct);
             },

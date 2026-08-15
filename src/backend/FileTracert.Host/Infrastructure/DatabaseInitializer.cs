@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using FileTracert.Business.Projection;
 using FileTracert.Contracts.Logging;
 using FileTracert.Contracts.Search;
 using FileTracert.Data;
@@ -64,6 +65,13 @@ public sealed class DatabaseInitializer
             {
                 await seeder.SeedAsync(db, ct);
             }
+
+            // §5 safety net, before any worker runs: an overlay whose job no longer exists or
+            // is already terminal shows a file in a folder it will never reach. Every write and
+            // every clear runs inside the transaction of the job's own state change, so nothing
+            // should produce one — but a crash outside those transactions, or a database from an
+            // older build, can. One query per table.
+            await scope.ServiceProvider.GetRequiredService<OverlayWriter>().ReconcileOrphansAsync(ct);
 
             // Apply the persisted minimum log level to the runtime switch (read after
             // the seeder so a seeded override is honored).

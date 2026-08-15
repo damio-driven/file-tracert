@@ -1,3 +1,4 @@
+using FileTracert.Business;
 using FileTracert.Data;
 using FileTracert.Host.Configuration;
 using FileTracert.Host.Infrastructure;
@@ -19,7 +20,11 @@ public sealed class DatabaseInitializerTests : IDisposable
     {
         token = new ApiTokenAccessor();
         var services = new ServiceCollection();
+        services.AddLogging();
         services.AddDataServices(DatabaseLocation.ConnectionString(_dbPath));
+        // The initializer also runs the §5 orphan-overlay reconciliation, which lives in
+        // Business — registered here exactly as Program.cs registers it.
+        services.AddBusinessServices();
         services.AddSingleton<IApiTokenAccessor>(token);
         services.AddSingleton(sp => new DatabaseInitializer(
             sp, sp.GetRequiredService<IApiTokenAccessor>(), NullLogger<DatabaseInitializer>.Instance));

@@ -13,6 +13,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using NSubstitute;
 
 namespace FileTracert.Tests.Business;
 
@@ -80,6 +81,30 @@ public sealed class ProjectionOverlayTests : IDisposable
             TestProjection.Index(db, new FileSearchIndex(db)),
             TestProjection.Overlay(db, new FileSearchIndex(db)),
             NullLogger<QueueService>.Instance);
+    }
+
+    /// <summary>
+    /// The real engine, with only the file mover substituted: no scenario here is about what
+    /// happens on disk, everything is about what the projection does around it.
+    /// </summary>
+    private JobExecutionEngine Engine(IFileMover mover)
+    {
+        var db = _harness.CreateContext();
+        return new JobExecutionEngine(db, mover, _ledger,
+            TestProjection.Index(db, new FileSearchIndex(db)),
+            TestProjection.Overlay(db, new FileSearchIndex(db)),
+            new FakeNotificationPublisher(),
+            TimeProvider.System, NullLogger<JobExecutionEngine>.Instance);
+    }
+
+    private static IFileMover SucceedingMover() => NSubstitute.Substitute.For<IFileMover>();
+
+    private static IFileMover ThrowingMover()
+    {
+        var mover = NSubstitute.Substitute.For<IFileMover>();
+        mover.When(m => m.RenameIntraVolume(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>()))
+             .Do(_ => throw new IOException("injected failure"));
+        return mover;
     }
 
     private static CancellationToken None => CancellationToken.None;
@@ -411,5 +436,213 @@ public sealed class ProjectionOverlayTests : IDisposable
         (await db.Files.CountAsync(f => f.PendingState != EntityPendingState.None, None)).Should().Be(0);
         (await db.Directories.CountAsync(d => d.PendingState != EntityPendingState.None, None))
             .Should().Be(0, "the projected target directory rolled back with the job");
+    }
+
+    // ── clear: an overlay must never outlive its job ─────────────────────────
+
+    private async Task<int> EnqueueRenameAsync()
+    {
+        var dto = await Svc().EnqueueAsync(new CreateJobRequest
+        {
+            Type = JobType.RenameFile, SourceFileId = File1Id, NewName = "tramonto.txt"
+        }, None);
+        return dto.Id;
+    }
+
+    [Fact]
+    public async Task Completion_applies_the_physical_fact_and_drops_the_overlay()
+    {
+        var jobId = await EnqueueRenameAsync();
+
+        await Engine(SucceedingMover()).ExecuteJobAsync(jobId, None);
+
+        var file = await FileAsync(File1Id);
+        file.Name.Should().Be("tramonto.txt", "the rename is now a physical fact");
+        file.PendingName.Should().BeNull();
+        file.PendingState.Should().Be(EntityPendingState.None);
+        file.PendingJobId.Should().BeNull();
+        (await SearchNameAsync("tramonto")).Should().Contain(File1Id);
+    }
+
+    [Fact]
+    public async Task Completed_CreateFolder_materializes_the_projected_row_instead_of_duplicating_it()
+    {
+        var dto = await Svc().EnqueueAsync(new CreateJobRequest
+        {
+            Type = JobType.CreateFolder, TargetVolumeId = Vol1Id,
+            TargetRelativePath = @"Docs\Album 2026"
+        }, None);
+
+        await Engine(SucceedingMover()).ExecuteJobAsync(dto.Id, None);
+
+        await using var db = _harness.CreateContext();
+        var rows = await db.Directories.AsNoTracking()
+            .Where(d => d.VolumeId == Vol1Id && d.MaterializedPath == @"Docs\Album 2026")
+            .ToListAsync(None);
+
+        rows.Should().HaveCount(1, "the completion must find the projected row, not add a second one");
+        rows[0].IsMaterialized.Should().BeTrue();
+        rows[0].IsPresent.Should().BeTrue();
+        rows[0].PendingState.Should().Be(EntityPendingState.None);
+        rows[0].PendingJobId.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Cancel_drops_the_overlay_and_leaves_the_row_as_it_was()
+    {
+        var jobId = await EnqueueRenameAsync();
+
+        await Svc().CancelAsync(jobId, None);
+
+        var file = await FileAsync(File1Id);
+        file.Name.Should().Be("report.txt");
+        file.PendingName.Should().BeNull();
+        file.PendingState.Should().Be(EntityPendingState.None);
+        file.PendingJobId.Should().BeNull();
+        (await SearchNameAsync("tramonto")).Should().NotContain(File1Id,
+            "a cancelled rename must stop being findable under a name that was never applied");
+        (await SearchNameAsync("report")).Should().Contain(File1Id);
+    }
+
+    [Fact]
+    public async Task Cancelling_a_CreateFolder_keeps_the_row_but_hides_it_from_the_projection()
+    {
+        var dto = await Svc().EnqueueAsync(new CreateJobRequest
+        {
+            Type = JobType.CreateFolder, TargetVolumeId = Vol1Id,
+            TargetRelativePath = @"Docs\Album 2026"
+        }, None);
+
+        await Svc().CancelAsync(dto.Id, None);
+
+        var dir = await DirAsync(Vol1Id, @"Docs\Album 2026");
+        dir.Should().NotBeNull("rows are never hard-deleted (§6)");
+        dir!.IsMaterialized.Should().BeFalse();
+        dir.IsPresent.Should().BeFalse();
+        dir.PendingState.Should().Be(EntityPendingState.None, "so the Catalog stops showing it");
+    }
+
+    [Fact]
+    public async Task A_failed_job_drops_the_overlay_and_a_retry_writes_it_back()
+    {
+        var jobId = await EnqueueRenameAsync();
+
+        await Engine(ThrowingMover()).ExecuteJobAsync(jobId, None);
+
+        await using (var db = _harness.CreateContext())
+            (await db.OperationJobs.AsNoTracking().SingleAsync(j => j.Id == jobId, None))
+                .State.Should().Be(JobState.Failed);
+
+        var afterFailure = await FileAsync(File1Id);
+        afterFailure.PendingState.Should().Be(EntityPendingState.None);
+        afterFailure.PendingJobId.Should().BeNull();
+
+        await Svc().RetryAsync(jobId, None);
+
+        var afterRetry = await FileAsync(File1Id);
+        afterRetry.PendingName.Should().Be("tramonto.txt", "a retried job is queued again, so it projects again");
+        afterRetry.PendingState.Should().Be(EntityPendingState.PendingRename);
+        afterRetry.PendingJobId.Should().Be(jobId);
+        (await SearchNameAsync("tramonto")).Should().Contain(File1Id);
+    }
+
+    [Fact]
+    public async Task A_job_blocked_at_enqueue_keeps_its_overlay()
+    {
+        // The target volume is offline: the job is born Blocked, but it is still queued —
+        // Blocked is a parking state, not a terminal one, so the projection must keep it.
+        await using (var db = _harness.CreateContext())
+        {
+            var vol2 = await db.Volumes.SingleAsync(v => v.Id == Vol2Id, None);
+            vol2.IsOnline = false;
+            await db.SaveChangesAsync(None);
+        }
+
+        var dto = await Svc().EnqueueAsync(new CreateJobRequest
+        {
+            Type = JobType.MoveFile, SourceFileId = File1Id,
+            TargetVolumeId = Vol2Id, TargetRelativePath = "Backup"
+        }, None);
+
+        dto.State.Should().Be("Blocked");
+
+        var file = await FileAsync(File1Id);
+        file.PendingState.Should().Be(EntityPendingState.PendingMove);
+        file.PendingJobId.Should().Be(dto.Id);
+    }
+
+    [Fact]
+    public async Task A_job_blocked_by_the_engine_keeps_its_overlay()
+    {
+        var dto = await Svc().EnqueueAsync(new CreateJobRequest
+        {
+            Type = JobType.MoveFile, SourceFileId = File1Id,
+            TargetVolumeId = Vol2Id, TargetRelativePath = "Backup"
+        }, None);
+        dto.State.Should().Be("Pending");
+
+        // The volume disappears while the job waits in the queue: the engine parks it.
+        await using (var db = _harness.CreateContext())
+        {
+            var vol2 = await db.Volumes.SingleAsync(v => v.Id == Vol2Id, None);
+            vol2.IsOnline = false;
+            await db.SaveChangesAsync(None);
+        }
+
+        await Engine(SucceedingMover()).ExecuteJobAsync(dto.Id, None);
+
+        await using (var db = _harness.CreateContext())
+            (await db.OperationJobs.AsNoTracking().SingleAsync(j => j.Id == dto.Id, None))
+                .State.Should().Be(JobState.Blocked);
+
+        var file = await FileAsync(File1Id);
+        file.PendingState.Should().Be(EntityPendingState.PendingMove);
+        file.PendingJobId.Should().Be(dto.Id);
+    }
+
+    // ── clear: startup reconciliation of orphan overlays ─────────────────────
+
+    [Fact]
+    public async Task Startup_reconciliation_clears_an_overlay_whose_job_is_already_terminal()
+    {
+        var jobId = await EnqueueRenameAsync();
+
+        // Simulate a crash in the window between the terminal-state commit and the clear:
+        // the job is terminal in the database while the overlay is still on the row.
+        await using (var db = _harness.CreateContext())
+        {
+            var job = await db.OperationJobs.SingleAsync(j => j.Id == jobId, None);
+            job.State = JobState.Cancelled;
+            await db.SaveChangesAsync(None);
+        }
+
+        (await FileAsync(File1Id)).PendingState.Should().Be(EntityPendingState.PendingRename, "arrange");
+
+        await using (var db = _harness.CreateContext())
+        {
+            var cleared = await TestProjection.Overlay(db, new FileSearchIndex(db))
+                .ReconcileOrphansAsync(None);
+            cleared.Should().Be(1);
+        }
+
+        var file = await FileAsync(File1Id);
+        file.PendingState.Should().Be(EntityPendingState.None);
+        file.PendingJobId.Should().BeNull();
+        (await SearchNameAsync("tramonto")).Should().NotContain(File1Id);
+    }
+
+    [Fact]
+    public async Task Startup_reconciliation_leaves_a_live_job_s_overlay_alone()
+    {
+        await EnqueueRenameAsync();
+
+        await using (var db = _harness.CreateContext())
+        {
+            var cleared = await TestProjection.Overlay(db, new FileSearchIndex(db))
+                .ReconcileOrphansAsync(None);
+            cleared.Should().Be(0);
+        }
+
+        (await FileAsync(File1Id)).PendingState.Should().Be(EntityPendingState.PendingRename);
     }
 }
