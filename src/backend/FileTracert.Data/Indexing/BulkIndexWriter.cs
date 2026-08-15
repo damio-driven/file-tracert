@@ -8,7 +8,7 @@ namespace FileTracert.Data.Indexing;
 /// operations skip <see cref="SaveChanges"/> and therefore the auditing
 /// interceptor, so this class stamps the row-audit fields itself.
 /// </summary>
-public sealed class BulkIndexWriter : IBulkIndexWriter
+public sealed partial class BulkIndexWriter : IBulkIndexWriter
 {
     private const int BatchSize = 20_000;
 
