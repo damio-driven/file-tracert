@@ -91,6 +91,7 @@ public sealed class QueueFifoRecoveryTests : IDisposable
         new(db, _ledger, _cancellation, Substitute.For<IFileMover>(), new QueueSignal(),
             TestProjection.Index(db), TestProjection.Overlay(db),
             TestProjection.Guard(db), TestProjection.Unblocker(db),
+            TestProjection.Revaluator(db, _ledger),
             NullLogger<QueueService>.Instance);
 
     private JobExecutionEngine MakeEngine(IFileMover mover, FileTracertDbContext db)

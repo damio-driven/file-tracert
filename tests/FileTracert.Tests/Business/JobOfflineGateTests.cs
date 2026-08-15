@@ -136,6 +136,7 @@ public sealed class JobOfflineGateTests : IDisposable
             db, _ledger, new JobCancellationRegistry(), mover, new QueueSignal(),
             TestProjection.Index(db), TestProjection.Overlay(db),
             TestProjection.Guard(db), TestProjection.Unblocker(db),
+            TestProjection.Revaluator(db, _ledger),
             NullLogger<QueueService>.Instance);
     }
 

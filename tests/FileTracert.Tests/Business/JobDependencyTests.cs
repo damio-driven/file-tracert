@@ -8,6 +8,7 @@ using FileTracert.Tests.Data;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using NSubstitute;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace FileTracert.Tests.Business;
@@ -54,10 +55,12 @@ public sealed class JobDependencyTests : IDisposable
 
     public void Dispose() => _harness.Dispose();
 
-    private JobExecutionEngine Engine()
+    private JobExecutionEngine Engine() => EngineWith(NSubstitute.Substitute.For<IFileMover>());
+
+    private JobExecutionEngine EngineWith(IFileMover mover)
     {
         var db = _harness.CreateContext();
-        return new JobExecutionEngine(db, NSubstitute.Substitute.For<IFileMover>(), _ledger,
+        return new JobExecutionEngine(db, mover, _ledger,
             TestProjection.Index(db), TestProjection.Overlay(db), new FakeNotificationPublisher(),
             TimeProvider.System, NullLogger<JobExecutionEngine>.Instance);
     }
@@ -75,6 +78,7 @@ public sealed class JobDependencyTests : IDisposable
         return new QueueService(db, _ledger, _cancellation,
             NSubstitute.Substitute.For<IFileMover>(), new QueueSignal(),
             TestProjection.Index(db), TestProjection.Overlay(db), TestProjection.Guard(db), TestProjection.Unblocker(db),
+            TestProjection.Revaluator(db, _ledger),
             NullLogger<QueueService>.Instance);
     }
 
@@ -439,6 +443,99 @@ public sealed class JobDependencyTests : IDisposable
         repointed.State.Should().Be(JobState.Blocked);
         repointed.BlockReason.Should().Be(JobBlockReason.DependencyPending);
         repointed.DependsOnJobId.Should().Be(onData.Id);
+    }
+
+    // ── a prerequisite that ends badly: parked, never cascaded ────────────────
+
+    [Fact]
+    public async Task Cancelling_the_prerequisite_parks_the_dependent_instead_of_cancelling_it()
+    {
+        var first = await CreateFolderAsync(@"Media\2026");
+        var second = await CreateFolderAsync(@"Media\2026");
+
+        await Svc().CancelAsync(first.Id, None);
+
+        (await ReloadJobAsync(first.Id)).State.Should().Be(JobState.Cancelled);
+
+        var dependent = await ReloadJobAsync(second.Id);
+        dependent.State.Should().Be(JobState.Blocked, "§5: no cascade of cancellations");
+        dependent.BlockReason.Should().Be(JobBlockReason.DependencyCancelled);
+        dependent.ErrorMessage.Should().Contain($"#{first.Id}");
+    }
+
+    [Fact]
+    public async Task A_DependencyCancelled_job_is_not_released_on_its_own()
+    {
+        // The guard is clean the moment the prerequisite is cancelled — releasing on that alone
+        // would silently recreate the folder the user just decided NOT to create (finding 9).
+        var first = await CreateFolderAsync(@"Media\2026");
+        var second = await CreateFolderAsync(@"Media\2026");
+
+        await Svc().CancelAsync(first.Id, None);
+        await Revaluator().RevaluateAsync(None);
+
+        var dependent = await ReloadJobAsync(second.Id);
+        dependent.State.Should().Be(JobState.Blocked);
+        dependent.BlockReason.Should().Be(JobBlockReason.DependencyCancelled);
+    }
+
+    [Fact]
+    public async Task A_DependencyCancelled_job_is_reactivated_by_a_retry()
+    {
+        var first = await CreateFolderAsync(@"Media\2026");
+        var second = await CreateFolderAsync(@"Media\2026");
+
+        await Svc().CancelAsync(first.Id, None);
+        var retried = await Svc().RetryAsync(second.Id, None);
+
+        retried.State.Should().Be(nameof(JobState.Pending));
+        retried.DependsOnJobId.Should().BeNull("the dependency died with the cancelled job");
+    }
+
+    [Fact]
+    public async Task A_failed_prerequisite_parks_its_dependents_the_same_way()
+    {
+        var first = await RenameFileAsync(ReportId, "v2.txt");
+        var second = await RenameFileAsync(ReportId, "v3.txt");
+
+        var mover = NSubstitute.Substitute.For<IFileMover>();
+        mover.When(m => m.RenameIntraVolume(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>()))
+             .Do(_ => throw new IOException("boom"));
+        await EngineWith(mover).ExecuteJobAsync(first.Id, None);
+
+        (await ReloadJobAsync(first.Id)).State.Should().Be(JobState.Failed);
+
+        var dependent = await ReloadJobAsync(second.Id);
+        dependent.State.Should().Be(JobState.Blocked);
+        dependent.BlockReason.Should().Be(JobBlockReason.DependencyCancelled);
+    }
+
+    // ── the barrier at execution time ─────────────────────────────────────────
+
+    [Fact]
+    public async Task A_dependent_forced_to_Pending_is_parked_again_instead_of_running()
+    {
+        var first = await RenameFileAsync(ReportId, "v2.txt");
+        var second = await RenameFileAsync(ReportId, "v3.txt");
+
+        // Force it runnable behind the engine's back — what a bad Retry or a broken revaluation
+        // would do. The dependency column is left in place: that is the barrier's only input.
+        using (var db = _harness.CreateContext())
+        {
+            var job = await db.OperationJobs.FirstAsync(j => j.Id == second.Id, None);
+            job.State = JobState.Pending;
+            job.BlockReason = JobBlockReason.None;
+            await db.SaveChangesAsync(None);
+        }
+
+        var mover = NSubstitute.Substitute.For<IFileMover>();
+        await EngineWith(mover).ExecuteJobAsync(second.Id, None);
+
+        var parked = await ReloadJobAsync(second.Id);
+        parked.State.Should().Be(JobState.Blocked);
+        parked.BlockReason.Should().Be(JobBlockReason.DependencyPending);
+        mover.ReceivedCalls().Should().BeEmpty("nothing on disk may be touched out of order");
+        (await ReloadJobAsync(first.Id)).State.Should().Be(JobState.Pending);
     }
 
     // ── still refused: the requests that are wrong, not merely queued behind ──

@@ -87,6 +87,7 @@ public sealed class JobPartialCleanupTests : IDisposable
             _mover, new QueueSignal(),
             TestProjection.Index(db), TestProjection.Overlay(db),
             TestProjection.Guard(db), TestProjection.Unblocker(db),
+            TestProjection.Revaluator(db, ledger),
             NullLogger<QueueService>.Instance);
     }
 

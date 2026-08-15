@@ -81,6 +81,7 @@ public sealed class ProjectionOverlayTests : IDisposable
             TestProjection.Index(db, new FileSearchIndex(db)),
             TestProjection.Overlay(db, new FileSearchIndex(db)),
             TestProjection.Guard(db), TestProjection.Unblocker(db, new FileSearchIndex(db)),
+            TestProjection.Revaluator(db, _ledger),
             NullLogger<QueueService>.Instance);
     }
 

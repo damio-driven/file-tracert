@@ -84,10 +84,12 @@ public sealed class JobCancellationTests : IDisposable
     private QueueService MakeQueue()
     {
         var db = _harness.CreateContext();
-        return new QueueService(db, NoopLedger(), _registry, Substitute.For<IFileMover>(),
+        var ledger = NoopLedger();
+        return new QueueService(db, ledger, _registry, Substitute.For<IFileMover>(),
             new QueueSignal(),
             TestProjection.Index(db), TestProjection.Overlay(db),
             TestProjection.Guard(db), TestProjection.Unblocker(db),
+            TestProjection.Revaluator(db, ledger),
             NullLogger<QueueService>.Instance);
     }
 

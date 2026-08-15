@@ -76,6 +76,20 @@ public sealed class JobExecutionEngine
 
         try
         {
+            // Dependency barrier (§2.3). Blocked already keeps a dependent out of the processor's
+            // query, so this is the net under a manual «Riprova» or a revaluation gone wrong: a
+            // job executed before its prerequisite corrupts real files, and no amount of state
+            // bookkeeping undoes that.
+            var barrier = await JobDependencies.BarrierAsync(_db, job, ct);
+            if (barrier is { } waiting)
+            {
+                _logger.LogWarning(
+                    "Job {Id}: not attempted — it depends on job {Prerequisite}, which is not " +
+                    "completed; parking it again.", job.Id, job.DependsOnJobId);
+                await SetBlockedAsync(job, waiting.Reason, waiting.Message, ct);
+                return;
+            }
+
             // FIX #3 — offline gate. Checked HERE, immediately before any syscall, and not only at
             // enqueue: a volume can disappear while the job sits in the queue or between two of its
             // checkpoints. A parked job keeps its ledger reservation (see SetBlockedAsync) so the
@@ -828,6 +842,9 @@ public sealed class JobExecutionEngine
             await using var tx = await _db.Database.BeginTransactionAsync(ct);
             await _db.SaveChangesAsync(ct);
             await _overlay.ClearForJobAsync(job.Id, ct);
+            // Same treatment as a cancel (§5): a failed prerequisite parks its dependents on
+            // DependencyCancelled inside this transaction — it never cancels them.
+            await JobDependencies.ParkDependentsAsync(_db, job, ct);
             await SpaceLedger.DeactivateEntriesAsync(_db, job.Id, ct);
             await tx.CommitAsync(ct);
         }

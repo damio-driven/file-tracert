@@ -28,6 +28,7 @@ public sealed class QueueService : IQueueService
     private readonly OverlayWriter _overlay;
     private readonly PendingWorkGuard _guard;
     private readonly JobUnblocker _unblocker;
+    private readonly BlockedJobRevaluator _revaluator;
     private readonly ILogger<QueueService> _logger;
 
     public QueueService(
@@ -40,6 +41,7 @@ public sealed class QueueService : IQueueService
         OverlayWriter overlay,
         PendingWorkGuard guard,
         JobUnblocker unblocker,
+        BlockedJobRevaluator revaluator,
         ILogger<QueueService> logger)
     {
         _db = db;
@@ -51,6 +53,7 @@ public sealed class QueueService : IQueueService
         _overlay = overlay;
         _guard = guard;
         _unblocker = unblocker;
+        _revaluator = revaluator;
         _logger = logger;
     }
 
@@ -199,6 +202,10 @@ public sealed class QueueService : IQueueService
                 // never reach. Cleared AFTER the state save, so a tripped concurrency token
                 // (someone else owns the state) leaves the projection untouched.
                 await _overlay.ClearForJobAsync(jobId, ct);
+                // §5 — never a cascade of cancellations: whoever was waiting for this job stays
+                // in the queue, parked on DependencyCancelled. In the same transaction as the
+                // Cancelled state, or a crash leaves a dependent waiting for a job that is gone.
+                await JobDependencies.ParkDependentsAsync(_db, job, ct);
                 await SpaceLedger.DeactivateEntriesAsync(_db, jobId, ct);
                 await tx.CommitAsync(ct);
                 break;
@@ -237,6 +244,13 @@ public sealed class QueueService : IQueueService
         // must be re-pointed in the index, or the Catalog shows ghosts and the target
         // holds untracked copies. The engine repeats this for a running job — idempotent.
         await _indexUpdater.ReconcileCancelledJobAsync(job, ct);
+
+        // §4 "i Blocked vengono rivalutati a ogni evento" — and a cancel IS one of the events:
+        // it frees the entity this job was holding and the space it had reserved. Without this
+        // the jobs it was blocking wait for a completion that will never come (finding 13).
+        // Same entry point as the worker's post-completion pass, not a second path.
+        await _revaluator.RevaluateAsync(ct);
+        _signal.Signal();
 
         _logger.LogInformation("Cancelled job {Id}.", jobId);
     }

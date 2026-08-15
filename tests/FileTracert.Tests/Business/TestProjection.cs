@@ -1,5 +1,6 @@
-using FileTracert.Business.Operations;
+﻿using FileTracert.Business.Operations;
 using FileTracert.Business.Projection;
+using FileTracert.Contracts.Operations;
 using FileTracert.Contracts.Search;
 using FileTracert.Data;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -21,6 +22,11 @@ internal static class TestProjection
 
     /// <summary>The real enqueue guard — never a stub: the tests are largely ABOUT what it decides.</summary>
     public static PendingWorkGuard Guard(FileTracertDbContext db) => new(db);
+
+    /// <summary>The real Blocked-job revaluation, over the real ledger.</summary>
+    public static BlockedJobRevaluator Revaluator(
+        FileTracertDbContext db, ISpaceLedger ledger, IFileSearchIndex? fts = null) =>
+        new(db, ledger, Unblocker(db, fts), NullLogger<BlockedJobRevaluator>.Instance);
 
     /// <summary>The real release path: guard re-ask + snapshot refresh + overlay.</summary>
     public static JobUnblocker Unblocker(FileTracertDbContext db, IFileSearchIndex? fts = null) =>

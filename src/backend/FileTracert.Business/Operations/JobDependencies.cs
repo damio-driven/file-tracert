@@ -1,5 +1,7 @@
 using FileTracert.Contracts.Enums;
+using FileTracert.Data;
 using FileTracert.Data.Entities;
+using Microsoft.EntityFrameworkCore;
 
 namespace FileTracert.Business.Operations;
 
@@ -31,4 +33,62 @@ public static class JobDependencies
     /// precisely so this could be one test).
     /// </summary>
     public static bool OwnsItsEntity(OperationJob job) => !IsWaitingForAnotherJob(job);
+
+    /// <summary>
+    /// Re-parks everything waiting for <paramref name="prerequisite"/> now that it has ended
+    /// badly (cancelled by the user, or failed). §5 is explicit: NEVER a cascade of
+    /// cancellations — the dependents stay in the queue on a reason that says what happened,
+    /// reactivatable with «Riprova».
+    ///
+    /// Must be called inside the transaction that commits the prerequisite's terminal state, so
+    /// a crash can never leave dependents pointing at a job that is already gone.
+    ///
+    /// A conditional UPDATE (<c>WHERE State = Blocked</c>) rather than tracked entities: it
+    /// touches no <c>State</c>, so it cannot race the concurrency token of a dependent that
+    /// someone else is moving, and one statement covers however many are waiting.
+    /// </summary>
+    /// <returns>How many dependents were re-parked.</returns>
+    public static async Task<int> ParkDependentsAsync(
+        FileTracertDbContext db, OperationJob prerequisite, CancellationToken ct)
+    {
+        var message =
+            $"L'operazione #{prerequisite.Id} ({prerequisite.Type}) da cui dipendeva è terminata " +
+            $"come {prerequisite.State}: l'operazione resta in coda, verificare e riprovare.";
+
+        return await db.OperationJobs
+            .Where(j => j.DependsOnJobId == prerequisite.Id && j.State == JobState.Blocked)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(j => j.BlockReason, JobBlockReason.DependencyCancelled)
+                .SetProperty(j => j.ErrorMessage, message)
+                .SetProperty(j => j.UpdatedUtc, DateTime.UtcNow), ct);
+    }
+
+    /// <summary>
+    /// Why <paramref name="job"/> must not run yet, or null when its prerequisite is satisfied.
+    /// The last line of defence (§2.3): <c>Blocked</c> already keeps a dependent out of the
+    /// processor's query, but a manual «Riprova» or a revaluation gone wrong could put one back
+    /// in front of its prerequisite, and a job executed out of order corrupts real files.
+    /// </summary>
+    public static async Task<(JobBlockReason Reason, string Message)?> BarrierAsync(
+        FileTracertDbContext db, OperationJob job, CancellationToken ct)
+    {
+        if (job.DependsOnJobId is not { } prerequisiteId) return null;
+
+        var prerequisite = await db.OperationJobs.AsNoTracking()
+            .Where(j => j.Id == prerequisiteId)
+            .Select(j => new { j.Id, j.State, j.Type })
+            .FirstOrDefaultAsync(ct);
+
+        // No row left to wait for: nothing can un-block this job, so let it through rather than
+        // deadlock it forever on a prerequisite that no longer exists.
+        if (prerequisite is null || prerequisite.State == JobState.Completed) return null;
+
+        return prerequisite.State is JobState.Cancelled or JobState.Failed
+            ? (JobBlockReason.DependencyCancelled,
+               $"L'operazione #{prerequisite.Id} ({prerequisite.Type}) da cui dipende è terminata " +
+               $"come {prerequisite.State}: verificare e riprovare.")
+            : (JobBlockReason.DependencyPending,
+               $"In attesa dell'operazione #{prerequisite.Id} ({prerequisite.Type}), " +
+               $"attualmente {prerequisite.State}.");
+    }
 }

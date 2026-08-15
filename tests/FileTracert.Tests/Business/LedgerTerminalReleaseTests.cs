@@ -172,11 +172,13 @@ public sealed class LedgerTerminalReleaseTests : IDisposable
             R("src", "c.bin"), R("dst", "c.bin"), 100);
 
         var db = _harness.CreateContext();
-        var queue = new QueueService(db, NoopLedger(), _registry,
+        var ledger = NoopLedger();
+        var queue = new QueueService(db, ledger, _registry,
             Substitute.For<FileTracert.Contracts.Platform.IFileMover>(),
             new QueueSignal(),
             TestProjection.Index(db), TestProjection.Overlay(db),
             TestProjection.Guard(db), TestProjection.Unblocker(db),
+            TestProjection.Revaluator(db, ledger),
             NullLogger<QueueService>.Instance);
 
         await queue.CancelAsync(jobId, CancellationToken.None);
