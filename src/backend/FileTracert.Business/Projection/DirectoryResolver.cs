@@ -37,6 +37,13 @@ public sealed class DirectoryResolver
     /// <see cref="EntityPendingState.PendingCreate"/> overlay, so the Catalog shows the
     /// destination immediately and an operation can target it before it exists.
     /// A folder that already exists physically gets NO overlay: there is nothing pending on it.
+    ///
+    /// DEVIATION from the step 9b plan, deliberate: the plan had a move's implicitly created
+    /// target directory carry NO overlay. Such a row is neither materialized+present nor
+    /// pending, so the Catalog's visibility rule hides it — and a file moved into a folder the
+    /// picker invented inline would sit in a folder nothing can show, breaking acceptance
+    /// criterion 1. The row IS being created by this job, so it says so; it is then promoted on
+    /// completion and cleared on cancel by exactly the same code as an explicit CreateFolder.
     /// </summary>
     public Task<DirectoryNode> FindOrCreateProjectedAsync(
         int volumeId, string path, int pendingJobId, CancellationToken ct) =>

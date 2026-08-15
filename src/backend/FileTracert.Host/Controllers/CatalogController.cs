@@ -1,7 +1,9 @@
+using FileTracert.Business.Projection;
 using FileTracert.Contracts.Dtos;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Paging;
 using FileTracert.Data;
+using FileTracert.Data.Entities;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -17,8 +19,13 @@ namespace FileTracert.Host.Controllers;
 public sealed class CatalogController : ControllerBase
 {
     private readonly FileTracertDbContext _db;
+    private readonly ProjectedPathResolver _paths;
 
-    public CatalogController(FileTracertDbContext db) => _db = db;
+    public CatalogController(FileTracertDbContext db, ProjectedPathResolver paths)
+    {
+        _db = db;
+        _paths = paths;
+    }
 
     [HttpGet("{volumeId:int}/children")]
     public async Task<ActionResult<CatalogChildrenDto>> GetChildren(
@@ -60,9 +67,9 @@ public sealed class CatalogController : ControllerBase
         {
             var dir = await _db.Directories
                 .AsNoTracking()
-                .FirstOrDefaultAsync(d => d.Id == directoryId && d.VolumeId == volumeId, ct);
+                .FirstOrDefaultAsync(d => d.Id == directoryId, ct);
 
-            if (dir is null)
+            if (dir is null || !await BelongsToVolumeAsync(dir, volumeId, ct))
                 return NotFound();
 
             parentId = dir.Id;
@@ -79,7 +86,10 @@ public sealed class CatalogController : ControllerBase
             .AsNoTracking()
             .Where(d => ((d.ParentId == parentId && d.PendingParentId == null) || d.PendingParentId == parentId) &&
                         ((d.IsMaterialized && d.IsPresent) || d.PendingState != EntityPendingState.None))
-            // Projected name — the rule lives in FileTracert.Business/Projection/Projected.cs.
+            // Projected name — the rule lives in FileTracert.Business/Projection/Projected.cs;
+            // EF cannot translate a call to it, so this is its third and last spelling.
+            // No NULLIF guard on the empty string as in the FTS SQL: an overlay is written only
+            // by OverlayWriter, after OperationName.TryValidateLeaf has rejected blank names.
             .OrderBy(d => d.PendingName ?? d.Name)
             .Select(d => new
             {
@@ -138,6 +148,22 @@ public sealed class CatalogController : ControllerBase
         var pagedFiles = new PagedResult<CatalogFileDto>(fileDtos, totalFiles, paged.Skip, paged.Take);
 
         return Ok(new CatalogChildrenDto(dirDtos, pagedFiles, volume.IsOnline, volume.Label, volume.LastDriveLetter, directoryId, parentPath));
+    }
+
+    /// <summary>
+    /// True when the directory belongs to <paramref name="volumeId"/> physically OR in the
+    /// projection. A folder with a queued cross-volume move is LISTED under its destination
+    /// volume (its projected parent lives there) while the row still carries the source
+    /// VolumeId until the move executes — listing it there and then refusing to open it would
+    /// be worse than not listing it at all.
+    /// </summary>
+    private async Task<bool> BelongsToVolumeAsync(DirectoryNode dir, int volumeId, CancellationToken ct)
+    {
+        if (dir.VolumeId == volumeId) return true;
+        if (dir.PendingParentId is null) return false;
+
+        var located = await _paths.ResolveDirectoriesAsync([dir.Id], ct);
+        return located.TryGetValue(dir.Id, out var projected) && projected.VolumeId == volumeId;
     }
 
     private static PagedResult<CatalogFileDto> EmptyPage(PagedRequest paged) =>

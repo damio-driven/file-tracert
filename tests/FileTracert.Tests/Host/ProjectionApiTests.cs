@@ -214,6 +214,36 @@ public sealed class ProjectionApiTests
         docs.PendingJobId.Should().Be(job.Id);
     }
 
+    /// <summary>
+    /// A cross-volume folder move projects the folder onto the DESTINATION volume while the row
+    /// still carries the source VolumeId. Listing it there but refusing to open it would be worse
+    /// than not listing it at all.
+    /// </summary>
+    [Fact]
+    public async Task Catalog_opens_a_folder_projected_onto_the_destination_volume()
+    {
+        using var factory = MakeFactory();
+        var client = Authed(factory);
+
+        await EnqueueAsync(client, new CreateJobRequest
+        {
+            Type = JobType.MoveFolder, SourceDirectoryId = _docsId,
+            TargetVolumeId = _betaId, TargetRelativePath = string.Empty,
+        });
+
+        var betaRoot = await ChildrenAsync(client, _betaId, null);
+        var docs = betaRoot.Directories.Should().ContainSingle(d => d.Name == "Docs").Subject;
+        docs.ProjectedState.Should().Be(nameof(EntityPendingState.PendingMove));
+
+        var inside = await ChildrenAsync(client, _betaId, docs.Id);
+        inside.Directories.Select(d => d.Name).Should().Contain("Sub");
+        inside.Files.Items.Should().ContainSingle(f => f.Name == "report.txt");
+
+        // The source volume no longer offers it.
+        var alphaRoot = await ChildrenAsync(client, _alphaId, null);
+        alphaRoot.Directories.Should().BeEmpty();
+    }
+
     // ── Search ───────────────────────────────────────────────────────────────
 
     [Fact]
