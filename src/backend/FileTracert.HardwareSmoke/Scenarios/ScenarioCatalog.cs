@@ -21,6 +21,7 @@ public static class ScenarioCatalog
         new CrashResumeSimpleOpScenario(),
         new IntraVolumeCollisionScenario(),
         new SearchDateFilterScenario(),
+        new RescanPreservesOverlayScenario(),
         new IndexUpdateFailOnceScenario(),
         new PhantomReservationScenario(),
         new InsufficientSpaceScenario(),

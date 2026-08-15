@@ -19,8 +19,10 @@ namespace FileTracert.HardwareSmoke.Harness;
 /// <see cref="IFileSearchIndex"/>.
 ///
 /// It deliberately does NOT call <c>ScanService</c>: on an NTFS volume that service enumerates the
-/// whole MFT (correct for the product, minutes per volume here) and its persist step truncates the
-/// volume's entire index — both unusable for a per-scenario fixture of a dozen files.
+/// whole MFT — correct for the product, minutes per volume for a per-scenario fixture of a dozen
+/// files. (Since step 9a the scan merges instead of truncating, so re-indexing is no longer
+/// destructive; the scenario that needs the real scan runs it explicitly — see
+/// <c>rescan-preserves-overlay</c>.)
 /// </summary>
 public sealed class CatalogArranger
 {
