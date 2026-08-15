@@ -1,4 +1,4 @@
-using FileTracert.Business.Projection;
+﻿using FileTracert.Business.Projection;
 using FileTracert.Business.Scanning;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Operations;
@@ -70,7 +70,11 @@ public sealed class QueueService : IQueueService
         // overlay without a job would point at a job that never existed.
         // Applied AFTER the offline gate and regardless of its verdict: a job parked
         // Blocked(volume offline) is still in the queue, therefore still in the projection.
-        await _overlay.ApplyAsync(job, items, ct);
+        // The ONE exception is a job born Blocked(DependencyPending): the entity is already
+        // another job's, and the projection must keep showing THAT job's promise. This dependent
+        // writes its own overlay when the revaluation releases it (JobUnblocker).
+        if (JobDependencies.OwnsItsEntity(job))
+            await _overlay.ApplyAsync(job, items, ct);
 
         // C3: stage the ledger reservation in the SAME transaction as the job, so the two commit
         // atomically. The old code reserved AFTER the commit — a throw or aborted request between
@@ -470,7 +474,7 @@ public sealed class QueueService : IQueueService
 
         // Finding 8 — ONE guard, run once on the finished job instead of a per-type half-check:
         // it now sees source AND target of every non-terminal job, CreateFolder included.
-        await ApplyPendingWorkGuardAsync(request, job, items, ct);
+        await ApplyPendingWorkGuardAsync(job, items, ct);
 
         foreach (var item in items)
             item.Job = job;
@@ -508,12 +512,20 @@ public sealed class QueueService : IQueueService
     }
 
     /// <summary>
-    /// Serializes operations that touch the same place. Behaviour unchanged for now (the second
-    /// operation is still rejected); what changed is WHO sees it — one predicate over the source
-    /// and target paths of every non-terminal job, instead of two partial per-type queries.
+    /// Serializes operations that touch the same place (MVP: one pending operation per entity,
+    /// §5). A conflict does NOT refuse the request — §4 is explicit that an enqueue is never
+    /// rejected: the job enters the queue <see cref="JobState.Blocked"/> with
+    /// <see cref="JobBlockReason.DependencyPending"/>, naming the job that holds the entity, and
+    /// the revaluation releases it when that job is done.
+    ///
+    /// Runs LAST, after the offline gate, and its verdict wins over it: the dependency is the
+    /// reason that decides whether this job owns the entity — and therefore whether it may write
+    /// the projection overlay at all. Once the prerequisite resolves, the revaluation re-applies
+    /// the offline and space gates, so a job that is also waiting for a drive is re-parked on
+    /// that reason then, with nothing lost.
     /// </summary>
     private async Task ApplyPendingWorkGuardAsync(
-        CreateJobRequest request, OperationJob job, List<OperationJobItem> items, CancellationToken ct)
+        OperationJob job, List<OperationJobItem> items, CancellationToken ct)
     {
         var claims = PendingWorkGuard.ClaimsOf(
             job.Type, job.SourceVolumeId, job.TargetVolumeId, job.TargetRelativePath, items);
@@ -521,11 +533,20 @@ public sealed class QueueService : IQueueService
         var conflict = await _guard.FindConflictAsync(claims, excludeJobId: null, ct);
         if (conflict is null) return;
 
-        var (entityType, entityId) = request.SourceFileId is { } fileId
-            ? ("File", fileId)
-            : ("Directory", request.SourceDirectoryId ?? 0);
-        throw new EntityAlreadyPendingException(entityType, entityId);
+        job.State = JobState.Blocked;
+        job.BlockReason = JobBlockReason.DependencyPending;
+        job.DependsOnJobId = conflict.JobId;
+        job.ErrorMessage = DescribeDependency(conflict);
+
+        _logger.LogInformation(
+            "Enqueue of a {Type} job parked behind job {Prerequisite} ({PrereqType} on '{Path}').",
+            job.Type, conflict.JobId, conflict.Type, conflict.Path);
     }
+
+    /// <summary>The user-facing reason a job is waiting, in Italian, naming the job it waits for.</summary>
+    internal static string DescribeDependency(PendingConflict conflict) =>
+        $"In attesa dell'operazione #{conflict.JobId} ({conflict.Type}) su '{conflict.Path}': " +
+        "una sola operazione per volta sulla stessa entità.";
 
     private Task<Volume?> LoadVolumeAsync(int? volumeId, CancellationToken ct) =>
         volumeId is null
@@ -897,6 +918,7 @@ public sealed class QueueService : IQueueService
             FreedBytesSource = job.FreedBytesSource,
             EstimateIsLive = job.EstimateIsLive,
             SequenceOrder = job.SequenceOrder,
+            DependsOnJobId = job.DependsOnJobId,
             ErrorMessage = job.ErrorMessage,
             CreatedUtc = job.CreatedUtc,
             StartedUtc = job.StartedUtc,

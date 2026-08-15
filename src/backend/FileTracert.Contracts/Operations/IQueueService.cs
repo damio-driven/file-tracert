@@ -1,4 +1,4 @@
-using FileTracert.Contracts.Paging;
+﻿using FileTracert.Contracts.Paging;
 
 namespace FileTracert.Contracts.Operations;
 
@@ -6,8 +6,13 @@ public interface IQueueService
 {
     /// <summary>
     /// Creates and enqueues a new job. Reserves space in the ledger for cross-volume moves.
-    /// Throws <see cref="EntityAlreadyPendingException"/> if the source entity already has
-    /// a non-terminal job (MVP guard: one pending op per entity).
+    /// Never rejects over a conflict with another queued job (§4 "non rifiutare mai un job
+    /// all'enqueue"): when the requested entity — or a folder above or below it — is already
+    /// held by a non-terminal job, the new job is created
+    /// <see cref="Enums.JobState.Blocked"/> /
+    /// <see cref="Enums.JobBlockReason.DependencyPending"/> with
+    /// <c>DependsOnJobId</c> naming the job it waits for (MVP: one pending op per entity).
+    /// Throws only for requests that are invalid in themselves.
     /// </summary>
     Task<OperationJobDto> EnqueueAsync(CreateJobRequest request, CancellationToken ct);
 

@@ -296,49 +296,11 @@ public sealed class QueueServiceTests : IDisposable
     }
 
     // ── Guard: one pending op per entity ─────────────────────────────────────
-
-    [Fact]
-    public async Task Guard_throws_EntityAlreadyPending_on_second_file_op()
-    {
-        await Svc().EnqueueAsync(new CreateJobRequest
-        {
-            Type = JobType.RenameFile,
-            SourceFileId = File1Id,
-            NewName = "v2.txt"
-        }, None);
-
-        var act = async () => await Svc().EnqueueAsync(new CreateJobRequest
-        {
-            Type = JobType.RenameFile,
-            SourceFileId = File1Id,
-            NewName = "v3.txt"
-        }, None);
-
-        await act.Should().ThrowAsync<EntityAlreadyPendingException>()
-            .Where(e => e.EntityType == "File" && e.EntityId == File1Id);
-    }
-
-    [Fact]
-    public async Task Guard_throws_EntityAlreadyPending_on_second_directory_op()
-    {
-        await Svc().EnqueueAsync(new CreateJobRequest
-        {
-            Type = JobType.RenameFolder,
-            SourceDirectoryId = Dir1Id,
-            NewName = "OldDocs"
-        }, None);
-
-        var act = async () => await Svc().EnqueueAsync(new CreateJobRequest
-        {
-            Type = JobType.MoveFolder,
-            SourceDirectoryId = Dir1Id,
-            TargetVolumeId = Vol1Id,
-            TargetRelativePath = "Archive"
-        }, None);
-
-        await act.Should().ThrowAsync<EntityAlreadyPendingException>()
-            .Where(e => e.EntityType == "Directory" && e.EntityId == Dir1Id);
-    }
+    //
+    // What the guard DECIDES (conflict detection in every direction, CreateFolder, targets,
+    // casing) and what it does about it (Blocked(DependencyPending), not a rejection) live in
+    // JobDependencyEnqueueTests. What stays here is the queue's own side of the contract: a
+    // resolved job stops blocking, an unrelated one never did.
 
     [Fact]
     public async Task Guard_allows_re_enqueue_after_cancel()
@@ -362,45 +324,6 @@ public sealed class QueueServiceTests : IDisposable
         }, None);
 
         dto2.State.Should().Be("Pending");
-    }
-
-    // ── C2: overlap guard (ancestor / descendant), not just exact match ───────
-
-    [Fact]
-    public async Task Guard_blocks_op_on_a_descendant_of_a_pending_directory()
-    {
-        // Pending op on "Docs" (Dir1) must block an op on its child "Docs\Sub" (Dir2).
-        await Svc().EnqueueAsync(new CreateJobRequest
-        {
-            Type = JobType.RenameFolder, SourceDirectoryId = Dir1Id, NewName = "Documents"
-        }, None);
-
-        var act = async () => await Svc().EnqueueAsync(new CreateJobRequest
-        {
-            Type = JobType.MoveFolder, SourceDirectoryId = Dir2Id,
-            TargetVolumeId = Vol1Id, TargetRelativePath = "Archive"
-        }, None);
-
-        await act.Should().ThrowAsync<EntityAlreadyPendingException>()
-            .Where(e => e.EntityType == "Directory" && e.EntityId == Dir2Id);
-    }
-
-    [Fact]
-    public async Task Guard_blocks_op_on_an_ancestor_of_a_pending_directory()
-    {
-        // Reverse direction: a pending op on the child "Docs\Sub" must block an op on "Docs".
-        await Svc().EnqueueAsync(new CreateJobRequest
-        {
-            Type = JobType.RenameFolder, SourceDirectoryId = Dir2Id, NewName = "SubRenamed"
-        }, None);
-
-        var act = async () => await Svc().EnqueueAsync(new CreateJobRequest
-        {
-            Type = JobType.RenameFolder, SourceDirectoryId = Dir1Id, NewName = "Documents"
-        }, None);
-
-        await act.Should().ThrowAsync<EntityAlreadyPendingException>()
-            .Where(e => e.EntityType == "Directory" && e.EntityId == Dir1Id);
     }
 
     [Fact]

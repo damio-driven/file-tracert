@@ -1,4 +1,4 @@
-using FileTracert.Contracts.Operations;
+﻿using FileTracert.Contracts.Operations;
 using FileTracert.Contracts.Paging;
 using Microsoft.AspNetCore.Mvc;
 
@@ -31,7 +31,9 @@ public sealed class OperationsController : ControllerBase
 
     /// <summary>
     /// Creates and enqueues a new operation. Reserves space for cross-volume moves.
-    /// Returns 409 if the source entity already has a non-terminal job pending.
+    /// Never refuses over a conflict with another queued job (§4): the job is created
+    /// Blocked(DependencyPending) instead, with DependsOnJobId naming what it waits for.
+    /// 400 is reserved for requests that are wrong in themselves (bad name, missing volume).
     /// </summary>
     [HttpPost("enqueue")]
     public async Task<ActionResult<OperationJobDto>> Enqueue(
@@ -42,10 +44,6 @@ public sealed class OperationsController : ControllerBase
         {
             var dto = await _queue.EnqueueAsync(req, ct);
             return CreatedAtAction(nameof(List), new { }, dto);
-        }
-        catch (EntityAlreadyPendingException ex)
-        {
-            return Conflict(new { error = ex.Message, entityType = ex.EntityType, entityId = ex.EntityId });
         }
         catch (ArgumentException ex)
         {

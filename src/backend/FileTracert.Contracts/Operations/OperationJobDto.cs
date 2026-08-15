@@ -1,4 +1,4 @@
-namespace FileTracert.Contracts.Operations;
+﻿namespace FileTracert.Contracts.Operations;
 
 public sealed class OperationJobDto
 {
@@ -26,6 +26,13 @@ public sealed class OperationJobDto
     public bool EstimateIsLive { get; set; }
 
     public int SequenceOrder { get; set; }
+
+    /// <summary>
+    /// The job this one is waiting for, when it is Blocked on a dependency (§5). The UI links
+    /// straight to that row so "in attesa dell'operazione #N" is one click, not a search.
+    /// </summary>
+    public int? DependsOnJobId { get; set; }
+
     public string? ErrorMessage { get; set; }
 
     public DateTime CreatedUtc { get; set; }
