@@ -560,8 +560,13 @@ public sealed class ScanServiceTests
         public Task BulkInsertDirectoriesAsync(IReadOnlyCollection<DirectoryNode> nodes, CancellationToken ct) =>
             _inner.BulkInsertDirectoriesAsync(nodes, ct);
 
-        public Task BulkInsertFilesAsync(IReadOnlyCollection<FileEntry> files, CancellationToken ct) =>
-            _inner.BulkInsertFilesAsync(files, ct);
+        // Both write paths are wrapped: a first scan bulk-inserts (empty catalog), a re-scan
+        // merges, and either must survive being interrupted between two batches.
+        public async Task BulkInsertFilesAsync(IReadOnlyCollection<FileEntry> files, CancellationToken ct)
+        {
+            await _inner.BulkInsertFilesAsync(files, ct);
+            await CancelAfterFirstAsync();
+        }
 
         public Task BulkUpsertFilesAsync(IReadOnlyCollection<FileEntry> files, CancellationToken ct) =>
             _inner.BulkUpsertFilesAsync(files, ct);
@@ -570,12 +575,16 @@ public sealed class ScanServiceTests
             int volumeId, IReadOnlyCollection<FileEntry> batch, DateTime indexedUtc, CancellationToken ct)
         {
             var result = await _inner.MergeScannedFilesAsync(volumeId, batch, indexedUtc, ct);
+            await CancelAfterFirstAsync();
+            return result;
+        }
+
+        private async Task CancelAfterFirstAsync()
+        {
             if (++_batches == 1)
             {
                 await _cts.CancelAsync();
             }
-
-            return result;
         }
 
         public Task<int> MarkAbsentFilesAsync(int volumeId, DateTime scanStartedUtc, CancellationToken ct) =>

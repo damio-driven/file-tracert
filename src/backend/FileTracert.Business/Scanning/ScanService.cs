@@ -397,28 +397,53 @@ public sealed class ScanService
         var scannedDirs = BuildDirectoryTree(dirItems, files);
         var merge = await _directoryMerger.MergeAsync(volume.Id, scannedDirs, FileBatchSize, ct);
 
+        // First scan of a volume = empty table: there is nothing to reconcile against, so the
+        // batches go straight through the bulk insert (§3, "prima scansione = BulkInsert puro
+        // sul caso ideale") and the search index is populated once at the end. Matching every
+        // row against an empty set would be pure overhead on the largest scan of all.
+        var isFirstScan = !await _db.Files.AnyAsync(f => f.VolumeId == volume.Id, ct);
+
         var written = 0;
         foreach (var chunk in files.Chunk(FileBatchSize))
         {
             ct.ThrowIfCancellationRequested();
 
-            var entities = chunk.Select(f => ToEntity(volume.Id, f, merge.IdByPath)).ToList();
+            var indexedUtc = DateTime.UtcNow;
+            var entities = chunk.Select(f => ToEntity(volume.Id, f, merge.IdByPath, indexedUtc)).ToList();
 
             await using var tx = await _db.Database.BeginTransactionAsync(ct);
-            var result = await _bulkWriter.MergeScannedFilesAsync(volume.Id, entities, DateTime.UtcNow, ct);
 
-            // Search entries follow the rows inside the same transaction, so the index is
-            // never out of step with a committed batch — and only the batch's own rows are
-            // rewritten, instead of the whole volume once per scan.
-            await _ftsIndex.SyncFilesAsync(result.AffectedFileIds, ct);
+            if (isFirstScan)
+            {
+                await _bulkWriter.BulkInsertFilesAsync(entities, ct);
+                written += entities.Count;
+            }
+            else
+            {
+                var result = await _bulkWriter.MergeScannedFilesAsync(volume.Id, entities, indexedUtc, ct);
+
+                // Search entries follow the rows inside the same transaction, so the index is
+                // never out of step with a committed batch — and only the batch's own rows are
+                // rewritten, instead of the whole volume once per scan.
+                await _ftsIndex.SyncFilesAsync(result.AffectedFileIds, ct);
+                written += result.Inserted + result.Updated;
+            }
 
             // The commit is the checkpoint: once the batch is merged, cancelling must not
             // throw the work away (§3, "checkpoint the state and stop cleanly"). Shutdown is
             // observed at the top of the next iteration instead.
             await tx.CommitAsync(CancellationToken.None);
 
-            written += result.Inserted + result.Updated;
             _statusTracker.ReportWritten(volume.Id, written);
+        }
+
+        if (isFirstScan)
+        {
+            // Bulk insert does not read identities back, so the index is filled from the rows
+            // themselves — the volume is entirely new, which is exactly what this does well.
+            await using var tx = await _db.Database.BeginTransactionAsync(ct);
+            await _ftsIndex.SyncVolumeFromDbAsync(volume.Id, ct);
+            await tx.CommitAsync(CancellationToken.None);
         }
 
         // Everything the scan did not touch this run is gone from disk — flagged, never
@@ -452,7 +477,8 @@ public sealed class ScanService
         }
     }
 
-    private static FileEntry ToEntity(int volumeId, ResolvedFile file, IReadOnlyDictionary<string, int> dirIdByPath)
+    private static FileEntry ToEntity(
+        int volumeId, ResolvedFile file, IReadOnlyDictionary<string, int> dirIdByPath, DateTime indexedUtc)
     {
         var parentPath = ScanPath.Parent(file.Item.RelativePath);
         if (!dirIdByPath.TryGetValue(parentPath, out var directoryId))
@@ -475,6 +501,11 @@ public sealed class ScanService
             UsnFileRef = file.Item.Frn is { } frn ? unchecked((long)frn) : null,
             IsIncluded = true,
             IsPresent = true,
+
+            // The merge overwrites this in SQL; on the bulk-insert path it is the row's own
+            // generation stamp, and without it the absent pass would sweep away the very rows
+            // the scan just wrote.
+            LastIndexedUtc = indexedUtc,
         };
     }
 

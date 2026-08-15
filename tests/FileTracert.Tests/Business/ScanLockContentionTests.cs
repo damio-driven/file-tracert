@@ -161,8 +161,13 @@ public sealed class ScanLockContentionTests
         public Task BulkInsertDirectoriesAsync(IReadOnlyCollection<DirectoryNode> nodes, CancellationToken ct) =>
             _inner.BulkInsertDirectoriesAsync(nodes, ct);
 
-        public Task BulkInsertFilesAsync(IReadOnlyCollection<FileEntry> files, CancellationToken ct) =>
-            _inner.BulkInsertFilesAsync(files, ct);
+        // Both write paths are observed: a first scan bulk-inserts (empty catalog), a re-scan
+        // merges, and the batch-per-transaction guarantee has to hold for either.
+        public async Task BulkInsertFilesAsync(IReadOnlyCollection<FileEntry> files, CancellationToken ct)
+        {
+            await _observe();
+            await _inner.BulkInsertFilesAsync(files, ct);
+        }
 
         public Task BulkUpsertFilesAsync(IReadOnlyCollection<FileEntry> files, CancellationToken ct) =>
             _inner.BulkUpsertFilesAsync(files, ct);
