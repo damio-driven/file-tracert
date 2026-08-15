@@ -61,7 +61,8 @@ public sealed class QueueService : IQueueService
         _db.OperationJobs.Add(job);
         foreach (var item in items)
             _db.OperationJobItems.Add(item);
-        await _db.SaveChangesAsync(ct);   // assigns job.Id, still inside the open transaction
+        // Assigns job.Id and job.SequenceOrder, still inside the open transaction (C26).
+        await AssignSequenceOrderAndSaveAsync(job, ct);
 
         // §5 — queuing an operation mutates the PROJECTION immediately: the entity is shown at
         // once under its new name / in its new folder / on its new volume. Written here, inside
@@ -373,16 +374,66 @@ public sealed class QueueService : IQueueService
 
     // ── private: job building ─────────────────────────────────────────────────
 
+    /// <summary>
+    /// How many times the queue re-picks a sequence number before giving up. A collision means
+    /// another enqueue committed between our <c>MAX</c> and our <c>INSERT</c>; a handful of
+    /// retries covers any realistic burst, and a bound is what stops a livelock from turning an
+    /// API call into an infinite loop.
+    /// </summary>
+    private const int MaxSequenceOrderAttempts = 5;
+
+    /// <summary>
+    /// C26 — assigns <see cref="OperationJob.SequenceOrder"/> and inserts the job, INSIDE the
+    /// caller's transaction. The old code read <c>MAX(SequenceOrder) + 1</c> outside it, with no
+    /// uniqueness constraint behind it, so two concurrent enqueues could share a number — and the
+    /// FIFO feasibility (which only skips entries with <c>SequenceOrder &gt; mine</c>) then
+    /// double-counts the two jobs against each other.
+    ///
+    /// The unique index is the arbiter, not the read: whoever loses the race gets a constraint
+    /// violation and picks the next number. A UNIQUE violation aborts the statement, not the
+    /// transaction, so the retry stays inside it — and because we hold the write lock from the
+    /// first attempt on, the re-read cannot miss a competitor that committed in the meantime.
+    /// </summary>
+    private async Task AssignSequenceOrderAndSaveAsync(OperationJob job, CancellationToken ct)
+    {
+        for (int attempt = 1; ; attempt++)
+        {
+            job.SequenceOrder = (await _db.OperationJobs.MaxAsync(j => (int?)j.SequenceOrder, ct) ?? 0) + 1;
+            try
+            {
+                await _db.SaveChangesAsync(ct);
+                return;
+            }
+            catch (DbUpdateException ex)
+            {
+                // Ask the database whether OUR index is the one that fired, instead of parsing the
+                // provider's error text — that would tie Business to SQLite (§3).
+                bool taken = await _db.OperationJobs
+                    .AnyAsync(j => j.SequenceOrder == job.SequenceOrder, ct);
+                if (!taken) throw;
+
+                if (attempt >= MaxSequenceOrderAttempts)
+                    throw new InvalidOperationException(
+                        $"Impossibile accodare l'operazione: la posizione in coda " +
+                        $"{job.SequenceOrder} continua a essere occupata da altri inserimenti " +
+                        $"dopo {MaxSequenceOrderAttempts} tentativi. Riprovare.", ex);
+
+                _logger.LogWarning(ex,
+                    "Enqueue: sequence order {Order} was taken by a concurrent enqueue " +
+                    "(attempt {N}/{Max}) — picking the next one.",
+                    job.SequenceOrder, attempt, MaxSequenceOrderAttempts);
+            }
+        }
+    }
+
     private async Task<(OperationJob job, List<OperationJobItem> items, bool shouldReserve)>
         BuildJobAsync(CreateJobRequest request, CancellationToken ct)
     {
-        var maxOrder = await _db.OperationJobs.MaxAsync(j => (int?)j.SequenceOrder, ct) ?? 0;
         var job = new OperationJob
         {
             Type = request.Type,
             State = JobState.Pending,
             BlockReason = JobBlockReason.None,
-            SequenceOrder = maxOrder + 1,
             EstimateIsLive = true
         };
 

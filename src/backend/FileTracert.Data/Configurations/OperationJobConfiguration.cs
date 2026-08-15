@@ -44,6 +44,9 @@ public sealed class OperationJobConfiguration : IEntityTypeConfiguration<Operati
             .HasForeignKey(x => x.JobId)
             .OnDelete(DeleteBehavior.Cascade);
 
-        builder.HasIndex(x => x.SequenceOrder);
+        // C26: FIFO position is an INVARIANT, not a convention. The feasibility walk skips ledger
+        // entries with a higher SequenceOrder, so two jobs sharing a number double-count each
+        // other's reservations. Unique index = the database arbitrates concurrent enqueues.
+        builder.HasIndex(x => x.SequenceOrder).IsUnique();
     }
 }
