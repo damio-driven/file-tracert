@@ -476,22 +476,20 @@ src/app/
   vengono mai ri-sondati → mantengono la classificazione vecchia: serve una
   riconciliazione dai dati già persistiti. Non urgente finché l'esclusione manuale
   copre il caso.
-- **Re-scan idempotente vs proiezione + contesa di lock** *(introdotto allo step 4;
-  aggravato allo step 8)* — lo `ScanService.PersistAsync` avvolge delete-all
-  volume + BulkInsert dell'intero volume in **un'unica transazione**, che tiene il
-  write-lock unico di SQLite per **minuti** durante gli scan grossi (es. C:). Due
-  conseguenze: (1) il truncate-per-volume cancella gli overlay `Pending*` a ogni
-  re-scan → va sostituito con un **merge** che preserva l'overlay; (2) la
-  transazione monolitica causa **`SQLITE_BUSY`** sugli altri writer
-  (VolumeSyncWorker, API) → `database is locked`. Mitigato allo step 8 con
-  WalCheckpointWorker + `busy_timeout` 15s (cerotto, NON cura). **Allo step 9 il
-  rework deve: preservare l'overlay E spezzare la transazione in blocchi corti**
-  (commit per batch, rilascio del write-lock tra i blocchi) così il sync/API non
-  attendono minuti. È lo stesso punto di codice: farlo una volta sola.
-- **Re-scan idempotente vs proiezione** *(introdotto allo step 4)* — vedi la voce
-  sopra: matching per `UsnFileRef`/path, update invece di delete+insert dei record
-  con stato pendente. Da affrontare obbligatoriamente prima di considerare la
-  proiezione completa.
+- ~~**Re-scan idempotente vs proiezione + contesa di lock**~~ *(introdotto allo step 4,
+  aggravato allo step 8, **chiuso allo step 9a — 2026-08-15**)*. `PersistAsync` non
+  tronca più: fa **merge**. Matching per `UsnFileRef` (identità vera, regge un rename
+  fatto fuori dall'app) e in subordine per `(DirectoryId, Name) COLLATE NOCASE`;
+  aggiorna solo i fatti fisici, quindi `Id`, `Pending*`, `IsIncluded`, hash
+  sopravvivono; ciò che non si è più visto va `IsPresent=false` (mai delete). Il
+  merge dei file è set-based dietro `IBulkIndexWriter` (staging TEMP per lotto), le
+  directory in `DirectoryMerger`. Le transazioni sono **corte**: un commit per lotto
+  (default 5 000 file), checkpoint `LastFullScanUtc`/`LastUsn` in transazione propria
+  a fine scan, così un'interruzione non dichiara completo uno scan parziale. Il
+  **primo** scan di un volume resta bulk insert puro. Restano validi ma non più
+  necessari come cerotto: `WalCheckpointWorker` + `busy_timeout`.
+  Misura sul ferro (D:, 2 002 file): primo scan 1,05 s, re-scan 0,83 s (prima un
+  re-scan costava quanto un primo scan).
 
 ---
 
@@ -556,13 +554,13 @@ rilievo è stato lasciato consapevolmente).
 
 ## Roadmap (ordine di lavoro)
 Stato: WP3 (perdita dati), WP1 (crash-safe), WP2 (offline gate), **fix UX date/UTC**
-(#12, #11, C31) — **fatti**.
+(#12, #11, C31), **step 9a** (merge dello scan + transazioni corte) — **fatti**.
 Prossimo, in ordine:
-1. **Step 9 — Proiezione:** overlay `Pending*` inline, dipendenze tra job, FTS sul
-   nome proiettato. Qui si saldano i **debiti §11**: truncate-per-volume → **merge**
-   che preserva l'overlay, E **spezzare la transazione monolitica dello scan** in
-   blocchi corti (chiude anche la contesa di lock SQLITE_BUSY). Prerequisito già
-   posato dai WP1/WP2.
+1. **Step 9b/9c — Proiezione:** overlay `Pending*` scritto all'enqueue, `CreateFolder`
+   che crea la riga `Directories`, FTS sul **nome proiettato**, path proiettato, badge
+   in UI (9b); dipendenze tra job, `Blocked(DependencyPending)`, guard di enqueue
+   unificato (9c). Il prerequisito è posato: dallo step 9a un re-scan **preserva**
+   overlay e identità, quindi scriverli ha finalmente senso.
 2. **Step 10 — Device-watcher + SignalR real-time:** sostituisce il trigger polling
    del WP2 con push; remount istantaneo; progress/notifiche/coda in tempo reale.
 3. **Work package minori rimanenti** (dalla code review): guard enqueue, indice/
@@ -571,6 +569,20 @@ Prossimo, in ordine:
    shutdown, efficienza, cleanup (incl. eventuale spostamento di `ScanPath` in
    `Contracts` come da review).
 4. **Step 12 — Test UI end-to-end (Playwright).**
+
+### Fatto nello step 9a (2026-08-15, commit `621be75`…`68077c8`)
+`IsPresent` su `DirectoryNode` (+ migration, backfill a `true`, propagato a Catalogo,
+conteggi volume e risoluzione della cartella sorgente all'enqueue); API di merge su
+`IBulkIndexWriter` (staging TEMP per lotto, match FRN → path `COLLATE NOCASE`, pass
+degli assenti); `PersistAsync` riscritto a lotti con transazioni corte e checkpoint
+finale; `DirectoryMerger` in Business (usa finalmente `BulkInsertDirectoriesAsync`);
+FTS sincronizzata per lotto (`SyncFilesAsync`/`PruneVolumeAsync`) invece del rebuild
+per volume; primo scan mantenuto a bulk insert puro. Scenario harness
+`rescan-preserves-overlay` **PASS** sul ferro.
+**Limite noto e accettato:** il match per path usa `COLLATE NOCASE`, che in SQLite
+piega solo l'ASCII. Un file con nome **non ASCII** di cui cambia solo il *case* sul
+disco viene visto come riga nuova (una in più, mai un overlay perso) e vale solo per
+il motore a enumerazione — su NTFS risponde prima l'FRN.
 
 ### Fatto nel giro «date/UTC» (2026-08-10, commit `f523938`…`b627fc4`)
 Converter UTC globale in `ConfigureConventions` (write condizionale: solo `Local`
