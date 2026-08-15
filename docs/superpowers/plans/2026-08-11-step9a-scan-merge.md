@@ -84,25 +84,40 @@ ciò che è già in catalogo:
 - `BulkInsertDirectoriesAsync` **esiste ed è mai chiamato** (E2): usarlo, invece di
   `AddRange` + `SaveChanges` riga per riga.
 
-**Approccio consigliato per il merge** (da valutare in implementazione, non è un dogma):
-staging table temporanea per volume, riempita in bulk con ciò che lo scan ha visto, poi
-UPDATE/INSERT set-based per join. Tiene la memoria limitata (niente dizionario da milioni
-di righe in RAM) e resta interamente dentro `BulkIndexWriter`. L'alternativa a dizionario
-in memoria è accettabile solo se misurata su un volume reale grosso.
+**Approccio deciso: staging table.** Una tabella temporanea per volume, riempita in bulk
+con ciò che lo scan ha visto, poi UPDATE/INSERT set-based per join. Tiene la memoria
+limitata (niente dizionario da milioni di righe in RAM su C:) e resta interamente dentro
+`BulkIndexWriter`, dove le SQLite-specifics devono stare (§3). Il dizionario in memoria è
+**scartato**: non ripresentarlo in implementazione.
+
+Dettagli da risolvere scrivendo il codice, non prima:
+- tabella `TEMP` (per-connessione) contro tabella reale con colonna `VolumeId` e cleanup:
+  con i commit per batch la connessione resta la stessa, ma verificarlo invece di assumerlo;
+- indice sulla staging per le due chiavi di join (`UsnFileRef`, path normalizzato), altrimenti
+  il merge diventa un nested-loop su milioni di righe;
+- il confronto case-insensitive sul path va reso **traducibile in SQL** (colonna di join già
+  normalizzata a lower in staging e in confronto, oppure `COLLATE NOCASE`): non fare il
+  matching in memoria, è esattamente lo scivolone di K5.
 
 ---
 
-## 4. Decisione di schema da prendere (fermarsi e chiedere se non convince)
+## 4. Schema: `IsPresent` su `DirectoryNode` (deciso, approvato 2026-08-11)
 
 `FileEntry` ha `IsPresent`; **`DirectoryNode` no** (campi verificati:
 `Id`, `VolumeId`, `ParentId`, `Name`, `MaterializedPath`, `UsnFileRef`, `IsMaterialized`,
 `Pending*`, audit). Senza un flag equivalente, una cartella sparita dal disco può solo
 essere cancellata — e cancellarla porta via l'overlay dei figli.
 
-**Proposta:** aggiungere `IsPresent` a `DirectoryNode` (+ migration), stessa semantica di
-`FileEntry`. Serve anche a chiudere il residuo del finding 15 (sottoalbero fantasma dopo
-un MoveFolder cross-volume) in modo coerente con la policy no-hard-delete.
-È una modifica di schema: **confermare prima di scriverla**.
+**Deciso:** aggiungere `IsPresent` a `DirectoryNode` (+ migration + configuration), stessa
+semantica di `FileEntry` (default `true`, backfill a `true` per le righe esistenti). Serve
+anche a chiudere il residuo del finding 15 (sottoalbero fantasma dopo un MoveFolder
+cross-volume) in modo coerente con la policy no-hard-delete.
+
+Da propagare dove oggi si guarda solo l'esistenza della riga: navigazione del Catalogo
+(`CatalogController`), risoluzione dei target all'enqueue, e il conteggio delle subdir.
+Una cartella `IsPresent=false` **senza** overlay non va mostrata come navigabile; una con
+overlay sì (è il caso «cartella accodata»). Aggiornare anche §6 di CLAUDE.md con il campo
+nuovo, altrimenti lo schema documentato e quello reale divergono.
 
 ---
 

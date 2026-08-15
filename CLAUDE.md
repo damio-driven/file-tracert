@@ -586,6 +586,13 @@ hanno ancora un controllo in Ricerca.
 
 ## Cosa resta all'umano (non delegabile al repo)
 Le **decisioni di prodotto e di priorità**: cosa promuovere a bloccante, cosa
-rimandare come debito datato, quali trade-off scegliere. L'agente esegue; la regia
-sulle scelte resta all'utente. In caso di decisione di prodotto ambigua, **fermarsi
+rimandare come debito datato, cosa entra o esce dall'MVP. L'agente esegue; la regia
+sulle scelte resta all'utente. In caso di decisione di **prodotto** ambigua, **fermarsi
 e chiedere** invece di scegliere per conto proprio.
+
+**Le decisioni tecniche dentro un task già approvato NON si chiedono** *(regola
+stabilita il 2026-08-11)*: schema e migration, strutture dati, approccio di
+implementazione, split dei commit, dove vive un helper. L'agente sceglie, **documenta
+la scelta e il perché** nel task o nel commit, e procede. Chiedere conferma su questa
+classe di decisioni rallenta e basta. Resta l'eccezione ovvia delle azioni distruttive
+o irreversibili fuori dal repo.
