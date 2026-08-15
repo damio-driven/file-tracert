@@ -567,10 +567,15 @@ Prossimo, in ordine:
    ricerca (#6 `UsnFileRef` al move cross-volume, C19 `Extension`/`Category` al
    rename, C16 esclusione ereditata, P2 collation), spazio, resto UX, logging/
    shutdown, efficienza, cleanup (incl. eventuale spostamento di `ScanPath` in
-   `Contracts` come da review).
+   `Contracts` come da review, e la discrepanza §3: `IBulkIndexWriter` sta in
+   `Data/Indexing` e `IFileSearchIndex` in `Contracts/Search`, mentre §3 li dà
+   entrambi in `Contracts` — segnalata allo step 9a, non spostata).
+   Da valutare qui anche: un file **fuori** dai watched root attivi viene marcato
+   `IsPresent=false` al primo scan del volume. Non è una regressione (prima veniva
+   **cancellato** dal truncate), ma ora è visibile come «assente» invece che sparito.
 4. **Step 12 — Test UI end-to-end (Playwright).**
 
-### Fatto nello step 9a (2026-08-15, commit `621be75`…`68077c8`)
+### Fatto nello step 9a (2026-08-15, commit `621be75`…`7f85dff`)
 `IsPresent` su `DirectoryNode` (+ migration, backfill a `true`, propagato a Catalogo,
 conteggi volume e risoluzione della cartella sorgente all'enqueue); API di merge su
 `IBulkIndexWriter` (staging TEMP per lotto, match FRN → path `COLLATE NOCASE`, pass
@@ -578,7 +583,11 @@ degli assenti); `PersistAsync` riscritto a lotti con transazioni corte e checkpo
 finale; `DirectoryMerger` in Business (usa finalmente `BulkInsertDirectoriesAsync`);
 FTS sincronizzata per lotto (`SyncFilesAsync`/`PruneVolumeAsync`) invece del rebuild
 per volume; primo scan mantenuto a bulk insert puro. Scenario harness
-`rescan-preserves-overlay` **PASS** sul ferro.
+`rescan-preserves-overlay` **PASS** sul ferro. Misura: primo scan 1,05 s, re-scan
+0,83 s su 2 002 file (prima un re-scan costava quanto un primo scan).
+La code review finale ha trovato e corretto un difetto reale: `DirectoryMerger`
+azzerava il change tracker, staccando l'entità `Volume` → `LastFullScanUtc`/`LastUsn`
+non venivano più persistiti quando una directory tornava presente (`396d506`).
 **Limite noto e accettato:** il match per path usa `COLLATE NOCASE`, che in SQLite
 piega solo l'ASCII. Un file con nome **non ASCII** di cui cambia solo il *case* sul
 disco viene visto come riga nuova (una in più, mai un overlay perso) e vale solo per
