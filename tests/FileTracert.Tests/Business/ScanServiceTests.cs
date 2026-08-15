@@ -480,6 +480,32 @@ public sealed class ScanServiceTests
     }
 
     [Fact]
+    public async Task A_scan_that_revives_a_directory_still_writes_its_own_checkpoint()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, VolumeScanEngine.Enumeration, "exFAT", []);
+        var entries = TwoFiles();
+
+        await ScanAsync(harness, volumeId, entries);
+
+        // The directory is back on disk after having been marked absent — the merge path that
+        // reloads directory rows through the change tracker. That bookkeeping must not disturb
+        // the volume entity the scan writes its checkpoint on.
+        await using (var ctx = harness.CreateContext())
+        {
+            (await ctx.Directories.SingleAsync(d => d.MaterializedPath == "A")).IsPresent = false;
+            (await ctx.Volumes.SingleAsync()).LastFullScanUtc = null;
+            await ctx.SaveChangesAsync();
+        }
+
+        await ScanAsync(harness, volumeId, entries);
+
+        await using var read = harness.CreateContext();
+        (await read.Directories.SingleAsync(d => d.MaterializedPath == "A")).IsPresent.Should().BeTrue();
+        (await read.Volumes.SingleAsync()).LastFullScanUtc.Should().NotBeNull();
+    }
+
+    [Fact]
     public async Task A_file_that_reappears_gets_its_row_back_without_a_new_identity()
     {
         using var harness = new SqliteInMemoryContext();

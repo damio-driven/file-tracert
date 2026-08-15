@@ -205,7 +205,14 @@ public sealed class DirectoryMerger
 
             revived += await _db.SaveChangesAsync(ct);
             await tx.CommitAsync(ct);
-            _db.ChangeTracker.Clear();
+
+            // Detach only what this chunk loaded, so the tracker does not grow across a scan.
+            // Clearing it wholesale would also detach the caller's Volume entity — and the
+            // scan writes its LastFullScanUtc/LastUsn checkpoint on exactly that instance.
+            foreach (var row in rows)
+            {
+                _db.Entry(row).State = EntityState.Detached;
+            }
         }
 
         return revived;
