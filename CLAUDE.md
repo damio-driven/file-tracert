@@ -267,7 +267,8 @@ stato fisico (ultima scansione) **+ overlay delle operazioni in coda**.
 `Id` · `VolumeId`→Volumes · `RelativePath` · `IsActive` · `FilterOverrideJson?`
 + audit.
 
-**Directories**
+**Directories** *(step 9b: `Pending*` scritti all'enqueue da `OverlayWriter`; una riga
+`PendingCreate` ha `IsMaterialized = false` e `IsPresent = false` finché il job non la crea)*
 `Id` · `VolumeId` · `ParentId?`→self · `Name` · `MaterializedPath` (denormalizzato,
 aggiornato in cascata sui rename) · `UsnFileRef?` · `IsMaterialized` · `IsPresent`
 (default `true`; stessa semantica di `Files.IsPresent` — la scansione non l'ha più
@@ -554,13 +555,16 @@ rilievo è stato lasciato consapevolmente).
 
 ## Roadmap (ordine di lavoro)
 Stato: WP3 (perdita dati), WP1 (crash-safe), WP2 (offline gate), **fix UX date/UTC**
-(#12, #11, C31), **step 9a** (merge dello scan + transazioni corte) — **fatti**.
+(#12, #11, C31), **step 9a** (merge dello scan + transazioni corte), **step 9b**
+(proiezione: overlay scritto/letto/pulito) — **fatti**.
 Prossimo, in ordine:
-1. **Step 9b/9c — Proiezione:** overlay `Pending*` scritto all'enqueue, `CreateFolder`
-   che crea la riga `Directories`, FTS sul **nome proiettato**, path proiettato, badge
-   in UI (9b); dipendenze tra job, `Blocked(DependencyPending)`, guard di enqueue
-   unificato (9c). Il prerequisito è posato: dallo step 9a un re-scan **preserva**
-   overlay e identità, quindi scriverli ha finalmente senso.
+1. **Step 9c — Dipendenze tra job:** `DependsOnJobId` rilevata automaticamente,
+   `Blocked(DependencyPending)` al posto del 409 `EntityAlreadyPendingException`,
+   `DependencyCancelled` sui dipendenti di un prerequisito annullato, guard di enqueue
+   unificato (finding 8 + C26 + K5), `SequenceOrder` transazionale. Punto di innesto già
+   pronto: `OverlayWriter.ApplyAsync` è **un solo punto di uscita** — 9c deve solo renderlo
+   condizionale (un job che nasce `Blocked(DependencyPending)` non possiede l'entità e non
+   scrive overlay finché non si sblocca).
 2. **Step 10 — Device-watcher + SignalR real-time:** sostituisce il trigger polling
    del WP2 con push; remount istantaneo; progress/notifiche/coda in tempo reale.
 3. **Work package minori rimanenti** (dalla code review): guard enqueue, indice/
@@ -574,6 +578,56 @@ Prossimo, in ordine:
    `IsPresent=false` al primo scan del volume. Non è una regressione (prima veniva
    **cancellato** dal truncate), ma ora è visibile come «assente» invece che sparito.
 4. **Step 12 — Test UI end-to-end (Playwright).**
+
+### Fatto nello step 9b (2026-08-16, commit `f2ba90e`…`fcc3c8a`)
+Il §5 (proiezione) è implementato: **scrittura**, **lettura**, **pulizia**.
+- **Scrittura** — nuovo `FileTracert.Business/Projection/`: `OverlayWriter.ApplyAsync` è
+  l'**unico** punto che scrive i `Pending*`, chiamato dall'enqueue **dentro la transazione del
+  job** (job e overlay commitano insieme) e dopo il gate offline, qualunque sia l'esito. Legge
+  tutto dal job persistito + item, così enqueue e `RetryAsync` condividono un solo percorso.
+  Un `MoveFolder` scrive **un solo** overlay, sulla riga della cartella. `DirectoryResolver`
+  (era privato in `IndexUpdater`) fa la risalita find-or-create con due significati:
+  *materialized* (esiste su disco, post-esecuzione) e *projected* (non esiste ancora → riga
+  `IsMaterialized=false, IsPresent=false, PendingCreate` sul job che la creerà).
+  **Scelta cambiata rispetto al piano, documentata:** il piano voleva la dir target implicita
+  *senza* overlay; così sarebbe invisibile nel Catalogo e un file spostato in una cartella
+  inventata nel picker finirebbe in una cartella non mostrabile. Ora porta `PendingCreate` — che
+  è ciò che è — e `CreateFolder` usa lo stesso helper. La radice del volume non si timbra mai.
+- **FTS** — la colonna `name` è `COALESCE(NULLIF(f.PendingName,''), f.Name)` in tutti e tre i
+  percorsi di popolamento (una sola costante condivisa). La colonna `path` resta **path fisico
+  della directory + nome proiettato**: un rename-cartella non tocca l'indice (§5), il path
+  proiettato è quello *mostrato*, risolto in lettura.
+- **Lettura** — `ProjectedPathResolver` (Business): path e **volume** proiettati per un lotto di
+  directory, fast-path a `MaterializedPath` con coda vuota, chiusura degli antenati una
+  generazione per query, risalita iterativa con visited-set e cap di profondità (un
+  `PendingParentId` ciclico ripiega sul path fisico e logga Warning, mai un hang).
+  Catalogo: figli per **posizione proiettata**, nome proiettato, visibilità
+  `(IsMaterialized AND IsPresent) OR PendingState <> None`, contatori con gli stessi predicati
+  delle liste. `CatalogDirDto` guadagna `ProjectedState`, entrambi i DTO `PendingJobId`.
+  Ricerca: nome, path e **volume** proiettati, `ProjectedState` reale (spariti i `"None"`
+  hardcoded).
+- **Pulizia** — overlay azzerato nella **stessa transazione** dello stato terminale:
+  `Completed` (dentro il commit di completamento, dopo il fatto fisico), `Cancelled` (dopo il
+  save di stato, così un token di concorrenza scattato lascia stare la proiezione), `Failed`
+  (e `RetryAsync` lo riscrive). `Blocked` **conserva** l'overlay. Rete di sicurezza all'avvio:
+  `OverlayWriter.ReconcileOrphansAsync` in `DatabaseInitializer` azzera gli overlay il cui job
+  non esiste più o è terminale.
+- **UI** — `ft-projection-badge` condiviso (Catalogo file + cartelle, Ricerca): famiglia ambra
+  «in attesa» già usata dalla coda, etichette italiane *In creazione / In rinomina / In
+  spostamento*, link a `/queue?job=<id>`; la Coda evidenzia e porta in vista quella riga.
+  I modelli TS tipizzano `projectedState` con l'union `EntityPendingState`.
+- **Verifica**: xUnit 523 verdi, Vitest 163 verdi, build backend pulita (warnings-as-errors),
+  `ng build` ok (restano i 4 warning di budget SCSS, pre-esistenti). Harness sul ferro
+  (`D:\Collaudo\A`, coppia *intra*): **9 scenari applicabili, 9 PASS**, inclusi il nuovo
+  `projection-overlay` e `rescan-preserves-overlay` (che ora passa dall'enqueue reale).
+  Misura re-scan invariata: primo scan 0,70 s, re-scan 0,68 s su 2 002 file.
+**Limiti noti e accettati (candidati 9c):**
+- `CatalogDirDto.MaterializedPath` resta **fisico** (è l'identità della riga e il bersaglio delle
+  operazioni). Per una `PendingCreate` è già il path voluto; per una cartella con rename pendente
+  è vecchio → un'operazione accodata al suo interno userebbe il path vecchio. È territorio del
+  guard di enqueue unificato (9c), non toccato qui.
+- La seconda operazione sulla stessa entità resta un **409** (`EntityAlreadyPendingException`):
+  lo sostituisce 9c con `Blocked(DependencyPending)`.
 
 ### Fatto nello step 9a (2026-08-15, commit `621be75`…`7f85dff`)
 `IsPresent` su `DirectoryNode` (+ migration, backfill a `true`, propagato a Catalogo,
