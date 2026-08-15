@@ -71,6 +71,7 @@ function setup() {
     newFolderSegments: { (): string[] };
     dirChildren: { (): CatalogDirDto[] };
     error: { (): string | null };
+    waitingCount: { (): number };
     newFolderName: string;
     openDirectory(dir: CatalogDirDto): Promise<void>;
     navigateToRoot(): Promise<void>;
@@ -232,6 +233,20 @@ describe('OperationPicker target path', () => {
 
     await cmp.enqueue();
     expect(completed).toHaveBeenCalledTimes(1);
+  });
+
+  // Step 9c: a conflict with a queued job is no longer a 409. The operation IS accepted,
+  // parked behind the job that holds the entity — so the confirmation must say "waiting",
+  // not report a clean success the user will not see happen.
+  it('counts the operations that came back queued-but-waiting', async () => {
+    const { cmp, enqueue } = setup();
+    enqueue
+      .mockImplementationOnce(() => of({ blockReason: 'DependencyPending' } as never))
+      .mockImplementationOnce(() => of({ blockReason: 'None' } as never));
+
+    await cmp.enqueue();
+
+    expect(cmp.waitingCount()).toBe(1);
   });
 
   it('a failed enqueue does not emit completed', async () => {

@@ -162,7 +162,15 @@
 
                   @if (job.state === 'Blocked') {
                     <div class="block-detail">
-                      <span class="block-reason">{{ blockReasonLabel(job.blockReason) }}</span>
+                      @if (dependencyOf(job); as prerequisiteId) {
+                        <span class="block-reason">{{ dependencyLead(job.blockReason) }}</span>
+                        <a class="dep-link mono"
+                           routerLink="/queue"
+                           [queryParams]="{ job: prerequisiteId }"
+                           [attr.aria-label]="'Vai all\'operazione numero ' + prerequisiteId">#{{ prerequisiteId }}</a>
+                      } @else {
+                        <span class="block-reason">{{ blockReasonLabel(job.blockReason) }}</span>
+                      }
                       @if (job.feasibility && job.feasibility.deficitBytes > 0) {
                         <span class="block-deficit mono">
                           −{{ job.feasibility.deficitBytes | bytes }}

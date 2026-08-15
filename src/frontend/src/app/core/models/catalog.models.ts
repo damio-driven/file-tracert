@@ -300,6 +300,8 @@ export interface OperationJobDto {
   freedBytesSource: number;
   estimateIsLive: boolean;
   sequenceOrder: number;
+  /** Set when the job is Blocked waiting for another queued job (§5). */
+  dependsOnJobId: number | null;
   errorMessage: string | null;
   createdUtc: string;
   startedUtc: string | null;

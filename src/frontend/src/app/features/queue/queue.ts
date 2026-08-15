@@ -2,7 +2,7 @@ import {
   ChangeDetectionStrategy, Component, OnDestroy, OnInit, computed, effect, inject,
 } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
-import { ActivatedRoute } from '@angular/router';
+import { ActivatedRoute, RouterLink } from '@angular/router';
 
 import { BytesPipe } from '../../shared/pipes/bytes.pipe';
 import { RelativeTimePipe } from '../../shared/pipes/relative-time.pipe';
@@ -19,7 +19,7 @@ const TERMINAL_STATES = new Set<JobState>(['Completed', 'Failed', 'Cancelled']);
   selector: 'ft-queue',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [BytesPipe, RelativeTimePipe, FtPill, FtBar, FtPanel],
+  imports: [BytesPipe, RelativeTimePipe, FtPill, FtBar, FtPanel, RouterLink],
   templateUrl: './queue.html',
   styleUrl: './queue.scss',
 })
@@ -117,6 +117,24 @@ export class Queue implements OnInit, OnDestroy {
       case 'DependencyPending': return 'Dipendenza in attesa';
       case 'DependencyCancelled': return 'Dipendenza annullata';
     }
+  }
+
+  /**
+   * The job this one is waiting for, when that is what blocks it — null otherwise, so the
+   * template falls back to the plain reason label. Returning the id (not a boolean) lets the
+   * template bind it with `@if (…; as id)` and keeps the null-check in one place.
+   */
+  protected dependencyOf(job: OperationJobDto): number | null {
+    const dependsOnDependency =
+      job.blockReason === 'DependencyPending' || job.blockReason === 'DependencyCancelled';
+    return dependsOnDependency ? job.dependsOnJobId : null;
+  }
+
+  /** Reads into the "#12" link that follows it, so the two together form one sentence. */
+  protected dependencyLead(reason: JobBlockReason): string {
+    return reason === 'DependencyCancelled'
+      ? 'Dipendenza interrotta:'
+      : "In attesa dell'operazione";
   }
 
   protected progress(job: OperationJobDto): number {

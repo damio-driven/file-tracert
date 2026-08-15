@@ -55,6 +55,8 @@ export class OperationPicker implements OnInit {
   protected readonly enqueueing = signal(false);
   protected readonly enqueued = signal(false);
   protected readonly enqueuedCount = signal(0);
+  /** How many of those were parked behind an operation already in the queue (§5). */
+  protected readonly waitingCount = signal(0);
   protected readonly error = signal<string | null>(null);
 
   ngOnInit(): void {
@@ -196,13 +198,19 @@ export class OperationPicker implements OnInit {
     this.enqueueing.set(true);
     this.error.set(null);
     let count = 0;
+    let waiting = 0;
     try {
       for (const item of this.items()) {
         // Send the destination folder only — the backend appends the entity name.
-        await firstValueFrom(this.api.enqueue(this.toMoveRequest(item, folder)));
+        const job = await firstValueFrom(this.api.enqueue(this.toMoveRequest(item, folder)));
         count++;
+        // Since 9c a conflicting operation is ACCEPTED and parked behind the job that holds
+        // the entity, so the confirmation has to say "queued, waiting" — reporting a plain
+        // success would leave the user wondering why nothing moved.
+        if (job.blockReason === 'DependencyPending') waiting++;
       }
       this.enqueuedCount.set(count);
+      this.waitingCount.set(waiting);
       this.enqueued.set(true);
       this.completed.emit();
     } catch (e) {

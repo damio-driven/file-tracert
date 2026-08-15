@@ -20,6 +20,14 @@
           <div class="enqueued-sub">
             Le operazioni vengono eseguite appena il volume destinazione è disponibile.
           </div>
+          @if (waitingCount() > 0) {
+            <div class="enqueued-waiting">
+              {{ waitingCount() === 1
+                  ? '1 di queste attende un\'operazione già in coda sulla stessa cartella'
+                  : waitingCount() + ' di queste attendono un\'operazione già in coda sulla stessa cartella' }}:
+              partirà da sola appena quella si conclude.
+            </div>
+          }
           <button type="button" class="ft-btn ft-btn--primary" (click)="goToQueue()">
             Vai alla Coda →
           </button>

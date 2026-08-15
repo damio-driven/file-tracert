@@ -25,6 +25,7 @@ const makeJob = (id: number, state: OperationJobDto['state']): OperationJobDto =
   freedBytesSource: 0,
   estimateIsLive: true,
   sequenceOrder: id,
+  dependsOnJobId: null,
   errorMessage: null,
   createdUtc: '2026-01-01T00:00:00Z',
   startedUtc: null,

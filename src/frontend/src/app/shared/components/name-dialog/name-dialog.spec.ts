@@ -107,9 +107,14 @@ describe('NameDialog — enqueue', () => {
 });
 
 describe('NameDialog — backend rejection', () => {
-  it('shows the guard message inline and does not emit completed', async () => {
-    const enqueue = vi.fn(() =>
-      throwError(() => new HttpErrorResponse({ status: 409, error: { entityType: 'Directory' } })));
+  // A conflict with another queued job is no longer a rejection (step 9c: the job is accepted
+  // and parked). What still comes back is a 400 for a request that is wrong in itself, and its
+  // `{ error }` message is what the user must see — not a raw HTTP string.
+  it('shows the backend message inline and does not emit completed', async () => {
+    const enqueue = vi.fn(() => throwError(() => new HttpErrorResponse({
+      status: 400,
+      error: { error: "Impossibile spostare la cartella 'Vecchio' dentro sé stessa." },
+    })));
     TestBed.configureTestingModule({
       providers: [provideZonelessChangeDetection(), { provide: QueueApi, useValue: { enqueue } }],
     });
@@ -124,7 +129,7 @@ describe('NameDialog — backend rejection', () => {
     cmp.onInput('Nuovo');
     await cmp.submit();
 
-    expect(cmp.serverError()).toContain('cartella');
+    expect(cmp.serverError()).toContain('dentro sé stessa');
     expect(completed).not.toHaveBeenCalled();
   });
 });

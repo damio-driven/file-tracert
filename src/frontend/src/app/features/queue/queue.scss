@@ -285,6 +285,22 @@
   font-weight: 500;
 }
 
+// The prerequisite this job is waiting for. Teal, not red: the blocker is a queued
+// operation, not a fault — and it is the one actionable thing on the row, so it reads
+// as the accent the rest of the app uses for "go here".
+.dep-link {
+  font-size: 11px;
+  color: var(--teal);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color 140ms ease-out, color 140ms ease-out;
+
+  &:hover,
+  &:focus-visible {
+    border-bottom-color: var(--teal);
+  }
+}
+
 .block-deficit {
   font-size: 10.5px;
   color: var(--amber);
