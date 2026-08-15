@@ -1,3 +1,5 @@
+using FileTracert.Business.Projection;
+using FileTracert.Business.Scanning;
 using FileTracert.Contracts.Dtos;
 using FileTracert.Contracts.Paging;
 using FileTracert.Contracts.Search;
@@ -15,12 +17,18 @@ public sealed class SearchController : ControllerBase
 {
     private readonly IFileSearchIndex _fts;
     private readonly FileTracertDbContext _db;
+    private readonly ProjectedPathResolver _paths;
     private readonly ILogger<SearchController> _logger;
 
-    public SearchController(IFileSearchIndex fts, FileTracertDbContext db, ILogger<SearchController> logger)
+    public SearchController(
+        IFileSearchIndex fts,
+        FileTracertDbContext db,
+        ProjectedPathResolver paths,
+        ILogger<SearchController> logger)
     {
         _fts = fts;
         _db = db;
+        _paths = paths;
         _logger = logger;
     }
 
@@ -58,7 +66,6 @@ public sealed class SearchController : ControllerBase
             .AsNoTracking()
             .Where(f => ids.Contains(f.Id))
             .Include(f => f.Directory)
-            .Include(f => f.Volume)
             .ToListAsync(ct);
 
         // Preserve the FTS relevance/sort order.
@@ -67,25 +74,43 @@ public sealed class SearchController : ControllerBase
         var phantomCount = ids.Count - rows.Count;
         if (phantomCount > 0)
             _logger.LogWarning("FTS index has {Count} stale entries (file IDs with no DB row)", phantomCount);
+
+        // §5 — a result is described by its PROJECTION: the directory a queued move points at
+        // (which may live on another volume), with every overlay on the way up applied.
+        var located = await _paths.ResolveDirectoriesAsync(
+            rows.Select(Projected.DirectoryIdOf).Distinct().ToList(), ct);
+
+        var volumeIds = located.Values.Select(l => l.VolumeId).Distinct().ToList();
+        var volumes = await _db.Volumes.AsNoTracking()
+            .Where(v => volumeIds.Contains(v.Id))
+            .ToDictionaryAsync(v => v.Id, ct);
+
         var dtos = pagedIds.Items
             .Where(id => byId.ContainsKey(id))
             .Select(id =>
             {
                 var f = byId[id];
-                var dirPath = f.Directory.MaterializedPath;
-                var relativePath = dirPath.Length == 0 ? f.Name : $"{dirPath}\\{f.Name}";
+                var name = Projected.NameOf(f);
+                // Falls back to the physical directory when the projected one cannot be
+                // resolved — a search must still return a row, never a 500.
+                var location = located.TryGetValue(Projected.DirectoryIdOf(f), out var loc)
+                    ? loc
+                    : new ProjectedLocation(f.Directory.MaterializedPath, f.VolumeId);
+                var volume = volumes.GetValueOrDefault(location.VolumeId);
+
                 return new SearchResultDto(
                     f.Id,
-                    f.Name,
-                    relativePath,
-                    f.VolumeId,
-                    f.Volume.Label,
-                    f.Volume.LastDriveLetter,
-                    f.Volume.IsOnline,
+                    name,
+                    ScanPath.Join(location.Path, name),
+                    location.VolumeId,
+                    volume?.Label,
+                    volume?.LastDriveLetter,
+                    volume?.IsOnline ?? false,
                     f.SizeBytes,
                     f.FileModifiedUtc,
                     f.Category,
-                    "None");
+                    f.PendingState.ToString(),
+                    f.PendingJobId);
             })
             .ToList();
 

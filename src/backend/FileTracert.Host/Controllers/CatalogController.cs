@@ -69,44 +69,73 @@ public sealed class CatalogController : ControllerBase
             parentPath = dir.MaterializedPath;
         }
 
-        // Sub-directories of the current node. A directory the last scan no longer found
-        // on disk (IsPresent = false) is not navigable — unless a queued operation still
-        // references it, in which case the projection must keep showing it (§5).
+        // Sub-directories of the current node, by PROJECTED position (§5): a folder with a queued
+        // move is listed under its destination, not where it still physically sits. The predicate
+        // is spelled as an OR rather than a COALESCE so the (VolumeId, ParentId) index still
+        // answers the overwhelmingly common no-overlay half.
+        // Visibility: on disk (materialized AND present) OR carrying an overlay — that second
+        // half is what makes a queued CreateFolder navigable before it exists.
         var subDirs = await _db.Directories
             .AsNoTracking()
-            .Where(d => d.VolumeId == volumeId && d.ParentId == parentId && d.IsMaterialized &&
-                        (d.IsPresent || d.PendingState != EntityPendingState.None))
-            .OrderBy(d => d.Name)
+            .Where(d => ((d.ParentId == parentId && d.PendingParentId == null) || d.PendingParentId == parentId) &&
+                        ((d.IsMaterialized && d.IsPresent) || d.PendingState != EntityPendingState.None))
+            // Projected name — the rule lives in FileTracert.Business/Projection/Projected.cs.
+            .OrderBy(d => d.PendingName ?? d.Name)
             .Select(d => new
             {
                 d.Id,
-                d.Name,
+                Name = d.PendingName ?? d.Name,
                 d.MaterializedPath,
-                ChildCount = _db.Directories.Count(c => c.ParentId == d.Id && c.IsMaterialized &&
-                                                       (c.IsPresent || c.PendingState != EntityPendingState.None)),
-                FileCount = _db.Files.Count(f => f.DirectoryId == d.Id && f.IsIncluded && f.IsPresent),
+                d.PendingState,
+                d.PendingJobId,
+                // The counters use the same projected predicates as the listings, or a "3 file"
+                // badge sits above a list of four.
+                ChildCount = _db.Directories.Count(c =>
+                    ((c.ParentId == d.Id && c.PendingParentId == null) || c.PendingParentId == d.Id) &&
+                    ((c.IsMaterialized && c.IsPresent) || c.PendingState != EntityPendingState.None)),
+                FileCount = _db.Files.Count(f =>
+                    ((f.DirectoryId == d.Id && f.PendingDirectoryId == null) || f.PendingDirectoryId == d.Id) &&
+                    f.IsIncluded && f.IsPresent),
             })
             .ToListAsync(ct);
 
         var dirDtos = subDirs
-            .Select(d => new CatalogDirDto(d.Id, d.Name, d.MaterializedPath, d.ChildCount, d.FileCount))
+            .Select(d => new CatalogDirDto(
+                d.Id, d.Name, d.MaterializedPath, d.ChildCount, d.FileCount,
+                d.PendingState.ToString(), d.PendingJobId))
             .ToList();
 
-        // Files in the current directory, paged.
+        // Files in the current directory by projected position, paged.
         var filesQuery = _db.Files
             .AsNoTracking()
-            .Where(f => f.DirectoryId == parentId && f.IsIncluded && f.IsPresent);
+            .Where(f => ((f.DirectoryId == parentId && f.PendingDirectoryId == null) || f.PendingDirectoryId == parentId) &&
+                        f.IsIncluded && f.IsPresent);
 
         var totalFiles = await filesQuery.CountAsync(ct);
 
         var filePage = await filesQuery
-            .OrderBy(f => f.Name)
+            .OrderBy(f => f.PendingName ?? f.Name)
             .Skip(paged.Skip)
             .Take(paged.Take)
-            .Select(f => new CatalogFileDto(f.Id, f.Name, f.SizeBytes, f.FileModifiedUtc, f.Category, "None"))
+            .Select(f => new
+            {
+                f.Id,
+                Name = f.PendingName ?? f.Name,
+                f.SizeBytes,
+                f.FileModifiedUtc,
+                f.Category,
+                f.PendingState,
+                f.PendingJobId,
+            })
             .ToListAsync(ct);
 
-        var pagedFiles = new PagedResult<CatalogFileDto>(filePage, totalFiles, paged.Skip, paged.Take);
+        var fileDtos = filePage
+            .Select(f => new CatalogFileDto(
+                f.Id, f.Name, f.SizeBytes, f.FileModifiedUtc, f.Category,
+                f.PendingState.ToString(), f.PendingJobId))
+            .ToList();
+
+        var pagedFiles = new PagedResult<CatalogFileDto>(fileDtos, totalFiles, paged.Skip, paged.Take);
 
         return Ok(new CatalogChildrenDto(dirDtos, pagedFiles, volume.IsOnline, volume.Label, volume.LastDriveLetter, directoryId, parentPath));
     }
