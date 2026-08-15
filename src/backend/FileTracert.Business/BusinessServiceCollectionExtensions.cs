@@ -47,6 +47,7 @@ public static class BusinessServiceCollectionExtensions
         // Pending* fields, the directory resolver the single walk that materializes a path.
         services.AddScoped<DirectoryResolver>();
         services.AddScoped<OverlayWriter>();
+        services.AddScoped<ProjectedPathResolver>();
 
         // Execution engine + index updater are scoped: resolved per job execution.
         services.AddScoped<IndexUpdater>();
