@@ -49,8 +49,9 @@ public sealed class ScanLockContentionTests
         using var scanning = new CancellationTokenSource();
         var writer = Task.Run(() => HammerWritesAsync(harness, scanning.Token));
 
-        await using (var ctx = harness.CreateContext())
+        try
         {
+            await using var ctx = harness.CreateContext();
             var sut = new ScanService(ctx,
                 new FakeVolumeProbe(new ProbedVolume(
                     Guid, "SER", "Disk", "exFAT", IsRemovable: false,
@@ -70,8 +71,14 @@ public sealed class ScanLockContentionTests
 
             await sut.ScanVolumeAsync(volumeId, CancellationToken.None);
         }
+        finally
+        {
+            // Even if the scan throws, the background writer has to be told to stop: an
+            // unbounded retry loop against a torn-down temp database is how a test host ends
+            // up hung rather than failed.
+            await scanning.CancelAsync();
+        }
 
-        await scanning.CancelAsync();
         var (succeeded, blocked) = await writer;
 
         visibleBeforeEachBatch.Should().HaveCount(FileCount);
@@ -115,7 +122,7 @@ public sealed class ScanLockContentionTests
                 await db.SaveChangesAsync(CancellationToken.None);
                 succeeded++;
             }
-            catch (DbUpdateException)
+            catch (Exception ex) when (ex is DbUpdateException or Microsoft.Data.Sqlite.SqliteException)
             {
                 blocked++;
             }
