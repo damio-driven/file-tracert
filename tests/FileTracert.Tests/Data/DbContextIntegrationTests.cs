@@ -15,6 +15,36 @@ public sealed class DbContextIntegrationTests
     };
 
     [Fact]
+    public async Task Directory_rows_are_present_by_default()
+    {
+        // Every existing construction site (IndexUpdater, harness, scan) builds
+        // DirectoryNode without naming IsPresent: the flag must default to "on disk",
+        // or adding it would silently hide the whole catalog.
+        using var harness = new SqliteInMemoryContext();
+
+        int dirId;
+        await using (var context = harness.CreateContext())
+        {
+            var volume = NewVolume();
+            context.Volumes.Add(volume);
+            await context.SaveChangesAsync();
+
+            var dir = new DirectoryNode
+            {
+                VolumeId = volume.Id, Name = "", MaterializedPath = "", IsMaterialized = true,
+            };
+            context.Directories.Add(dir);
+            await context.SaveChangesAsync();
+            dirId = dir.Id;
+        }
+
+        await using (var context = harness.CreateContext())
+        {
+            (await context.Directories.SingleAsync(d => d.Id == dirId)).IsPresent.Should().BeTrue();
+        }
+    }
+
+    [Fact]
     public async Task All_expected_tables_exist()
     {
         using var harness = new SqliteInMemoryContext();

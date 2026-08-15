@@ -269,8 +269,10 @@ stato fisico (ultima scansione) **+ overlay delle operazioni in coda**.
 
 **Directories**
 `Id` · `VolumeId` · `ParentId?`→self · `Name` · `MaterializedPath` (denormalizzato,
-aggiornato in cascata sui rename) · `UsnFileRef?` · `IsMaterialized` ·
-`PendingName?` · `PendingParentId?` · `PendingState` · `PendingJobId?` + audit.
+aggiornato in cascata sui rename) · `UsnFileRef?` · `IsMaterialized` · `IsPresent`
+(default `true`; stessa semantica di `Files.IsPresent` — la scansione non l'ha più
+trovata sul disco, mai un delete) · `PendingName?` · `PendingParentId?` ·
+`PendingState` · `PendingJobId?` + audit.
 
 **Files**
 `Id` · `VolumeId` · `DirectoryId`→Directories · `Name` · `Extension` (lower) ·

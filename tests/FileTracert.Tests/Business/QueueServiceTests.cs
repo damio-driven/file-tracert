@@ -173,6 +173,27 @@ public sealed class QueueServiceTests : IDisposable
         dto.TargetPath.Should().Be("Documents");
     }
 
+    [Fact]
+    public async Task RenameFolder_rejects_a_directory_the_last_scan_no_longer_found_on_disk()
+    {
+        using (var db = _harness.CreateContext())
+        {
+            var dir = db.Directories.Single(d => d.Id == Dir1Id);
+            dir.IsPresent = false;
+            db.SaveChanges();
+        }
+
+        var act = async () => await Svc().EnqueueAsync(new CreateJobRequest
+        {
+            Type = JobType.RenameFolder,
+            SourceDirectoryId = Dir1Id,
+            NewName = "Documents"
+        }, None);
+
+        (await act.Should().ThrowAsync<InvalidOperationException>())
+            .WithMessage("*non è più presente*");
+    }
+
     // ── MoveFile intra-volume ─────────────────────────────────────────────────
 
     [Fact]

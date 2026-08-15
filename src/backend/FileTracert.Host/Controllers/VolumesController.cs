@@ -1,6 +1,7 @@
 using FileTracert.Business.Filtering;
 using FileTracert.Business.Volumes;
 using FileTracert.Contracts.Dtos;
+using FileTracert.Contracts.Enums;
 using FileTracert.Data;
 using FileTracert.Data.Entities;
 using FileTracert.Host.Workers;
@@ -70,8 +71,11 @@ public sealed class VolumesController : ControllerBase
             .Select(g => new { Count = g.Count(), Bytes = g.Sum(f => f.SizeBytes) })
             .FirstOrDefaultAsync(ct);
 
+        // Same rule as the Catalog tree: directories no longer on disk stop counting,
+        // unless a queued operation still holds them in the projection.
         var directoryCount = await _db.Directories
-            .CountAsync(d => d.VolumeId == id && d.IsMaterialized, ct);
+            .CountAsync(d => d.VolumeId == id && d.IsMaterialized &&
+                             (d.IsPresent || d.PendingState != EntityPendingState.None), ct);
 
         var roots = await BuildWatchedRootsAsync(volume, ct);
 

@@ -162,6 +162,82 @@ public sealed class CatalogApiTests
     }
 
     [Fact]
+    public async Task GetChildren_excludes_absent_directories_but_keeps_the_ones_with_an_overlay()
+    {
+        int volumeId = 0;
+        using var factory = new FileTracertAppFactory
+        {
+            DisableVolumeSync = true,
+            DisableScan = true,
+            Seed = async (db, ct) =>
+            {
+                var vol = new Volume { VolumeGuid = $@"\\?\Volume{{{Guid.NewGuid()}}}\", Label = "Disk4", FileSystem = "NTFS", Kind = VolumeKind.Fixed, IsCatalogable = true, IsOnline = true };
+                db.Volumes.Add(vol);
+                await db.SaveChangesAsync(ct);
+                volumeId = vol.Id;
+
+                var root = new DirectoryNode { VolumeId = vol.Id, Name = "", MaterializedPath = "", IsMaterialized = true };
+                db.Directories.Add(root);
+                await db.SaveChangesAsync(ct);
+
+                // Still on disk → navigable.
+                db.Directories.Add(new DirectoryNode { VolumeId = vol.Id, ParentId = root.Id, Name = "Here", MaterializedPath = "Here", IsMaterialized = true, IsPresent = true });
+                // Gone from disk and nothing pending on it → not navigable.
+                db.Directories.Add(new DirectoryNode { VolumeId = vol.Id, ParentId = root.Id, Name = "Gone", MaterializedPath = "Gone", IsMaterialized = true, IsPresent = false });
+                // Gone from disk but a queued operation still references it → must stay visible.
+                db.Directories.Add(new DirectoryNode
+                {
+                    VolumeId = vol.Id, ParentId = root.Id, Name = "GoneButQueued", MaterializedPath = "GoneButQueued",
+                    IsMaterialized = true, IsPresent = false, PendingState = EntityPendingState.PendingRename,
+                });
+                await db.SaveChangesAsync(ct);
+            },
+        };
+        var client = Authed(factory);
+
+        var resp = await client.GetAsync($"/api/catalog/{volumeId}/children");
+        var dto = await resp.Content.ReadFromJsonAsync<CatalogChildrenDto>(JsonOpts);
+
+        dto!.Directories.Select(d => d.Name).Should().BeEquivalentTo(["Here", "GoneButQueued"]);
+    }
+
+    [Fact]
+    public async Task GetChildren_child_count_ignores_absent_subdirectories()
+    {
+        int volumeId = 0;
+        using var factory = new FileTracertAppFactory
+        {
+            DisableVolumeSync = true,
+            DisableScan = true,
+            Seed = async (db, ct) =>
+            {
+                var vol = new Volume { VolumeGuid = $@"\\?\Volume{{{Guid.NewGuid()}}}\", Label = "Disk5", FileSystem = "NTFS", Kind = VolumeKind.Fixed, IsCatalogable = true, IsOnline = true };
+                db.Volumes.Add(vol);
+                await db.SaveChangesAsync(ct);
+                volumeId = vol.Id;
+
+                var root = new DirectoryNode { VolumeId = vol.Id, Name = "", MaterializedPath = "", IsMaterialized = true };
+                db.Directories.Add(root);
+                await db.SaveChangesAsync(ct);
+
+                var parent = new DirectoryNode { VolumeId = vol.Id, ParentId = root.Id, Name = "Parent", MaterializedPath = "Parent", IsMaterialized = true };
+                db.Directories.Add(parent);
+                await db.SaveChangesAsync(ct);
+
+                db.Directories.Add(new DirectoryNode { VolumeId = vol.Id, ParentId = parent.Id, Name = "Alive", MaterializedPath = @"Parent\Alive", IsMaterialized = true });
+                db.Directories.Add(new DirectoryNode { VolumeId = vol.Id, ParentId = parent.Id, Name = "Dead", MaterializedPath = @"Parent\Dead", IsMaterialized = true, IsPresent = false });
+                await db.SaveChangesAsync(ct);
+            },
+        };
+        var client = Authed(factory);
+
+        var resp = await client.GetAsync($"/api/catalog/{volumeId}/children");
+        var dto = await resp.Content.ReadFromJsonAsync<CatalogChildrenDto>(JsonOpts);
+
+        dto!.Directories.Single(d => d.Name == "Parent").ChildDirectoryCount.Should().Be(1);
+    }
+
+    [Fact]
     public async Task GetChildren_unknown_volume_returns_404()
     {
         using var factory = new FileTracertAppFactory { DisableVolumeSync = true, DisableScan = true };

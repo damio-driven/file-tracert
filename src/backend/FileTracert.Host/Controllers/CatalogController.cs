@@ -1,4 +1,5 @@
 using FileTracert.Contracts.Dtos;
+using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Paging;
 using FileTracert.Data;
 using Microsoft.AspNetCore.Mvc;
@@ -68,17 +69,21 @@ public sealed class CatalogController : ControllerBase
             parentPath = dir.MaterializedPath;
         }
 
-        // Sub-directories of the current node.
+        // Sub-directories of the current node. A directory the last scan no longer found
+        // on disk (IsPresent = false) is not navigable — unless a queued operation still
+        // references it, in which case the projection must keep showing it (§5).
         var subDirs = await _db.Directories
             .AsNoTracking()
-            .Where(d => d.VolumeId == volumeId && d.ParentId == parentId && d.IsMaterialized)
+            .Where(d => d.VolumeId == volumeId && d.ParentId == parentId && d.IsMaterialized &&
+                        (d.IsPresent || d.PendingState != EntityPendingState.None))
             .OrderBy(d => d.Name)
             .Select(d => new
             {
                 d.Id,
                 d.Name,
                 d.MaterializedPath,
-                ChildCount = _db.Directories.Count(c => c.ParentId == d.Id && c.IsMaterialized),
+                ChildCount = _db.Directories.Count(c => c.ParentId == d.Id && c.IsMaterialized &&
+                                                       (c.IsPresent || c.PendingState != EntityPendingState.None)),
                 FileCount = _db.Files.Count(f => f.DirectoryId == d.Id && f.IsIncluded && f.IsPresent),
             })
             .ToListAsync(ct);

@@ -16,6 +16,16 @@ public class DirectoryNode : IAuditable
     public long? UsnFileRef { get; set; }
     public bool IsMaterialized { get; set; }
 
+    /// <summary>
+    /// Mirror of <see cref="FileEntry.IsPresent"/>: false once a scan no longer finds the
+    /// directory on disk. Soft marker, never a delete — deleting the row would take the
+    /// pending overlay of every descendant with it (§6, no hard-delete).
+    /// Defaults to <c>true</c> in CLR too: every construction site (scan, IndexUpdater,
+    /// harness) builds the node without naming the flag, and "false" would mean
+    /// "not on disk" for rows that were just indexed from disk.
+    /// </summary>
+    public bool IsPresent { get; set; } = true;
+
     public string? PendingName { get; set; }
     public int? PendingParentId { get; set; }
     public EntityPendingState PendingState { get; set; }

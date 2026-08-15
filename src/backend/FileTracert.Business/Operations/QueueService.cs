@@ -486,9 +486,7 @@ public sealed class QueueService : IQueueService
         if (!OperationName.TryValidateLeaf(req.NewName, out var nameError))
             throw new ArgumentException(nameError);
 
-        var dir = await _db.Directories.AsNoTracking()
-            .FirstOrDefaultAsync(d => d.Id == req.SourceDirectoryId.Value, ct)
-            ?? throw new InvalidOperationException($"Directory {req.SourceDirectoryId} not found.");
+        var dir = await LoadSourceDirectoryAsync(req.SourceDirectoryId.Value, ct);
 
         await GuardDirectoryAsync(req.SourceDirectoryId.Value, dir.MaterializedPath, dir.VolumeId, ct);
 
@@ -578,9 +576,7 @@ public sealed class QueueService : IQueueService
         if (!OperationName.TryValidatePath(req.TargetRelativePath, allowRoot: true, out var targetPath, out var pathError))
             throw new ArgumentException(pathError);
 
-        var dir = await _db.Directories.AsNoTracking()
-            .FirstOrDefaultAsync(d => d.Id == req.SourceDirectoryId.Value, ct)
-            ?? throw new InvalidOperationException($"Directory {req.SourceDirectoryId} not found.");
+        var dir = await LoadSourceDirectoryAsync(req.SourceDirectoryId.Value, ct);
 
         await GuardDirectoryAsync(req.SourceDirectoryId.Value, dir.MaterializedPath, dir.VolumeId, ct);
 
@@ -709,6 +705,27 @@ public sealed class QueueService : IQueueService
     }
 
     // ── private: guards ────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Loads the source directory of a folder operation. A row the last scan no longer
+    /// found on disk (<c>IsPresent = false</c>) is not a legal source: the catalog keeps
+    /// it (no hard-delete, §6) but there is nothing to rename or move. A row carrying an
+    /// overlay is still a legal source in principle — the enqueue guard is what serializes
+    /// it — so the check is limited to absent rows with nothing pending on them.
+    /// </summary>
+    private async Task<DirectoryNode> LoadSourceDirectoryAsync(int directoryId, CancellationToken ct)
+    {
+        var dir = await _db.Directories.AsNoTracking()
+            .FirstOrDefaultAsync(d => d.Id == directoryId, ct)
+            ?? throw new InvalidOperationException($"Directory {directoryId} not found.");
+
+        if (!dir.IsPresent && dir.PendingState == EntityPendingState.None)
+            throw new InvalidOperationException(
+                $"La cartella '{dir.MaterializedPath}' non è più presente sul volume: " +
+                "l'ultima scansione non l'ha trovata sul disco.");
+
+        return dir;
+    }
 
     private async Task GuardFileAsync(int fileId, CancellationToken ct)
     {
