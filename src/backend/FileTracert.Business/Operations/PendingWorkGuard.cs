@@ -38,6 +38,15 @@ public sealed record PendingConflict(int JobId, int SequenceOrder, JobType Type,
 /// Two targets that merely nest do NOT conflict: that is exactly §5's «I queue folder X and then
 /// move files into it», which must stay legal — the second job resolves X in the projection.
 ///
+/// <para><b>Known limit, accepted.</b> A folder job is represented by its root marker, which
+/// covers every ancestor/descendant question but NOT the exact-target one: a move landing on the
+/// very path one of a pending <c>MoveFolder</c>'s expanded file items will occupy is compared
+/// against the folder's root, not that leaf, and goes through as <c>Pending</c>. It is caught at
+/// execution as <c>Blocked(NameCollision)</c> — recoverable, and nothing is ever overwritten,
+/// because <c>FinalizePartial</c> refuses an existing target. Closing it would mean loading every
+/// expanded item of every pending folder job (a cross-volume move of 100 000 files) on each
+/// enqueue, which is a bad trade for a case the engine already parks safely.</para>
+///
 /// <para><b>Where the predicate lives.</b> Overlap is decided in memory by
 /// <see cref="ScanPath.Overlaps"/>, the single case-insensitive, segment-aware definition. The SQL
 /// side only narrows the candidates (non-terminal jobs on the volumes involved). That is a

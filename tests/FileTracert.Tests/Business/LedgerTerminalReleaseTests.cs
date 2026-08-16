@@ -177,7 +177,7 @@ public sealed class LedgerTerminalReleaseTests : IDisposable
             Substitute.For<FileTracert.Contracts.Platform.IFileMover>(),
             new QueueSignal(),
             TestProjection.Index(db), TestProjection.Overlay(db),
-            TestProjection.Guard(db), TestProjection.Unblocker(db),
+            TestProjection.Unblocker(db),
             TestProjection.Revaluator(db, ledger),
             NullLogger<QueueService>.Instance);
 

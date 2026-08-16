@@ -61,7 +61,7 @@ public sealed class QueueServiceTests : IDisposable
             NSubstitute.Substitute.For<FileTracert.Contracts.Platform.IFileMover>(),
             new QueueSignal(),
             TestProjection.Index(db), TestProjection.Overlay(db),
-            TestProjection.Guard(db), TestProjection.Unblocker(db),
+            TestProjection.Unblocker(db),
             TestProjection.Revaluator(db, _ledger),
             NullLogger<QueueService>.Instance);
     }

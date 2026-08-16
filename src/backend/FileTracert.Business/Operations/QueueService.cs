@@ -26,7 +26,6 @@ public sealed class QueueService : IQueueService
     private readonly IQueueSignal _signal;
     private readonly IndexUpdater _indexUpdater;
     private readonly OverlayWriter _overlay;
-    private readonly PendingWorkGuard _guard;
     private readonly JobUnblocker _unblocker;
     private readonly BlockedJobRevaluator _revaluator;
     private readonly ILogger<QueueService> _logger;
@@ -39,7 +38,6 @@ public sealed class QueueService : IQueueService
         IQueueSignal signal,
         IndexUpdater indexUpdater,
         OverlayWriter overlay,
-        PendingWorkGuard guard,
         JobUnblocker unblocker,
         BlockedJobRevaluator revaluator,
         ILogger<QueueService> logger)
@@ -51,7 +49,6 @@ public sealed class QueueService : IQueueService
         _signal = signal;
         _indexUpdater = indexUpdater;
         _overlay = overlay;
-        _guard = guard;
         _unblocker = unblocker;
         _revaluator = revaluator;
         _logger = logger;
@@ -69,6 +66,14 @@ public sealed class QueueService : IQueueService
             _db.OperationJobItems.Add(item);
         // Assigns job.Id and job.SequenceOrder, still inside the open transaction (C26).
         await AssignSequenceOrderAndSaveAsync(job, ct);
+
+        // Finding 8 — the guard runs AFTER the insert, deliberately. SQLite grants the write
+        // lock at the first write, not at BEGIN: asking before it would read a snapshot another
+        // enqueue can still change underneath, and two requests racing on the same entity would
+        // both read "clear" and both land Pending on it (§5 allows one). From here on this
+        // connection holds the lock, so a competitor has either already committed — and is
+        // therefore visible to this read — or is queued behind us.
+        await ApplyPendingWorkGuardAsync(job, ct);
 
         // §5 — queuing an operation mutates the PROJECTION immediately: the entity is shown at
         // once under its new name / in its new folder / on its new volume. Written here, inside
@@ -302,9 +307,13 @@ public sealed class QueueService : IQueueService
         if (conflict is not null || problem is not null)
         {
             job.State = JobState.Blocked;
+            // A snapshot that will not resolve has no matching JobBlockReason: keeping the old
+            // one (DependencyCancelled, say) next to a message about a missing file would name
+            // the wrong cause. None + the message is the honest pairing, and the Coda shows the
+            // message when the reason has no label.
             job.BlockReason = conflict is not null
                 ? JobBlockReason.DependencyPending
-                : job.BlockReason;
+                : JobBlockReason.None;
             job.ErrorMessage = conflict is not null ? DescribeDependency(conflict) : problem;
             job.DependsOnJobId = conflict?.JobId;
         }
@@ -521,10 +530,6 @@ public sealed class QueueService : IQueueService
         // estimate that is stale by definition.
         await ApplyOfflineGateAsync(job, ct);
 
-        // Finding 8 — ONE guard, run once on the finished job instead of a per-type half-check:
-        // it now sees source AND target of every non-terminal job, CreateFolder included.
-        await ApplyPendingWorkGuardAsync(job, items, ct);
-
         foreach (var item in items)
             item.Job = job;
 
@@ -567,25 +572,24 @@ public sealed class QueueService : IQueueService
     /// <see cref="JobBlockReason.DependencyPending"/>, naming the job that holds the entity, and
     /// the revaluation releases it when that job is done.
     ///
-    /// Runs LAST, after the offline gate, and its verdict wins over it: the dependency is the
-    /// reason that decides whether this job owns the entity — and therefore whether it may write
-    /// the projection overlay at all. Once the prerequisite resolves, the revaluation re-applies
-    /// the offline and space gates, so a job that is also waiting for a drive is re-parked on
-    /// that reason then, with nothing lost.
+    /// Its verdict wins over the offline gate's: the dependency is what decides whether this job
+    /// owns the entity — and therefore whether it may write the projection overlay at all. Once
+    /// the prerequisite resolves, the revaluation re-applies the offline and space gates, so a
+    /// job that is also waiting for a drive is re-parked on that reason then, with nothing lost.
+    ///
+    /// Asks through the SAME entry point the revaluation and «Riprova» use, so the question is
+    /// posed once in the codebase and always with the same bound: only jobs AHEAD in the queue.
     /// </summary>
-    private async Task ApplyPendingWorkGuardAsync(
-        OperationJob job, List<OperationJobItem> items, CancellationToken ct)
+    private async Task ApplyPendingWorkGuardAsync(OperationJob job, CancellationToken ct)
     {
-        var claims = PendingWorkGuard.ClaimsOf(
-            job.Type, job.SourceVolumeId, job.TargetVolumeId, job.TargetRelativePath, items);
-
-        var conflict = await _guard.FindConflictAsync(claims, excludeJobId: null, ct);
+        var conflict = await _unblocker.FindConflictAsync(job, ct);
         if (conflict is null) return;
 
         job.State = JobState.Blocked;
         job.BlockReason = JobBlockReason.DependencyPending;
         job.DependsOnJobId = conflict.JobId;
         job.ErrorMessage = DescribeDependency(conflict);
+        await _db.SaveChangesAsync(ct);
 
         _logger.LogInformation(
             "Enqueue of a {Type} job parked behind job {Prerequisite} ({PrereqType} on '{Path}').",

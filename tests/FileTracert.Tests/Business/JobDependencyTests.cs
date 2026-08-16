@@ -6,7 +6,10 @@ using FileTracert.Data;
 using FileTracert.Data.Entities;
 using FileTracert.Tests.Data;
 using FluentAssertions;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.DependencyInjection;
 using NSubstitute;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -72,12 +75,12 @@ public sealed class JobDependencyTests : IDisposable
             NullLogger<BlockedJobRevaluator>.Instance);
     }
 
-    private QueueService Svc()
+    private QueueService Svc(params IInterceptor[] interceptors)
     {
-        var db = _harness.CreateContext();
+        var db = _harness.CreateContext(interceptors);
         return new QueueService(db, _ledger, _cancellation,
             NSubstitute.Substitute.For<IFileMover>(), new QueueSignal(),
-            TestProjection.Index(db), TestProjection.Overlay(db), TestProjection.Guard(db), TestProjection.Unblocker(db),
+            TestProjection.Index(db), TestProjection.Overlay(db), TestProjection.Unblocker(db),
             TestProjection.Revaluator(db, _ledger),
             NullLogger<QueueService>.Instance);
     }
@@ -536,6 +539,112 @@ public sealed class JobDependencyTests : IDisposable
         parked.BlockReason.Should().Be(JobBlockReason.DependencyPending);
         mover.ReceivedCalls().Should().BeEmpty("nothing on disk may be touched out of order");
         (await ReloadJobAsync(first.Id)).State.Should().Be(JobState.Pending);
+    }
+
+    // ── the guard is asked once the write lock is held ────────────────────────
+
+    [Fact]
+    public async Task A_job_that_commits_during_our_enqueue_is_still_seen_by_the_guard()
+    {
+        // The guard used to run before the transaction opened, so a competing enqueue that
+        // committed in between was invisible and BOTH jobs landed Pending on one entity — two
+        // owners of one overlay, which §5 forbids. Asking after the insert (this connection
+        // holds the write lock from then on) closes it. Reproduced by committing the rival on a
+        // separate context at the exact moment our insert happens.
+        var rival = new EnqueueDuringInsertInterceptor(_harness, ReportId);
+        var mine = await Svc(rival).EnqueueAsync(new CreateJobRequest
+        {
+            Type = JobType.RenameFile, SourceFileId = ReportId, NewName = "mio.txt"
+        }, None);
+
+        rival.RivalJobId.Should().NotBeNull("the test only proves anything if the race happened");
+
+        mine.State.Should().Be(nameof(JobState.Blocked));
+        mine.BlockReason.Should().Be(nameof(JobBlockReason.DependencyPending));
+        mine.DependsOnJobId.Should().Be(rival.RivalJobId);
+
+        // The rival is a synthetic row and never ran OverlayWriter, so what matters here is the
+        // negative: OUR job did not stamp itself onto an entity it does not own.
+        using var db = _harness.CreateContext();
+        var file = await db.Files.AsNoTracking().FirstAsync(f => f.Id == ReportId, None);
+        file.PendingJobId.Should().NotBe(mine.Id, "one entity, one owner");
+    }
+
+    /// <summary>
+    /// Commits a rival job on the same entity, on its own context, exactly when our enqueue
+    /// inserts its own — i.e. a second API request that got there first. Fires once.
+    /// </summary>
+    private sealed class EnqueueDuringInsertInterceptor : SaveChangesInterceptor
+    {
+        private readonly int _fileId;
+        private bool _fired;
+
+        public EnqueueDuringInsertInterceptor(SqliteInMemoryContext harness, int fileId) =>
+            _fileId = fileId;
+
+        public int? RivalJobId { get; private set; }
+
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData, InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (_fired) return base.SavingChangesAsync(eventData, result, cancellationToken);
+
+            var inserting = eventData.Context!.ChangeTracker.Entries<OperationJob>()
+                .FirstOrDefault(e => e.State == EntityState.Added);
+            if (inserting is null) return base.SavingChangesAsync(eventData, result, cancellationToken);
+
+            _fired = true;
+            // The rival takes the queue position OUR job was about to take — which is what
+            // actually happens when it commits first. Our insert then loses the unique index,
+            // retries to the next number (C26), and only THEN does the guard ask: the rival is
+            // now ahead of us in FIFO, so it owns the entity and we wait for it. The two
+            // mechanisms have to compose, and this is where that is proven.
+            var contestedOrder = inserting.Entity.SequenceOrder;
+
+            // Raw SQL on the live connection: the in-memory harness shares ONE SqliteConnection
+            // across contexts, so a second EF context cannot open its own transaction here. What
+            // matters for the regression is identical either way — a rival row exists on this
+            // entity by the time the guard asks, and the OLD code had already asked.
+            var connection = (SqliteConnection)eventData.Context.Database.GetDbConnection();
+            var tx = (SqliteTransaction?)eventData.Context.Database.CurrentTransaction?.GetDbTransaction();
+
+            using (var job = connection.CreateCommand())
+            {
+                job.Transaction = tx;
+                job.CommandText = """
+                    INSERT INTO OperationJobs
+                        (Type, State, BlockReason, SourceVolumeId, TargetVolumeId,
+                         TargetRelativePath, IsIntraVolume, TotalBytes, BytesProcessed,
+                         RequiredBytesTarget, FreedBytesSource, EstimateIsLive, SequenceOrder,
+                         RetryCount, CreatedUtc, UpdatedUtc)
+                    VALUES ('RenameFile', 'Pending', 'None', 1, 1, 'rivale.txt', 1, 0, 0, 0, 0, 1,
+                            $order, 0, $now, $now);
+                    SELECT last_insert_rowid();
+                    """;
+                job.Parameters.AddWithValue("$order", contestedOrder);
+                job.Parameters.AddWithValue("$now", DateTime.UtcNow.ToString("O"));
+                RivalJobId = Convert.ToInt32(job.ExecuteScalar());
+            }
+
+            using (var item = connection.CreateCommand())
+            {
+                item.Transaction = tx;
+                item.CommandText = """
+                    INSERT INTO OperationJobItems
+                        (JobId, FileId, SourceRelativePath, TargetRelativePath, SizeBytes, State,
+                         BytesCopied, CreatedUtc, UpdatedUtc)
+                    VALUES ($job, $file, 'Docs\report.txt', 'Docs\rivale.txt', 0, 'Pending', 0,
+                            $now, $now);
+                    """;
+                item.Parameters.AddWithValue("$job", RivalJobId);
+                item.Parameters.AddWithValue("$file", _fileId);
+                item.Parameters.AddWithValue("$now", DateTime.UtcNow.ToString("O"));
+                item.ExecuteNonQuery();
+            }
+
+            return base.SavingChangesAsync(eventData, result, cancellationToken);
+        }
     }
 
     // ── still refused: the requests that are wrong, not merely queued behind ──

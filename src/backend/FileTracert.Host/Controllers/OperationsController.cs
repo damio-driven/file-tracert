@@ -45,12 +45,11 @@ public sealed class OperationsController : ControllerBase
             var dto = await _queue.EnqueueAsync(req, ct);
             return CreatedAtAction(nameof(List), new { }, dto);
         }
-        catch (ArgumentException ex)
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
         {
-            return BadRequest(new { error = ex.Message });
-        }
-        catch (InvalidOperationException ex)
-        {
+            // §9: surfaced to the user AND logged in full. The message alone reaches the client;
+            // the stack (and any inner exception) only exists here.
+            _logger.LogWarning(ex, "Enqueue of a {Type} operation rejected as invalid.", req.Type);
             return BadRequest(new { error = ex.Message });
         }
     }

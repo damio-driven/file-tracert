@@ -182,6 +182,15 @@
                     </div>
                   }
 
+                  <!-- A job parked for something the enum has no name for (an entity the
+                       release could not resolve) carries its explanation in the message and
+                       nowhere else: without this the row reads "Bloccato" and stops. -->
+                  @if (job.state === 'Blocked' && job.blockReason === 'None' && job.errorMessage) {
+                    <div class="error-detail mono truncate" [title]="job.errorMessage">
+                      {{ job.errorMessage }}
+                    </div>
+                  }
+
                   @if (job.state === 'Failed' && job.errorMessage) {
                     <div class="error-detail mono truncate" [title]="job.errorMessage">
                       {{ job.errorMessage }}

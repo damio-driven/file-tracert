@@ -88,7 +88,7 @@ public sealed class JobCancellationTests : IDisposable
         return new QueueService(db, ledger, _registry, Substitute.For<IFileMover>(),
             new QueueSignal(),
             TestProjection.Index(db), TestProjection.Overlay(db),
-            TestProjection.Guard(db), TestProjection.Unblocker(db),
+            TestProjection.Unblocker(db),
             TestProjection.Revaluator(db, ledger),
             NullLogger<QueueService>.Instance);
     }

@@ -1,4 +1,4 @@
-using FileTracert.Business.Projection;
+﻿using FileTracert.Business.Projection;
 using FileTracert.Business.Scanning;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Search;
@@ -122,8 +122,7 @@ public sealed class IndexUpdater
 
         // Load all dirs in the subtree.
         var dirs = await _db.Directories
-            .Where(d => d.VolumeId == job.SourceVolumeId.Value &&
-                        (d.MaterializedPath == oldPath || d.MaterializedPath.StartsWith(oldPath + "\\")))
+            .InSubtree(job.SourceVolumeId.Value, oldPath)
             .ToListAsync(ct);
 
         var topDir = dirs.FirstOrDefault(d => d.MaterializedPath == oldPath);
@@ -164,10 +163,8 @@ public sealed class IndexUpdater
         if (marker is not null && job.SourceVolumeId is not null)
         {
             var srcRoot = marker.SourceRelativePath;
-            var prefixWithSep = srcRoot + "\\";
             var srcDirPaths = await _db.Directories.AsNoTracking()
-                .Where(d => d.VolumeId == job.SourceVolumeId.Value &&
-                            (d.MaterializedPath == srcRoot || d.MaterializedPath.StartsWith(prefixWithSep)))
+                .InSubtree(job.SourceVolumeId.Value, srcRoot)
                 .Select(d => d.MaterializedPath)
                 .ToListAsync(ct);
 
@@ -219,10 +216,8 @@ public sealed class IndexUpdater
             // The removed paths all sit under the moved folder's root (the shortest path in
             // the set) — bound the query to that subtree instead of scanning the volume.
             var subtreeRoot = removedSourceDirPaths.OrderBy(p => p.Length).First();
-            var subtreePrefix = subtreeRoot + "\\";
             var candidates = await _db.Directories
-                .Where(d => d.VolumeId == job.SourceVolumeId.Value &&
-                            (d.MaterializedPath == subtreeRoot || d.MaterializedPath.StartsWith(subtreePrefix)))
+                .InSubtree(job.SourceVolumeId.Value, subtreeRoot)
                 .ToListAsync(ct);
             foreach (var ghost in candidates.Where(d => removedSet.Contains(d.MaterializedPath)))
                 ghost.IsMaterialized = false;
@@ -305,8 +300,7 @@ public sealed class IndexUpdater
     private async Task CascadeDirRenameAsync(int volumeId, string oldPath, string newPath, CancellationToken ct)
     {
         var dirs = await _db.Directories
-            .Where(d => d.VolumeId == volumeId &&
-                        (d.MaterializedPath == oldPath || d.MaterializedPath.StartsWith(oldPath + "\\")))
+            .InSubtree(volumeId, oldPath)
             .ToListAsync(ct);
 
         var topDir = dirs.FirstOrDefault(d => d.MaterializedPath == oldPath);
