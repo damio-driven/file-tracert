@@ -230,7 +230,7 @@ stato fisico (ultima scansione) **+ overlay delle operazioni in coda**.
 - `CreateFolder` = mkdir banale in esecuzione; in proiezione la cartella "esiste
   già" (riga `Directories` con `IsMaterialized = false`).
 
-### Dipendenze tra job
+### Dipendenze tra job *(implementate allo step 9c)*
 - `DependsOnJobId?` rilevata **automaticamente** quando un'operazione ha come
   target un'entità ancora pendente.
 - Esecuzione e fattibilità rispettano l'ordine delle dipendenze.
@@ -238,7 +238,9 @@ stato fisico (ultima scansione) **+ overlay delle operazioni in coda**.
   finché la prima non si risolve. *(Chaining → fase 2, vedi §11.)*
 - Cancellare un prerequisito (es. `CreateFolder`) → i dipendenti vanno
   **`Blocked` con `DependencyCancelled`** (restano in coda, riattivabili),
-  NON cancellati a cascata.
+  NON cancellati a cascata. **Riattivabili = «Riprova»**, non in automatico:
+  il guard è pulito già nell'istante dell'annullamento, quindi liberarli da soli
+  vorrebbe dire ricreare in silenzio ciò che l'utente ha deciso di non creare.
 
 ---
 
@@ -294,7 +296,8 @@ colonne), scelto dall'utente in UI. SQLite-specific, dietro `IFileSearchIndex`.
 
 ### Dominio Operazioni
 
-**OperationJobs**
+**OperationJobs** *(step 9c: `SequenceOrder` ha un indice **unico** e viene assegnato dentro la
+transazione di insert; `DependsOnJobId` è scritto dal guard di enqueue e ripuntato alla rivalutazione)*
 `Id` · `Type` (JobType) · `State` · `BlockReason` · `SourceVolumeId?` ·
 `TargetVolumeId?` · `TargetRelativePath?` · `IsIntraVolume` · `TotalBytes` ·
 `BytesProcessed` · `RequiredBytesTarget` · `FreedBytesSource` · `EstimateIsLive`
@@ -556,18 +559,12 @@ rilievo è stato lasciato consapevolmente).
 ## Roadmap (ordine di lavoro)
 Stato: WP3 (perdita dati), WP1 (crash-safe), WP2 (offline gate), **fix UX date/UTC**
 (#12, #11, C31), **step 9a** (merge dello scan + transazioni corte), **step 9b**
-(proiezione: overlay scritto/letto/pulito) — **fatti**.
+(proiezione: overlay scritto/letto/pulito), **step 9c** (dipendenze tra job + guard
+unificato, WP4 intero) — **fatti**. Lo **step 9 è chiuso**.
 Prossimo, in ordine:
-1. **Step 9c — Dipendenze tra job:** `DependsOnJobId` rilevata automaticamente,
-   `Blocked(DependencyPending)` al posto del 409 `EntityAlreadyPendingException`,
-   `DependencyCancelled` sui dipendenti di un prerequisito annullato, guard di enqueue
-   unificato (finding 8 + C26 + K5), `SequenceOrder` transazionale. Punto di innesto già
-   pronto: `OverlayWriter.ApplyAsync` è **un solo punto di uscita** — 9c deve solo renderlo
-   condizionale (un job che nasce `Blocked(DependencyPending)` non possiede l'entità e non
-   scrive overlay finché non si sblocca).
-2. **Step 10 — Device-watcher + SignalR real-time:** sostituisce il trigger polling
+1. **Step 10 — Device-watcher + SignalR real-time:** sostituisce il trigger polling
    del WP2 con push; remount istantaneo; progress/notifiche/coda in tempo reale.
-3. **Work package minori rimanenti** (dalla code review): guard enqueue, indice/
+2. **Work package minori rimanenti** (dalla code review): indice/
    ricerca (#6 `UsnFileRef` al move cross-volume, C19 `Extension`/`Category` al
    rename, C16 esclusione ereditata, P2 collation), spazio, resto UX, logging/
    shutdown, efficienza, cleanup (incl. eventuale spostamento di `ScanPath` in
@@ -577,7 +574,101 @@ Prossimo, in ordine:
    Da valutare qui anche: un file **fuori** dai watched root attivi viene marcato
    `IsPresent=false` al primo scan del volume. Non è una regressione (prima veniva
    **cancellato** dal truncate), ma ora è visibile come «assente» invece che sparito.
-4. **Step 12 — Test UI end-to-end (Playwright).**
+3. **Step 12 — Test UI end-to-end (Playwright).**
+
+### Fatto nello step 9c (2026-08-16, commit `c9f0b34`…`616c25e`)
+Le **dipendenze tra job** del §5 esistono davvero: `DependsOnJobId` non è più una colonna morta
+e `DependencyPending`/`DependencyCancelled` non sono più irraggiungibili. Chiude l'intero **WP4**
+(finding 8 + C26 + K5), la metà «dipendenze» del finding 9 e l'ultima metà del finding 13.
+- **Un solo predicato di sovrapposizione** — `ScanPath.Overlaps` (case-insensitive,
+  segment-aware) usato da `PendingWorkGuard`, unico posto che risponde a «un altro job sta già
+  lavorando qui?». Vede **source e target** di ogni job non terminale, `CreateFolder` compreso
+  (che non ha item: il suo unico path sta sul job). La regola: **un path SORGENTE che si
+  sovrappone a qualunque path dell'altro** è conflitto (chi rinomina/sposta toglie il terreno a
+  tutto ciò che sta sopra, sotto o lì); **due TARGET uguali** sono conflitto; due target
+  semplicemente annidati **no** — è il caso §5 «accodo la cartella X e poi ci sposto dentro i
+  file», che deve restare legale. `DirectoryQueries.InSubtree` fa lo stesso per le query di
+  sottoalbero in SQL. *Deviazione documentata dal piano*: il predicato NON esiste «in due forme»
+  (in memoria + SQL); in SQL userebbe il misto LIKE/BINARY di SQLite e non potrebbe concordare
+  con quello in memoria — cioè la divergenza che K5 denuncia. Il SQL **restringe** i candidati
+  (job non terminali sui volumi coinvolti, marker invece degli item espansi), la memoria decide.
+- **Il guard si interroga dopo l'INSERT**, dentro la transazione: SQLite concede il write lock
+  alla prima scrittura, non al `BEGIN`, quindi chiedere prima leggerebbe uno snapshot che un
+  altro enqueue può ancora cambiare sotto — e due richieste sulla stessa entità atterrerebbero
+  entrambe `Pending` su di essa. Con l'indice unico su `SequenceOrder`, chi perde la corsa
+  ritenta il numero e *poi* vede il rivale davanti a sé: i due meccanismi si compongono.
+- **Niente più 409.** La seconda operazione su un'entità entra in coda `Blocked` /
+  `DependencyPending`, con `DependsOnJobId` = il job in conflitto **ultimo in ordine di coda** e
+  un messaggio italiano che lo nomina. `EntityAlreadyPendingException` e il ramo `Conflict` del
+  controller sono stati **eliminati**: il 400 ora significa «richiesta sbagliata in sé».
+- **Un dipendente bloccato non possiede l'entità** e quindi **non scrive overlay** (unico punto:
+  `JobDependencies.OwnsItsEntity` davanti a `OverlayWriter.ApplyAsync`, l'aggancio che 9b aveva
+  lasciato pronto). Lo scrive quando viene liberato.
+- **Rilascio** (`BlockedJobRevaluator` + `JobUnblocker`, condiviso con `RetryAsync`): si
+  **richiede il guard** invece di fidarsi del prerequisito (così un solo `DependsOnJobId` basta:
+  viene **ripuntato**), si **rinfrescano gli snapshot** e si **prende l'overlay**, tutto nella
+  stessa transazione del cambio di stato. Il re-ask conta solo i job **davanti** in coda: senza
+  quel vincolo due job sovrapposti si nominano a vicenda e restano bloccati per sempre (trovato
+  dal test di ripuntamento, che andava in deadlock).
+- **Snapshot freschi** (`JobSnapshotRefresher`, il vero fix del finding 8a): gli item con
+  `FileId` si ri-risolvono dal catalogo (l'identità sopravvive a ogni job completato e a ogni
+  re-scan dallo step 9a); gli item di cartella e i path di destinazione, che nessuna riga
+  identifica, subiscono il **replay** dei move/rename di cartella **intra-volume completati dopo
+  l'accodamento**, come riscritture di prefisso. Solo un path effettivamente riscritto viene poi
+  verificato contro il catalogo; uno intatto resta com'era. Se qualcosa non si risolve il job
+  resta `Blocked` con messaggio esplicito, **mai** `Failed` silenzioso.
+- **Prerequisito annullato o fallito** → `JobDependencies.ParkDependentsAsync` nella **stessa
+  transazione** dello stato terminale (UPDATE condizionale `WHERE State = Blocked`, così non
+  corre contro il concurrency token di nessuno). Mai cascata di cancellazioni.
+  *Deviazione documentata dal piano*: `DependencyCancelled` **non** viene rivalutato
+  automaticamente. Il piano voleva riportarlo a `Pending` «se il guard è pulito», ma il guard è
+  pulito proprio nell'istante in cui il prerequisito viene annullato → il dipendente ripartirebbe
+  subito e ricreerebbe in silenzio la cartella che l'utente ha appena deciso di non creare: è lo
+  scenario di fallimento del finding 9. La riattivazione è **«Riprova»**, che è la decisione
+  dell'utente e azzera la dipendenza morta.
+- **Barriera in esecuzione** in `ExecuteJobAsync`, prima del gate offline: se `DependsOnJobId`
+  non è `Completed` il job torna `Blocked` senza una syscall. `Blocked` lo terrebbe già fuori
+  dalla query del processor — questa è la rete sotto un «Riprova» manuale o una rivalutazione
+  andata storta, e un job eseguito fuori ordine corrompe file veri.
+- **`SequenceOrder` transazionale + indice unico** (C26): `MAX+1` letto **dentro** la
+  transazione di insert, l'indice unico fa da arbitro, retry corto e loggato dentro la stessa
+  transazione (una violazione UNIQUE annulla lo statement, non la transazione). Se sia il *nostro*
+  indice a essere scattato lo si chiede al database, non al testo d'errore del provider (§3).
+  La migration **rinumera prima di indicizzare** (rank per `(SequenceOrder, Id)` via tabella
+  temporanea): un DB già in uso può contenere i duplicati che il difetto produceva.
+- **`CancelAsync` rivaluta e segnala** (finding 13, ultima metà): un annullamento libera sia
+  l'entità sia i byte prenotati, quindi è uno degli «eventi» del §4.
+- **UI**: la Coda dice *«In attesa dell'operazione #12»* / *«Dipendenza interrotta: #12»* con il
+  numero **linkato** alla riga del prerequisito (riusa il deep link `/queue?job=<id>` di 9b);
+  il picker non traduce più il 409 (non esiste) e sulla schermata di conferma dice quante
+  operazioni sono state accodate **in attesa** — annunciare un successo liscio per un'operazione
+  che l'utente non vedrà accadere è peggio del vecchio 409.
+- **Verifica**: xUnit 547 verdi, Vitest 166 verdi, build backend pulita (warnings-as-errors),
+  `ng build` ok (restano i 4 warning di budget SCSS, pre-esistenti). Harness sul ferro
+  (`D:\Collaudo\A`, coppia *intra*): **10 scenari applicabili, 10 PASS**, incluso il nuovo
+  `job-dependencies`. Misura re-scan invariata: primo scan 1,13 s, re-scan 0,93 s su 2 002 file.
+La **code review finale** ha trovato due rilievi reali. Il primo è stato corretto: il guard girava
+*prima* della transazione, quindi due enqueue simultanei sulla stessa entità potevano non vedersi
+e diventare entrambi `Pending` su di essa — ora la domanda si pone dopo l'INSERT, quando il write
+lock è nostro, e c'è un test che inietta il rivale nell'istante esatto. Il secondo (target esatti
+degli item espansi di un `MoveFolder`) è stato lasciato consapevolmente: sta nei limiti noti qui
+sotto. La review ha anche notato che `OperationsController` non logga le eccezioni che converte in
+400 (§9 vuole log **e** risalita a video): aggiunto il log sul solo `Enqueue`, l'unico ramo toccato
+da questo giro — gli altri controller hanno lo stesso difetto pre-esistente, da chiudere nel WP
+frontend/logging.
+**Limiti noti e accettati:**
+- Il guard non confronta i **target esatti** degli item espansi di un `MoveFolder` pendente: un
+  move che atterra sullo stesso path di uno di quei file viene confrontato con la radice della
+  cartella, non con la foglia, e passa `Pending`. Lo intercetta l'esecuzione come
+  `Blocked(NameCollision)` — recuperabile, e nulla viene mai sovrascritto (`FinalizePartial`
+  rifiuta un target esistente). Chiuderlo significherebbe caricare tutti gli item di ogni
+  MoveFolder pendente (un cross-volume da 100 000 file) a ogni enqueue: cattivo affare.
+- Il replay degli snapshot copre solo i move/rename di cartella **intra-volume**. Una cartella
+  spostata su un altro volume non ha reso «stantio» un path: lo ha portato via, e il job resta
+  `Blocked` con un messaggio, non riscritto verso un posto in cui non è mai stato.
+- Quando il refresh non riesce, il job resta `Blocked` con il `BlockReason` che aveva (spesso
+  `None`, con il messaggio a spiegare): `JobBlockReason` non ha un valore per «l'entità non è più
+  risolvibile». Aggiungerlo è una modifica di enum + UI, rimandata.
 
 ### Fatto nello step 9b (2026-08-16, commit `f2ba90e`…`fcc3c8a`)
 Il §5 (proiezione) è implementato: **scrittura**, **lettura**, **pulizia**.
