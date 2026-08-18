@@ -359,8 +359,18 @@ UI): `Id` · `TimestampUtc` · `Severity` (Info|Warning|Error) · `Source` ·
 - Navigazione catalogo = **albero lazy** (figli on-demand), distinta dalla ricerca.
 
 ### SignalR hub — messaggi tipizzati
+Hub unico su **`/hubs/events`**, unidirezionale server → client, broadcast (single-user
+su loopback). Protetto dal token come `/api`: header, **oppure** `?access_token=…` in
+query string — solo su `/hubs/*`, perché l'handshake WebSocket del browser non può
+mettere header custom.
 `VolumeStatusChanged`, `JobProgress`, `JobStateChanged`, `ScanProgress`,
-`ProjectionChanged` (per refresh del Catalogo/Ricerca quando l'overlay cambia).
+`ProjectionChanged` (per refresh del Catalogo/Ricerca quando l'overlay cambia) e
+**`NotificationRaised`** (aggiunto allo step 10b: è ciò che permette alla campanella di
+spegnere il poll).
+Payload **snelli** (id + i campi che cambiano; il resto si rilegge con la GET), enum
+serializzati **come stringhe**, date **UTC**. Il contratto sta in `Contracts/Realtime/`
+(`IRealtimePublisher` + record); l'hub e l'implementazione della port stanno **solo** in
+`Host/Realtime/`.
 
 ---
 
@@ -560,11 +570,13 @@ rilievo è stato lasciato consapevolmente).
 Stato: WP3 (perdita dati), WP1 (crash-safe), WP2 (offline gate), **fix UX date/UTC**
 (#12, #11, C31), **step 9a** (merge dello scan + transazioni corte), **step 9b**
 (proiezione: overlay scritto/letto/pulito), **step 9c** (dipendenze tra job + guard
-unificato, WP4 intero), **step 10a** (device watcher: il remount è un push, non un poll)
-— **fatti**. Lo **step 9 è chiuso**.
+unificato, WP4 intero), **step 10a** (device watcher: il remount è un push, non un poll),
+**step 10b** (hub SignalR + messaggi tipizzati, lato server) — **fatti**. Lo **step 9 è
+chiuso**.
 Prossimo, in ordine:
-1. **Step 10b — SignalR hub** (progress/notifiche/coda in tempo reale) e **step 10c —
-   frontend realtime**. Il device-watcher (10a) è già dentro.
+1. **Step 10c — frontend realtime**: consumare l'hub in Angular e spegnere i poll (Coda
+   ogni 2,5 s, `setInterval` delle notifiche, `GET /api/scans/status`). Backend e
+   device-watcher sono già dentro.
 2. **Work package minori rimanenti** (dalla code review): indice/
    ricerca (#6 `UsnFileRef` al move cross-volume, C19 `Extension`/`Category` al
    rename, C16 esclusione ereditata, P2 collation), spazio, resto UX, logging/
@@ -576,6 +588,73 @@ Prossimo, in ordine:
    `IsPresent=false` al primo scan del volume. Non è una regressione (prima veniva
    **cancellato** dal truncate), ma ora è visibile come «assente» invece che sparito.
 3. **Step 12 — Test UI end-to-end (Playwright).**
+
+### Fatto nello step 10b (2026-08-18, commit `6d41a46`…`f816ce2`)
+Il §7 esiste davvero lato server: l'hub, i sei messaggi, l'autenticazione e i punti di emissione.
+Il frontend continua a pollare fino a 10c — questo checkpoint chiude verde senza toccare Angular.
+- **Port + record in `Contracts/Realtime/`** (`IRealtimePublisher`, i cinque messaggi di §7 più
+  `NotificationRaised`, `RealtimeMethods` con i nomi dei metodi client, `NullRealtimePublisher`).
+  `Business` pubblica attraverso la port e non vede SignalR: c'è un **test di layering** che
+  fallisce se `Contracts`/`Data`/`Platform`/`Business` legano un assembly `Microsoft.AspNetCore.*`.
+- **`RealtimeEvents` (Business) è l'unico varco** verso il trasporto. Esiste per due motivi: il
+  `catch` che rende la pubblicazione best-effort (§9 — resilienza sì, silenzio no: eccezione
+  loggata **per intero**, `OperationCanceledException` a Debug perché è solo lo shutdown) sta lì
+  **una volta sola** invece che in dodici call site; e i payload si costruiscono dalle entità in
+  un punto solo, così un evento ha una forma sola ovunque venga alzato. Il DI di `Business` lega
+  la port a `NullRealtimePublisher` con `TryAdd` (harness e avvii senza trasporto), `Host` la
+  **sostituisce** con `Replace`.
+- **`FileTracertHub` su `/hubs/events`**, vuoto di proposito: flusso unidirezionale server →
+  client, **broadcast** senza gruppi né subscribe — single-user su loopback, "broadcast" e "mandalo
+  all'unica UI" sono la stessa cosa, e un protocollo di sottoscrizione aggiungerebbe solo stato che
+  può divergere da ciò che il client mostra. `AddJsonProtocol` con `JsonStringEnumConverter`, come
+  la Web API: gli enum viaggiano **come nomi**, che è il contratto su cui 10c scriverà i tipi TS.
+- **Token anche su `/hubs/*`**, header **oppure** `?access_token=…` — l'handshake WebSocket del
+  browser non può mettere header custom. Confronto sempre fixed-time, 401 senza. Il compromesso
+  (una query string finisce nei log) è **scritto accanto al codice** e verificato, non dato per
+  buono: `LogCategoryPolicy` tiene `Microsoft.AspNetCore.Hosting.Diagnostics` sotto Warning a
+  qualunque livello utente, quindi la request line non viene mai scritta — c'è un test che lo dice.
+- **Punti di emissione, uno per evento**: `JobExecutionEngine` (ogni transizione persistita, i
+  terminali, il blocco) e `QueueService` (enqueue/cancel/retry) per `JobStateChanged`;
+  `BlockedJobRevaluator` per il rilascio e per il cambio di motivo; `VolumeSyncService` per
+  `VolumeStatusChanged`; `ScanStatusTracker` per `ScanProgress`; `NotificationService` per
+  `NotificationRaised`. `ProjectionChanged` esce **solo dove l'overlay si è davvero mosso**
+  (terminali, enqueue, retry, rilascio): un `Blocked` **conserva** l'overlay e quindi tace.
+  Scelto `QueueService` invece di `OverlayWriter` perché `OverlayWriter` scrive **dentro** la
+  transazione, e la regola è pubblicare **dopo il commit**.
+- **Throttle**: `JobProgress` sulla cadenza già usata per il salvataggio (`ProgressSaveInterval`,
+  1/s) ma su **un solo orologio per l'intero job** — quello del DB riparte a ogni file, quindi un
+  job da migliaia di file piccoli avrebbe spedito un messaggio per file; più un tick finale forzato,
+  senza il quale una copia che finisce dentro la finestra lascia la barra a un messaggio dal 100%.
+  `ScanProgress` throttlato a 500 ms per volume, ma **inizio, cambi di fase e frame terminale
+  passano subito**: `Complete`/`Fail` ora spediscono un ultimo frame con `Done`/`Failed` prima di
+  togliere la voce, altrimenti il client non distingue «finita» da «connessione caduta».
+- **Verifica**: xUnit **578 verdi** (+20), build backend pulita (warnings-as-errors). RED
+  dimostrato togliendo le chiamate di emissione dal prodotto: **8 su 8** i test degli emettitori
+  falliscono. I test dell'hub usano un client SignalR **vero** (`HubConnectionBuilder`) sul
+  `TestServer` — niente token e token sbagliato → 401, token in query string → connesso, un
+  enqueue via API produce `JobStateChanged`, una notifica produce `NotificationRaised`, e i
+  messaggi sono asseriti **come JSON grezzo** perché è quello che prova il contratto enum-stringa.
+  Un publisher che lancia a ogni invio lascia comunque il job `Completed`.
+La **code review finale** (sulle modifiche di questo giro) ha trovato due cose, entrambe corrette:
+il cancel pubblicava il proprio stato **dopo** `RevaluateAsync`, quindi un client poteva vedere un
+dipendente liberato prima dell'annullamento che l'aveva liberato; e una `OperationCanceledException`
+del trasporto in chiusura veniva loggata come Error. Verificati uno per uno: nessuna pubblicazione
+dentro una transazione (controllati anche i call site di `INotificationPublisher`), nessun evento
+alzato in due posti, e il `ProjectionChanged` di un job cross-volume non nomina alcun volume — due
+sono cambiati, e nominarne uno farebbe aggiornare al client la metà sbagliata.
+**Limiti noti e accettati:**
+- **Harness sul ferro**: 42 scenari, **41 PASS / 1 FAIL**. Il FAIL è `job-dependencies` sulla
+  coppia *cross*, ed è **pre-esistente**: riprodotto identico su `7a87fd5` (HEAD prima di questo
+  task) in un worktree separato. È il limite già documentato allo step 9c — il replay degli
+  snapshot copre solo i move/rename di cartella **intra-volume**, quindi un dipendente che segue un
+  move *cross-volume* resta con il path vecchio; qui però finisce `Failed` invece che `Blocked`
+  con un messaggio. Da chiudere nei work package minori, non in 10b.
+- `ScanStatusTracker` pubblica **fire-and-forget**: è un tracker sincrono in mezzo alla pipeline di
+  scansione e non deve mettere il trasporto sul percorso critico. `RealtimeEvents` non lancia mai,
+  quindi nessun task resta faulted; il prezzo è che due frame possono arrivare fuori ordine — ognuno
+  porta i contatori completi e il frame terminale è quello su cui la UI si regola.
+- Nessuno scenario harness nuovo: l'harness non monta l'hub (lo dice il task). La copertura del
+  trasporto vero è nei test di integrazione sopra.
 
 ### Fatto nello step 10a (2026-08-18, commit `a86783a`…`40c36d4`)
 Il remount di un drive è un **evento**, non più un'attesa fino a 60 s. Il polling resta, come rete.
