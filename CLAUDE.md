@@ -560,10 +560,11 @@ rilievo è stato lasciato consapevolmente).
 Stato: WP3 (perdita dati), WP1 (crash-safe), WP2 (offline gate), **fix UX date/UTC**
 (#12, #11, C31), **step 9a** (merge dello scan + transazioni corte), **step 9b**
 (proiezione: overlay scritto/letto/pulito), **step 9c** (dipendenze tra job + guard
-unificato, WP4 intero) — **fatti**. Lo **step 9 è chiuso**.
+unificato, WP4 intero), **step 10a** (device watcher: il remount è un push, non un poll)
+— **fatti**. Lo **step 9 è chiuso**.
 Prossimo, in ordine:
-1. **Step 10 — Device-watcher + SignalR real-time:** sostituisce il trigger polling
-   del WP2 con push; remount istantaneo; progress/notifiche/coda in tempo reale.
+1. **Step 10b — SignalR hub** (progress/notifiche/coda in tempo reale) e **step 10c —
+   frontend realtime**. Il device-watcher (10a) è già dentro.
 2. **Work package minori rimanenti** (dalla code review): indice/
    ricerca (#6 `UsnFileRef` al move cross-volume, C19 `Extension`/`Category` al
    rename, C16 esclusione ereditata, P2 collation), spazio, resto UX, logging/
@@ -575,6 +576,68 @@ Prossimo, in ordine:
    `IsPresent=false` al primo scan del volume. Non è una regressione (prima veniva
    **cancellato** dal truncate), ma ora è visibile come «assente» invece che sparito.
 3. **Step 12 — Test UI end-to-end (Playwright).**
+
+### Fatto nello step 10a (2026-08-18, commit `a86783a`…`40c36d4`)
+Il remount di un drive è un **evento**, non più un'attesa fino a 60 s. Il polling resta, come rete.
+- **`IDeviceWatcher` in `Contracts/Platform`** — port orientata all'evento (`Changed` +
+  `Start()`, `IDisposable`), **senza identità del dispositivo**: la notifica di sistema porta un
+  *symbolic link name* (`\\?\STORAGE#Volume#…`), non il Volume GUID path che è la nostra chiave
+  (§4), e mapparlo non è né economico né affidabile. L'evento significa «qualcosa è cambiato,
+  ri-sonda»; l'identità la risolve `VolumeSyncService`, che enumera e matcha per GUID come già fa.
+- **`Win32DeviceWatcher` su `CM_Register_Notification`** (cfgmgr32, filtro
+  `GUID_DEVINTERFACE_VOLUME`). Scelto al posto di `RegisterDeviceNotification` perché **non
+  richiede né una finestra né l'handle di `RegisterServiceCtrlHandlerEx`**: il generic host non ha
+  nessuno dei due, e lo stesso codice deve girare in console (dev) e come servizio (prod).
+  Due scelte di implementazione: (1) la callback è un **function pointer**
+  `[UnmanagedCallersOnly]`, non un delegate marshalled tenuto vivo in un campo — così non esiste
+  proprio un oggetto gestito che il GC possa raccogliere sotto cfgmgr32, e l'istanza si raggiunge
+  con una `GCHandle` **forte** passata come contesto (forte per lo stesso motivo per cui il
+  delegate andrebbe rootato: il nativo tiene un puntatore grezzo per tutta la registrazione).
+  `Dispose` **deregistra prima** (il che drena le callback in volo) e libera l'handle dopo.
+  (2) `CM_NOTIFY_FILTER` è dichiarata `LayoutKind.Explicit` con `Size` esplicita che copre l'unione
+  nativa (16 + 400 = 416 byte su x86 e x64), così `cbSize` è giusta senza campi di padding morti.
+- **`VolumeSyncCycle` in `Host/Infrastructure`** — il corpo di `VolumeSyncWorker.SyncOnceAsync`
+  estratto: sync → rivalutazione dei job parcheggiati → segnale alla coda. **Uno solo** per i due
+  trigger (§9). Singleton, perché il `SemaphoreSlim(1,1)` che li serializza dev'essere condiviso.
+  Il secondo chiamante **aspetta**, non viene scartato: un ciclo già in corso può aver enumerato i
+  volumi un istante prima che il drive comparisse, e scartare perderebbe proprio l'arrivo per cui
+  il push esiste. Al massimo se ne accodano due, e un ciclo non scansiona file.
+- **`DeviceWatcherWorker`** — la raffica che Windows spara per un singolo inserimento viene
+  collassata da un canale **capacità 1 `DropWrite`** più una finestra di debounce
+  (`DeviceChangeDebounceMilliseconds`, default 1000): l'handler gira su un thread di sistema e fa
+  solo `TryWrite`, il loop aspetta il primo token, dorme la finestra, **svuota** ciò che è
+  atterrato e fa **un** ciclo. Una notifica arrivata *dopo* lo svuotamento tiene il proprio token e
+  avrà il proprio ciclo — può essere un cambiamento che quello in corso non ha visto.
+- **Fallimento della registrazione = rumoroso, non fatale** (§9): log completo **e** Notification
+  `Warning` che dice all'utente che il rilevamento automatico non è attivo e che i volumi verranno
+  comunque riconosciuti entro l'intervallo di sync; poi il worker esce, così nulla resta in attesa
+  di eventi che non arriveranno. `VolumeSyncWorker` **non cambia comportamento**: resta la rete.
+- **Verifica**: xUnit **558 verdi** (+11), build backend pulita (warnings-as-errors). RED
+  dimostrato rompendo il prodotto apposta: canale unbounded senza svuotamento → la raffica diventa
+  3 cicli; gate rimosso → due cicli dentro la stessa chiamata di piattaforma. Harness sul ferro
+  (`D:\Collaudo\A`, coppia *intra*): **10 scenari applicabili, 10 PASS**; primo scan 1,08 s,
+  re-scan 0,59 s su 2 002 file.
+La **code review finale** non ha trovato rilievi sopra soglia: layout della struct e `cbSize`,
+ordine deregistrazione→`GCHandle.Free`, thread-safety di `Start`/`Dispose`, ogni interleaving del
+debounce (nessuna notifica viene persa: o viene assorbita dal ciclo in corso o resta pendente per
+il successivo), il gate con `WaitAsync` **fuori** dal `try` (nessuna `Release` su un lock mai
+preso) e la prova temporale dell'harness (nel contenitore dell'harness non gira alcun poll: un
+PASS può venire solo dal push) sono stati verificati uno per uno. L'unica osservazione sotto
+soglia — nel ramo «l'handle di contesto non si risolve» non c'era un logger con cui parlare, cioè
+un catch muto sulla carta (§9) — è stata **corretta**: il logger dell'ultima registrazione è
+tenuto in un campo statico e fa da sink a quel ramo.
+**Limiti noti e accettati:**
+- **`offline-unplug` non è stato eseguito in questo giro**: richiede `SemiAutomatic=true`, un drive
+  esterno e un operatore che stacchi e ricolleghi. Il codice dello scenario è aggiornato — la
+  seconda metà non sincronizza più a mano, avvia un `DeviceWatcherWorker` vero e **asserisce** il
+  tempo *ricollegamento → job terminale* contro un budget di 25 s, FAIL con il numero in chiaro —
+  ma il PASS sul ferro va preso al primo collaudo con drive esterno.
+- **Un arrivo fisico non è simulabile** in un test: gli scenari harness non interattivi continuano
+  a sincronizzare a mano (stanno testando il *gate* della coda, non il trigger) e il README lo dice
+  invece di dichiarare un PASS su un push mai avvenuto.
+- La classificazione del dispositivo non entra nell'evento (vedi sopra): il watcher non distingue
+  *quale* volume è arrivato, e ogni evento costa un'enumerazione completa dei volumi. Su una
+  macchina con molti dispositivi USB è il prezzo di non fidarsi del symbolic link name.
 
 ### Fatto nello step 9c (2026-08-16, commit `c9f0b34`…`616c25e`)
 Le **dipendenze tra job** del §5 esistono davvero: `DependsOnJobId` non è più una colonna morta

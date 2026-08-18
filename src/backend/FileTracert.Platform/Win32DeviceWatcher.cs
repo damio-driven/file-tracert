@@ -38,6 +38,13 @@ public sealed unsafe class Win32DeviceWatcher(ILogger<Win32DeviceWatcher> logger
 
     private bool _disposed;
 
+    /// <summary>
+    /// Logger of the last watcher that registered. The static callback's only sink when the
+    /// context handle does not resolve to an instance: without it that branch would be a silent
+    /// catch (§9), and an exception must never escape back into native code.
+    /// </summary>
+    private static ILogger? s_callbackLogger;
+
     public event EventHandler<DeviceChangeEvent>? Changed;
 
     public void Start()
@@ -70,6 +77,7 @@ public sealed unsafe class Win32DeviceWatcher(ILogger<Win32DeviceWatcher> logger
                 if (result == NativeMethods.CrSuccess)
                 {
                     _registration = registration;
+                    s_callbackLogger = _logger;
                     _logger.LogInformation("Device watcher registered on GUID_DEVINTERFACE_VOLUME.");
                     return;
                 }
@@ -145,10 +153,11 @@ public sealed unsafe class Win32DeviceWatcher(ILogger<Win32DeviceWatcher> logger
         }
         catch (Exception ex)
         {
-            // Last resort. Raise() already logs anything a handler throws; reaching here means
-            // the context handle itself did not resolve, in which case there is no instance to
-            // log with — and crashing the service over a device notification would be worse.
-            watcher?._logger.LogError(ex, "Device-notification callback failed (action {Action}).", action);
+            // Last resort. Raise() already logs anything a handler throws; reaching here means the
+            // context handle itself did not resolve, so the sink is the last registered logger —
+            // crashing the service over a device notification would be worse than either.
+            (watcher?._logger ?? s_callbackLogger)?.LogError(
+                ex, "Device-notification callback failed (action {Action}).", action);
         }
 
         // ERROR_SUCCESS: only meaningful for query-remove actions, which this filter never sees.
