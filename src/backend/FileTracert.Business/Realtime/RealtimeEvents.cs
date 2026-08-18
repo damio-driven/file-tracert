@@ -1,4 +1,4 @@
-using FileTracert.Contracts.Realtime;
+﻿using FileTracert.Contracts.Realtime;
 using FileTracert.Contracts.Scanning;
 using FileTracert.Data.Entities;
 using Microsoft.Extensions.Logging;
@@ -91,6 +91,12 @@ public sealed class RealtimeEvents
         try
         {
             await publish();
+        }
+        catch (OperationCanceledException ex)
+        {
+            // The transport was torn down mid-send, in practice at shutdown. Nothing is wrong and
+            // nobody is left waiting for this message, so it is recorded without raising an Error.
+            _logger.LogDebug(ex, "Realtime publish of {Message} was cancelled (transport closing).", message);
         }
         catch (Exception ex)
         {

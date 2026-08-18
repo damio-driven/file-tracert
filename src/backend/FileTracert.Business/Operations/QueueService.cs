@@ -264,14 +264,17 @@ public sealed class QueueService : IQueueService
         // it frees the entity this job was holding and the space it had reserved. Without this
         // the jobs it was blocking wait for a completion that will never come (finding 13).
         // Same entry point as the worker's post-completion pass, not a second path.
+        // Cancelled is terminal and took the overlay with it (§5) — both events, after the commit
+        // and BEFORE the revaluation below, so the cancelled job is announced ahead of the jobs
+        // its cancellation unblocks; a client that sees a dependent released first would show the
+        // consequence before the cause.
+        await _realtime.JobStateChangedAsync(job);
+        await _realtime.ProjectionChangedAsync(job);
+
         await _revaluator.RevaluateAsync(ct);
         _signal.Signal();
 
         _logger.LogInformation("Cancelled job {Id}.", jobId);
-
-        // Cancelled is terminal and took the overlay with it (§5) — both events, after the commit.
-        await _realtime.JobStateChangedAsync(job);
-        await _realtime.ProjectionChangedAsync(job);
     }
 
     public async Task<OperationJobDto> RetryAsync(int jobId, CancellationToken ct)
