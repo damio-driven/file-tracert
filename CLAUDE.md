@@ -571,13 +571,10 @@ Stato: WP3 (perdita dati), WP1 (crash-safe), WP2 (offline gate), **fix UX date/U
 (#12, #11, C31), **step 9a** (merge dello scan + transazioni corte), **step 9b**
 (proiezione: overlay scritto/letto/pulito), **step 9c** (dipendenze tra job + guard
 unificato, WP4 intero), **step 10a** (device watcher: il remount è un push, non un poll),
-**step 10b** (hub SignalR + messaggi tipizzati, lato server) — **fatti**. Lo **step 9 è
-chiuso**.
+**step 10b** (hub SignalR + messaggi tipizzati, lato server), **step 10c** (il frontend
+ascolta invece di pollare) — **fatti**. Gli **step 9 e 10 sono chiusi**.
 Prossimo, in ordine:
-1. **Step 10c — frontend realtime**: consumare l'hub in Angular e spegnere i poll (Coda
-   ogni 2,5 s, `setInterval` delle notifiche, `GET /api/scans/status`). Backend e
-   device-watcher sono già dentro.
-2. **Work package minori rimanenti** (dalla code review): indice/
+1. **Work package minori rimanenti** (dalla code review): indice/
    ricerca (#6 `UsnFileRef` al move cross-volume, C19 `Extension`/`Category` al
    rename, C16 esclusione ereditata, P2 collation), spazio, resto UX, logging/
    shutdown, efficienza, cleanup (incl. eventuale spostamento di `ScanPath` in
@@ -587,7 +584,74 @@ Prossimo, in ordine:
    Da valutare qui anche: un file **fuori** dai watched root attivi viene marcato
    `IsPresent=false` al primo scan del volume. Non è una regressione (prima veniva
    **cancellato** dal truncate), ma ora è visibile come «assente» invece che sparito.
-3. **Step 12 — Test UI end-to-end (Playwright).**
+2. **Step 12 — Test UI end-to-end (Playwright).**
+
+### Fatto nello step 10c (2026-08-18, commit `856af4b`…`9d0d8f4`)
+Il frontend **ascolta**. I tre poll (Coda ogni 2,5 s, campanella ogni 30 s, tracker scansioni a
+cadenza adattiva) sono spariti: restano una lettura ciascuno all'avvio, per lo stato che esisteva
+già quando l'app si è aperta, e una dopo una richiesta di ri-scansione.
+- **`RealtimeService` in `core/realtime/`** — `HubConnectionBuilder` su `/hubs/events`, token in
+  **query string** (`?access_token=`), che è il contratto di 10b: l'handshake WebSocket del
+  browser non può mettere header custom. Senza token si connette lo stesso — il 401 che segue è
+  un segnale più chiaro di un client che non prova. Il servizio non conosce store né schermate:
+  possiede la connessione e la sua **onestà**, cioè il signal `status`
+  (`connecting | connected | reconnecting | offline`) e l'hook `onReconnected`.
+- **Riconnessione a due strati.** La rampa automatica di SignalR arriva a 20 s e poi molla; da lì
+  il retry è nostro, ogni 15 s, così un Host giù per un minuto viene ripreso senza ricaricare la
+  pagina. **Ogni tentativo dopo il primo che riesce vale come recupero**, incluso un primo
+  handshake fallito e ritentato: l'app è stata cieca allo stesso modo. Al recupero il bridge
+  **rilegge**, perché i messaggi emessi mentre il socket era giù non tornano indietro e un client
+  che riprende in silenzio mostra una schermata vecchia come se fosse viva.
+- **`RealtimeBridge` è l'unico punto che conosce entrambi i mondi**: gli eventi patchano gli stessi
+  SignalStore che le schermate già leggono, quindi nessun componente sa che esiste SignalR (§8).
+  L'app initializer risolve il token **e poi** avvia — un initializer solo, non due: initializer
+  separati vengono invocati in ordine ma non *attesi* in ordine, e una connessione aperta prima
+  del token è un 401 garantito.
+- **Patch mirate.** `JobProgress` muove il contatore di **una riga** e non ricarica mai la lista
+  (l'engine lo emette una volta al secondo per job). `JobStateChanged` su un job fuori pagina
+  significa lista vecchia → **una** ricarica, coalescata; un messaggio prima del primo load viene
+  scartato, non c'è nulla da invecchiare. `VolumeStatusChanged` muove `dataIsLive`/`isStale`
+  insieme a `isOnline`, così un dato *last-known* non resta mai vestito da live. `ScanProgress`
+  fa upsert per volume e **droppa il volume sul frame terminale** `Done`/`Failed`, che è ciò che
+  distingue «finita» da «connessione caduta». `NotificationRaised` incrementa il badge in locale e
+  rilegge la riga **solo a pannello aperto** (il payload è snello per contratto).
+  `ProjectionChanged` invalida Catalogo e Ricerca; le raffiche (un enqueue di 50 file = 50 job =
+  50 eventi) sono **coalescate a 300 ms**, e una raffica che nomina due volumi diversi si allarga
+  a «tutto ciò che è a schermo» invece di sceglierne uno.
+- **Riconnessione = rilettura di ciò che è visibile, e solo quello**: dashboard, scansioni e
+  campanella sempre; coda, volumi, catalogo e ricerca solo se l'utente c'è davvero stato.
+- **Indicatore in shell (skill `impeccable`)** — **muto quando funziona**: la titlebar ha già un
+  tray permanente «servizio attivo», e un secondo badge sempre acceso per il caso sano sarebbe
+  cromatura che non significa mai niente; anche il primo tentativo tace, perché un avviso a ogni
+  avvio a freddo insegna a ignorarlo. Compare quando le schermate hanno smesso di ricevere: ambra
+  in riconnessione, rosso quando SignalR ha mollato, con l'etichetta a portare lo stato (mai solo
+  colore). Da offline dice che quello a schermo è l'ultimo dato ricevuto e offre **«Riconnetti»**
+  invece di far aspettare il timer. Stesso vocabolario del flag di scansione, alternativa
+  `prefers-reduced-motion`, e il lato destro della titlebar diventa **un cluster flex con un gap
+  solo**, così un elemento che va e viene non deve più sapere chi ha accanto.
+- **Verifica**: Vitest **207 verdi** (+41), `ng build` ok (restano i 4 warning di budget SCSS,
+  pre-esistenti), xUnit **578 verdi** (backend intatto: non è stato toccato un file). RED
+  dimostrato rompendo il prodotto apposta — poll rimessi, routing del bridge tolto, token fuori
+  dall'url, indicatore sempre visibile, patch della coda sostituita da una ricarica, frame
+  terminale della scansione ignorato: **14 test rossi su 7 file**, poi tutti verdi al ripristino.
+La **code review finale** (sulle modifiche di questo giro) ha trovato due cose, entrambe corrette
+nel commit `9d0d8f4`: le raffiche di `ProjectionChanged` ricaricavano Catalogo e Ricerca una volta
+per job (50 file accodati = 100 richieste per un solo gesto dell'utente); e `RealtimeService.stop()`
+non aveva né chiamante né test, quindi è stato tolto insieme al flag `stopped` che serviva solo a
+proteggerlo — ogni ramo rimasto nella macchina a stati è un ramo che un test percorre.
+**Limiti noti e accettati:**
+- **Lo split dei commit devia dal task**: i timer non se ne vanno in un commit proprio, viaggiano
+  con gli store. Lo store che smette di pollare e la shell che smette di chiederglielo sono la
+  **stessa compilazione**; separarli avrebbe lasciato un commit che non compila.
+- **`RealtimeBridge` sta in `core/` e importa gli store delle feature.** È il punto di
+  composizione e la dipendenza va in un verso solo (nessuno store importa il bridge), ma il
+  prezzo è che gli store — non i componenti — finiscono nel bundle iniziale.
+- **La Dashboard non reagisce ai `JobStateChanged`**: i contatori job delle card si aggiornano al
+  caricamento della schermata e alla riconnessione, non a ogni transizione. Sarebbe una richiesta
+  per transizione; da valutare nei WP minori se dà fastidio all'uso.
+- **Nessuna prova su ferro del push**: l'hub non è montato nell'harness (lo diceva già 10b) e i
+  test E2E sono lo **step 12**. Qui la copertura è Vitest con una `HubConnection` finta; la prova
+  end-to-end vera arriva con Playwright.
 
 ### Fatto nello step 10b (2026-08-18, commit `6d41a46`…`f816ce2`)
 Il §7 esiste davvero lato server: l'hub, i sei messaggi, l'autenticazione e i punti di emissione.
