@@ -53,6 +53,7 @@ builder.Services.AddBusinessServices();
 builder.Services.AddSingleton<IApiTokenAccessor, ApiTokenAccessor>();
 builder.Services.AddSingleton<DatabaseInitializer>();
 builder.Services.AddSingleton<IScanScheduler, ScanScheduler>();
+builder.Services.AddSingleton<VolumeSyncCycle>();
 builder.Services.AddHostedService<VolumeSyncWorker>();
 builder.Services.AddHostedService<ScanWorker>();
 builder.Services.AddHostedService<QueueProcessorWorker>();
