@@ -1,12 +1,14 @@
-using FileTracert.Business;
+﻿using FileTracert.Business;
 using FileTracert.Contracts.Logging;
 using FileTracert.Data;
 using FileTracert.Data.Logging;
 using FileTracert.Host.Configuration;
 using FileTracert.Host.Infrastructure;
 using FileTracert.Host.Logging;
+using FileTracert.Host.Realtime;
 using FileTracert.Host.Workers;
 using FileTracert.Platform;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 
 // Required for the SQLite native provider used by EF Core and BulkExtensions.
@@ -61,6 +63,15 @@ builder.Services.AddHostedService<QueueProcessorWorker>();
 builder.Services.AddHostedService<LogRetentionWorker>();
 builder.Services.AddHostedService<WalCheckpointWorker>();
 
+// Real-time push (§7). The hub is server → client only; the payload records live in Contracts
+// and Business publishes through the port, never through IHubContext (§3). Enums travel as names,
+// exactly like the Web API above, so the TypeScript client sees one spelling for both.
+builder.Services.AddSignalR().AddJsonProtocol(o =>
+    o.PayloadSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter()));
+// Replace, not Add: AddBusinessServices bound the no-op port for compositions with no transport.
+builder.Services.Replace(
+    ServiceDescriptor.Singleton<FileTracert.Contracts.Realtime.IRealtimePublisher, SignalRRealtimePublisher>());
+
 builder.Services
     .AddControllers()
     .AddJsonOptions(o =>
@@ -88,6 +99,7 @@ app.UseMiddleware<TokenAuthMiddleware>();
 app.UseStaticFiles();
 
 app.MapControllers();
+app.MapHub<FileTracertHub>("/hubs/events");
 app.MapDevTokenEndpoint();
 app.MapSpaFallback();
 
