@@ -82,7 +82,7 @@ public sealed class ProjectionOverlayTests : IDisposable
             TestProjection.Overlay(db, new FileSearchIndex(db)),
             TestProjection.Unblocker(db, new FileSearchIndex(db)),
             TestProjection.Revaluator(db, _ledger),
-            NullLogger<QueueService>.Instance);
+            TestProjection.Realtime(), NullLogger<QueueService>.Instance);
     }
 
     /// <summary>
@@ -96,7 +96,7 @@ public sealed class ProjectionOverlayTests : IDisposable
             TestProjection.Index(db, new FileSearchIndex(db)),
             TestProjection.Overlay(db, new FileSearchIndex(db)),
             new FakeNotificationPublisher(),
-            TimeProvider.System, NullLogger<JobExecutionEngine>.Instance);
+            TimeProvider.System, TestProjection.Realtime(), NullLogger<JobExecutionEngine>.Instance);
     }
 
     private static IFileMover SucceedingMover() => NSubstitute.Substitute.For<IFileMover>();

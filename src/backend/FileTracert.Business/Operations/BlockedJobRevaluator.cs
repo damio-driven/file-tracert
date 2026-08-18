@@ -1,4 +1,5 @@
-﻿using FileTracert.Contracts.Enums;
+﻿using FileTracert.Business.Realtime;
+using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Operations;
 using FileTracert.Data;
 using FileTracert.Data.Entities;
@@ -44,17 +45,20 @@ public sealed class BlockedJobRevaluator
     private readonly FileTracertDbContext _db;
     private readonly ISpaceLedger _ledger;
     private readonly JobUnblocker _unblocker;
+    private readonly RealtimeEvents _realtime;
     private readonly ILogger<BlockedJobRevaluator> _logger;
 
     public BlockedJobRevaluator(
         FileTracertDbContext db,
         ISpaceLedger ledger,
         JobUnblocker unblocker,
+        RealtimeEvents realtime,
         ILogger<BlockedJobRevaluator> logger)
     {
         _db = db;
         _ledger = ledger;
         _unblocker = unblocker;
+        _realtime = realtime;
         _logger = logger;
     }
 
@@ -223,6 +227,11 @@ public sealed class BlockedJobRevaluator
 
         _logger.LogInformation(
             "Job {Id} unblocked: the obstacle is gone (was {Reason}).", job.Id, previousReason);
+
+        // After the commit. The release also TOOK the overlay (TakeOverlayAsync above), so the
+        // projection changed too — a dependent that owned nothing while parked owns it now.
+        await _realtime.JobStateChangedAsync(job);
+        await _realtime.ProjectionChangedAsync(job);
         return true;
     }
 
@@ -258,7 +267,12 @@ public sealed class BlockedJobRevaluator
         job.BlockReason = reason;
         job.ErrorMessage = message;
         job.DependsOnJobId = dependsOnJobId;
-        await SaveOrFollowConcurrentStateAsync(job, ct);
+        if (await SaveOrFollowConcurrentStateAsync(job, ct))
+        {
+            // Still Blocked, but for a different reason — the Coda shows the reason, so this is a
+            // visible change. No ProjectionChanged: a Blocked job keeps its overlay (§5).
+            await _realtime.JobStateChangedAsync(job);
+        }
     }
 
     /// <summary>

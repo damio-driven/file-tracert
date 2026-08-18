@@ -1,4 +1,5 @@
 ﻿using FileTracert.Business.Projection;
+using FileTracert.Business.Realtime;
 using FileTracert.Business.Scanning;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Operations;
@@ -28,6 +29,7 @@ public sealed class QueueService : IQueueService
     private readonly OverlayWriter _overlay;
     private readonly JobUnblocker _unblocker;
     private readonly BlockedJobRevaluator _revaluator;
+    private readonly RealtimeEvents _realtime;
     private readonly ILogger<QueueService> _logger;
 
     public QueueService(
@@ -40,6 +42,7 @@ public sealed class QueueService : IQueueService
         OverlayWriter overlay,
         JobUnblocker unblocker,
         BlockedJobRevaluator revaluator,
+        RealtimeEvents realtime,
         ILogger<QueueService> logger)
     {
         _db = db;
@@ -51,6 +54,7 @@ public sealed class QueueService : IQueueService
         _overlay = overlay;
         _unblocker = unblocker;
         _revaluator = revaluator;
+        _realtime = realtime;
         _logger = logger;
     }
 
@@ -114,6 +118,12 @@ public sealed class QueueService : IQueueService
         _signal.Signal();
 
         _logger.LogInformation("Enqueued job {Id} type={Type} state={State}.", job.Id, job.Type, job.State);
+
+        // Published after the commit (never inside the transaction): the queue row and the overlay
+        // both exist by now, so a client that reacts by re-reading sees what the push announced.
+        await _realtime.JobStateChangedAsync(job);
+        await _realtime.ProjectionChangedAsync(job);
+
         return MapToDto(job, items, null);
     }
 
@@ -258,6 +268,10 @@ public sealed class QueueService : IQueueService
         _signal.Signal();
 
         _logger.LogInformation("Cancelled job {Id}.", jobId);
+
+        // Cancelled is terminal and took the overlay with it (§5) — both events, after the commit.
+        await _realtime.JobStateChangedAsync(job);
+        await _realtime.ProjectionChangedAsync(job);
     }
 
     public async Task<OperationJobDto> RetryAsync(int jobId, CancellationToken ct)
@@ -370,6 +384,11 @@ public sealed class QueueService : IQueueService
         _signal.Signal();
 
         _logger.LogInformation("Job {Id} manually retried (attempt {N}).", job.Id, job.RetryCount);
+
+        // A retry rewrote the overlay (or left the job parked on a fresh obstacle): announce both.
+        await _realtime.JobStateChangedAsync(job);
+        await _realtime.ProjectionChangedAsync(job);
+
         return MapToDto(job, [.. job.Items], null);
     }
 

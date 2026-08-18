@@ -132,7 +132,7 @@ public sealed class JobExecutionEngineTests : IDisposable
 
         return new JobExecutionEngine(
             db, mover, _ledger, indexUpdater, TestProjection.Overlay(db), notifications,
-            timeProvider ?? TimeProvider.System, NullLogger<JobExecutionEngine>.Instance);
+            timeProvider ?? TimeProvider.System, TestProjection.Realtime(), NullLogger<JobExecutionEngine>.Instance);
     }
 
     private void SetVolumeFreeBytes(int volumeId, long freeBytes)

@@ -63,7 +63,7 @@ public sealed class QueueServiceTests : IDisposable
             TestProjection.Index(db), TestProjection.Overlay(db),
             TestProjection.Unblocker(db),
             TestProjection.Revaluator(db, _ledger),
-            NullLogger<QueueService>.Instance);
+            TestProjection.Realtime(), NullLogger<QueueService>.Instance);
     }
 
     private void Seed()

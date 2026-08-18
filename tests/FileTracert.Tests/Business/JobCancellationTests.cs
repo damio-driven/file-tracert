@@ -78,7 +78,7 @@ public sealed class JobCancellationTests : IDisposable
         var indexUpdater = TestProjection.Index(db);
         var notifications = new FileTracert.Business.Notifications.NotificationService(db);
         return new JobExecutionEngine(db, mover, NoopLedger(), indexUpdater, TestProjection.Overlay(db), notifications,
-            TimeProvider.System, NullLogger<JobExecutionEngine>.Instance);
+            TimeProvider.System, TestProjection.Realtime(), NullLogger<JobExecutionEngine>.Instance);
     }
 
     private QueueService MakeQueue()
@@ -90,7 +90,7 @@ public sealed class JobCancellationTests : IDisposable
             TestProjection.Index(db), TestProjection.Overlay(db),
             TestProjection.Unblocker(db),
             TestProjection.Revaluator(db, ledger),
-            NullLogger<QueueService>.Instance);
+            TestProjection.Realtime(), NullLogger<QueueService>.Instance);
     }
 
     [Fact]

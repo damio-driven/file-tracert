@@ -78,7 +78,7 @@ public sealed class LedgerTerminalReleaseTests : IDisposable
         var indexUpdater = TestProjection.Index(db);
         var notifications = new FileTracert.Business.Notifications.NotificationService(db);
         return new JobExecutionEngine(db, _mover, NoopLedger(), indexUpdater, TestProjection.Overlay(db), notifications,
-            TimeProvider.System, NullLogger<JobExecutionEngine>.Instance);
+            TimeProvider.System, TestProjection.Realtime(), NullLogger<JobExecutionEngine>.Instance);
     }
 
     private int SeedCrossVolumeJob(JobState state, JobItemState itemState,
@@ -179,7 +179,7 @@ public sealed class LedgerTerminalReleaseTests : IDisposable
             TestProjection.Index(db), TestProjection.Overlay(db),
             TestProjection.Unblocker(db),
             TestProjection.Revaluator(db, ledger),
-            NullLogger<QueueService>.Instance);
+            TestProjection.Realtime(), NullLogger<QueueService>.Instance);
 
         await queue.CancelAsync(jobId, CancellationToken.None);
 

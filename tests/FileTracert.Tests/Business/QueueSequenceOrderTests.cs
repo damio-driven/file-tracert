@@ -59,7 +59,7 @@ public sealed class QueueSequenceOrderTests : IDisposable
             NSubstitute.Substitute.For<IFileMover>(), new QueueSignal(),
             TestProjection.Index(db), TestProjection.Overlay(db), TestProjection.Unblocker(db),
             TestProjection.Revaluator(db, _ledger),
-            NullLogger<QueueService>.Instance);
+            TestProjection.Realtime(), NullLogger<QueueService>.Instance);
     }
 
     private void Seed()

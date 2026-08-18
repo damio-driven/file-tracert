@@ -126,7 +126,7 @@ public sealed class JobOfflineGateTests : IDisposable
             db, mover, _ledger,
             TestProjection.Index(db), TestProjection.Overlay(db),
             new FileTracert.Business.Notifications.NotificationService(db),
-            TimeProvider.System, NullLogger<JobExecutionEngine>.Instance);
+            TimeProvider.System, TestProjection.Realtime(), NullLogger<JobExecutionEngine>.Instance);
     }
 
     private QueueService MakeQueue(IFileMover mover)
@@ -137,14 +137,14 @@ public sealed class JobOfflineGateTests : IDisposable
             TestProjection.Index(db), TestProjection.Overlay(db),
             TestProjection.Unblocker(db),
             TestProjection.Revaluator(db, _ledger),
-            NullLogger<QueueService>.Instance);
+            TestProjection.Realtime(), NullLogger<QueueService>.Instance);
     }
 
     private BlockedJobRevaluator MakeRevaluator() =>
         MakeRevaluator(_harness.CreateContext());
 
     private BlockedJobRevaluator MakeRevaluator(FileTracertDbContext db) =>
-        new(db, _ledger, TestProjection.Unblocker(db), NullLogger<BlockedJobRevaluator>.Instance);
+        new(db, _ledger, TestProjection.Unblocker(db), TestProjection.Realtime(), NullLogger<BlockedJobRevaluator>.Instance);
 
     /// <summary>Cross-volume MoveFile job, one item, sized <see cref="FileSize"/>.</summary>
     private int SeedCrossVolumeJob(

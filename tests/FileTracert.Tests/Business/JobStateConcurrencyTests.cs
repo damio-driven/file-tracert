@@ -74,7 +74,7 @@ public sealed class JobStateConcurrencyTests : IDisposable
         var indexUpdater = TestProjection.Index(db);
         var notifications = new FileTracert.Business.Notifications.NotificationService(db);
         return new JobExecutionEngine(db, _mover, ledger, indexUpdater, TestProjection.Overlay(db), notifications,
-            TimeProvider.System, NullLogger<JobExecutionEngine>.Instance);
+            TimeProvider.System, TestProjection.Realtime(), NullLogger<JobExecutionEngine>.Instance);
     }
 
     [Fact]

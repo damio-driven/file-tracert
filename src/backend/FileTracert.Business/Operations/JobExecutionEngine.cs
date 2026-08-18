@@ -1,4 +1,5 @@
-using FileTracert.Business.Projection;
+﻿using FileTracert.Business.Projection;
+using FileTracert.Business.Realtime;
 using FileTracert.Business.Scanning;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Notifications;
@@ -36,6 +37,7 @@ public sealed class JobExecutionEngine
     private readonly OverlayWriter _overlay;
     private readonly INotificationPublisher _notifications;
     private readonly TimeProvider _timeProvider;
+    private readonly RealtimeEvents _realtime;
     private readonly ILogger<JobExecutionEngine> _logger;
 
     public JobExecutionEngine(
@@ -46,6 +48,7 @@ public sealed class JobExecutionEngine
         OverlayWriter overlay,
         INotificationPublisher notifications,
         TimeProvider timeProvider,
+        RealtimeEvents realtime,
         ILogger<JobExecutionEngine> logger)
     {
         _db = db;
@@ -55,6 +58,7 @@ public sealed class JobExecutionEngine
         _overlay = overlay;
         _notifications = notifications;
         _timeProvider = timeProvider;
+        _realtime = realtime;
         _logger = logger;
     }
 
@@ -317,6 +321,19 @@ public sealed class JobExecutionEngine
             await _db.SaveChangesAsync(ct);
         }
 
+        // One realtime throttle for the WHOLE copy, not one per item: the DB throttle restarts
+        // with every file, so a job made of thousands of small files would push a message per
+        // file. Same interval as the persist (ProgressSaveInterval), one shared clock.
+        var lastProgressPublishTimestamp = _timeProvider.GetTimestamp();
+
+        async Task PublishProgressAsync(bool force)
+        {
+            if (!force && _timeProvider.GetElapsedTime(lastProgressPublishTimestamp) < ProgressSaveInterval)
+                return;
+            lastProgressPublishTimestamp = _timeProvider.GetTimestamp();
+            await _realtime.JobProgressAsync(job);
+        }
+
         foreach (var item in job.Items.Where(i => i.State == JobItemState.Pending))
         {
             ct.ThrowIfCancellationRequested();
@@ -345,6 +362,7 @@ public sealed class JobExecutionEngine
                 lastSaveTimestamp = _timeProvider.GetTimestamp();
                 job.BytesProcessed = bytesProcessedBeforeThisItem + bytesCopied;
                 await _db.SaveChangesAsync(tickCt);
+                await PublishProgressAsync(force: false);
             }
 
             await _mover.CopyFileAsync(srcGuid, item.SourceRelativePath, tgtGuid, partialRel, PersistProgressAsync, ct);
@@ -353,9 +371,14 @@ public sealed class JobExecutionEngine
             item.State = JobItemState.Copied;
             job.BytesProcessed = CompletedItemBytes(job);
             await _db.SaveChangesAsync(ct);
+            await PublishProgressAsync(force: false);
 
             _logger.LogDebug("Job {Id}: copied '{Src}'.", job.Id, item.SourceRelativePath);
         }
+
+        // The last tick is unconditional: without it a copy that finishes inside the throttle
+        // window leaves the UI stuck one message short of 100%.
+        await PublishProgressAsync(force: true);
     }
 
     /// <summary>
@@ -655,6 +678,9 @@ public sealed class JobExecutionEngine
         job.State = newState;
         await _db.SaveChangesAsync(ct);
         _logger.LogDebug("Job {Id}: → {State}.", job.Id, newState);
+        // Published AFTER the write, never before: announcing a state that then rolls back is
+        // worse than announcing it late.
+        await _realtime.JobStateChangedAsync(job);
     }
 
     /// <summary>
@@ -746,6 +772,10 @@ public sealed class JobExecutionEngine
         }
         await _ledger.ReleaseInMemoryAsync(job.Id, CancellationToken.None);
         _logger.LogInformation("Job {Id} completed.", job.Id);
+        // After the commit, so the push describes a fact the database already holds. The overlay
+        // was cleared inside that same transaction (§5) — hence the projection event too.
+        await _realtime.JobStateChangedAsync(job);
+        await _realtime.ProjectionChangedAsync(job);
     }
 
     /// <summary>
@@ -816,6 +846,9 @@ public sealed class JobExecutionEngine
             return;
         }
         // Ledger reservation kept — the job may still execute once the blocker resolves.
+        // No ProjectionChanged: a Blocked job KEEPS its overlay (§5), so the projection is
+        // exactly what it was a moment ago.
+        await _realtime.JobStateChangedAsync(job);
 
         // The engine runs in a BackgroundService: no API response can carry this to the
         // user, so a block on a user-queued operation must land in Notifications (§9).
@@ -855,6 +888,9 @@ public sealed class JobExecutionEngine
             return;
         }
         await _ledger.ReleaseInMemoryAsync(job.Id, CancellationToken.None);
+        // Failed is terminal and dropped the overlay inside the transaction above (§5).
+        await _realtime.JobStateChangedAsync(job);
+        await _realtime.ProjectionChangedAsync(job);
 
         // FIX #10-partial: a Failed job's .fadit-partial files are discardable garbage
         // (a retry re-copies from scratch) — never leave them on the target.

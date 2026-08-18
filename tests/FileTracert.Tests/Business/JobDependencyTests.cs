@@ -65,14 +65,14 @@ public sealed class JobDependencyTests : IDisposable
         var db = _harness.CreateContext();
         return new JobExecutionEngine(db, mover, _ledger,
             TestProjection.Index(db), TestProjection.Overlay(db), new FakeNotificationPublisher(),
-            TimeProvider.System, NullLogger<JobExecutionEngine>.Instance);
+            TimeProvider.System, TestProjection.Realtime(), NullLogger<JobExecutionEngine>.Instance);
     }
 
     private BlockedJobRevaluator Revaluator()
     {
         var db = _harness.CreateContext();
         return new BlockedJobRevaluator(db, _ledger, TestProjection.Unblocker(db),
-            NullLogger<BlockedJobRevaluator>.Instance);
+            TestProjection.Realtime(), NullLogger<BlockedJobRevaluator>.Instance);
     }
 
     private QueueService Svc(params IInterceptor[] interceptors)
@@ -82,7 +82,7 @@ public sealed class JobDependencyTests : IDisposable
             NSubstitute.Substitute.For<IFileMover>(), new QueueSignal(),
             TestProjection.Index(db), TestProjection.Overlay(db), TestProjection.Unblocker(db),
             TestProjection.Revaluator(db, _ledger),
-            NullLogger<QueueService>.Instance);
+            TestProjection.Realtime(), NullLogger<QueueService>.Instance);
     }
 
     private void Seed()

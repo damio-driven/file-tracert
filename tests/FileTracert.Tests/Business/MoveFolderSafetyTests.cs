@@ -164,7 +164,7 @@ public sealed class MoveFolderSafetyTests : IDisposable
             TestProjection.Index(db), TestProjection.Overlay(db),
             TestProjection.Unblocker(db),
             TestProjection.Revaluator(db, _ledger),
-            NullLogger<QueueService>.Instance);
+            TestProjection.Realtime(), NullLogger<QueueService>.Instance);
     }
 
     private JobExecutionEngine Engine()
@@ -174,7 +174,7 @@ public sealed class MoveFolderSafetyTests : IDisposable
             db, _mover, _ledger,
             TestProjection.Index(db), TestProjection.Overlay(db),
             new NotificationService(db),
-            TimeProvider.System, NullLogger<JobExecutionEngine>.Instance);
+            TimeProvider.System, TestProjection.Realtime(), NullLogger<JobExecutionEngine>.Instance);
     }
 
     private async Task<JobState> ReadState(int jobId)
