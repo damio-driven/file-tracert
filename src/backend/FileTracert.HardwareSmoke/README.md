@@ -157,7 +157,7 @@ di ogni assert fallito (con i path concreti) e dalle note del run.
 | `offline-simulated` | cross | Volume di destinazione marcato offline nel catalogo: il job **attende** (mai `Failed`) e parte da solo quando torna online. |
 | `offline-enqueue-blocked` | cross | Enqueue con la destinazione offline: job **nato** `Blocked(TargetVolumeOffline)`, stima non live, **riserva mantenuta**, worker che lo ignora, niente sul target. |
 | `offline-remount-space-recheck` | cross | Il volume torna più pieno della stima: il ricontrollo **hard** lo tiene `Blocked(InsufficientSpace)` invece di copiare; quando lo spazio c'è davvero completa da solo. |
-| `offline-unplug` | cross, `SemiAutomatic` | L'operatore stacca fisicamente il drive esterno: il job sopravvive e completa al ricollegamento, anche con lettera diversa (la coda segue il Volume GUID). |
+| `offline-unplug` | cross, `SemiAutomatic` | L'operatore stacca fisicamente il drive esterno: il job sopravvive e completa al ricollegamento, anche con lettera diversa (la coda segue il Volume GUID). Dallo step 10a il ricollegamento è **rilevato dal device watcher reale** (nessuna sincronizzazione manuale nella seconda metà) e il tempo *ricollegamento → job terminale* è **asserito**: oltre 25 s è FAIL con il numero in chiaro. |
 
 ### Scenari attesi RED
 
@@ -202,3 +202,11 @@ interromperlo: lo scenario riporta **SKIP** con la spiegazione e il rimedio (alz
 - Lo scenario `offline-simulated` marca il volume offline **nel catalogo** mentre resta
   fisicamente montato: verifica il *gate logico* della coda. Il comportamento hardware vero
   è coperto da `offline-unplug`.
+- **Il device watcher (step 10a) è verificabile solo da `offline-unplug`.** Un arrivo vero non
+  è simulabile: la notifica la emette Windows quando un dispositivo compare davvero, e nessuno
+  scenario non interattivo può provocarla. Gli scenari `offline-*` non interattivi continuano a
+  sincronizzare a mano (è il *gate* della coda che stanno testando, non il trigger): non
+  dichiarano PASS su un push che non è mai avvenuto. Il resto della catena — raffica
+  deduplicata, un solo ciclo di sync, nessuna sovrapposizione con il poll, fallback rumoroso se
+  la registrazione nativa fallisce — è coperto da xUnit (`Host/DeviceWatcherWorkerTests`,
+  `Platform/Win32DeviceWatcherTests`).

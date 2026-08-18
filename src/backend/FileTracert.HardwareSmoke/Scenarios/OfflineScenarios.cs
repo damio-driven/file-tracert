@@ -1,8 +1,13 @@
+using System.Diagnostics;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Operations;
 using FileTracert.Contracts.Platform;
+using FileTracert.Host.Configuration;
+using FileTracert.Host.Infrastructure;
+using FileTracert.Host.Workers;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace FileTracert.HardwareSmoke.Scenarios;
 
@@ -309,23 +314,65 @@ public sealed class OfflineUnplugScenario : Scenario
         ctx.Log($"while unplugged: {Harness.QueueDriver.Describe(whileUnplugged)}");
 
         // ── act: plug it back in ──────────────────────────────────────────────
-        ctx.Console.WaitForOperator($"Ricollega il volume '{ctx.Pair.Target.Name}'.");
-
-        var remounted = await WaitForMountAsync(probe, guid, TimeSpan.FromSeconds(60), ctx.Ct)
-            ?? throw new ScenarioSkippedException(
-                $"volume '{ctx.Pair.Target.Name}' did not come back within 60s — cannot finish the scenario.");
-
-        await SyncOnlineStateFromProbeAsync(ctx, probe, guid);
-
         if (Harness.QueueDriver.IsTerminal(whileUnplugged.State))
         {
             ctx.Log("job was already terminal while unplugged — the remount half cannot run.");
             return;
         }
 
-        await OfflineSimulatedScenario.RevaluateAndSignalAsync(ctx);
-        var finished = await ctx.Queue.WaitForTerminalAsync(job.Id, ctx.Timeout, ctx.Ct);
+        // Step 10a: from here on NOTHING in the harness touches the catalog or the queue. The real
+        // device watcher and the real volume-sync cycle have to notice the arrival on their own —
+        // that is what is under test, and it is the only part of the push no unit test can reach.
+        // VolumeSyncCycle is registered by the Host's Program, not by the harness' own container,
+        // so it is built here explicitly — it is the product's type either way.
+        var deviceWorker = ActivatorUtilities.CreateInstance<DeviceWatcherWorker>(
+            ctx.Env.Services,
+            ActivatorUtilities.CreateInstance<VolumeSyncCycle>(ctx.Env.Services),
+            Options.Create(new FileTracertOptions()));
+        await deviceWorker.StartAsync(ctx.Ct);
 
+        try
+        {
+            ctx.Console.WaitForOperator($"Ricollega il volume '{ctx.Pair.Target.Name}'.");
+            var sinceReplug = Stopwatch.StartNew();
+
+            var remounted = await WaitForMountAsync(probe, guid, TimeSpan.FromSeconds(60), ctx.Ct)
+                ?? throw new ScenarioSkippedException(
+                    $"volume '{ctx.Pair.Target.Name}' did not come back within 60s — cannot finish the scenario.");
+
+            var finished = await ctx.Queue.WaitForTerminalAsync(job.Id, ctx.Timeout, ctx.Ct);
+            sinceReplug.Stop();
+
+            // The whole point of the step: seconds, not "at the next poll" (60 s by default). The
+            // number is printed either way so a regression is a figure, not a feeling.
+            ctx.Log($"remount → job terminal in {sinceReplug.Elapsed.TotalSeconds:F1}s (budget {RemountBudget.TotalSeconds:F0}s).");
+            ctx.Assert.True(
+                sinceReplug.Elapsed <= RemountBudget,
+                $"the device push must restart the job within {RemountBudget.TotalSeconds:F0}s of the remount, " +
+                $"took {sinceReplug.Elapsed.TotalSeconds:F1}s — the periodic sync, not the event, is doing the work");
+
+            AssertRemountOutcome(ctx, finished, remounted, sourceAbsolute, expectedHash);
+        }
+        finally
+        {
+            await deviceWorker.StopAsync(CancellationToken.None);
+            deviceWorker.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// How long the drive may take to go from "plugged in" to "the job is done". Generous next to
+    /// the 60 s volume-sync interval it replaces, tight enough that falling back to polling fails.
+    /// </summary>
+    private static readonly TimeSpan RemountBudget = TimeSpan.FromSeconds(25);
+
+    private static void AssertRemountOutcome(
+        ScenarioContext ctx,
+        Data.Entities.OperationJob finished,
+        ProbedVolume remounted,
+        string sourceAbsolute,
+        string expectedHash)
+    {
         // ── assert: it ran after the remount, at whatever mount point ─────────
         ctx.Assert.Equal(JobState.Completed, finished.State,
             $"job state after the remount ({Harness.QueueDriver.Describe(finished)})");
