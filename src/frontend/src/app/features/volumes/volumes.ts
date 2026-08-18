@@ -93,7 +93,9 @@ export class Volumes implements OnInit {
 
   protected rescan(id: number): void {
     void this.store.rescan(id);
-    this.scans.start();
+    // The tracker pushes a frame as soon as the scan registers; this one read only covers
+    // the case where the hub is down, so the spinner still appears on a degraded connection.
+    void this.scans.refresh();
   }
 
   protected reenable(id: number): void {

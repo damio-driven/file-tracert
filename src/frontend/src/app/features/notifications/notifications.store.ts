@@ -22,9 +22,9 @@ const initial: NotificationsState = {
 };
 
 /**
- * Notifications for the title-bar bell. The badge count and the panel list are
- * fetched on demand and after each mutation. At step 10 the SignalR client will
- * push into this same store and the bell reacts unchanged.
+ * Notifications for the title-bar bell. The badge count and the panel list are fetched on
+ * demand, after each mutation, and on the hub's `NotificationRaised` (step 10c) — the bell
+ * no longer polls.
  */
 export const NotificationsStore = signalStore(
   { providedIn: 'root' },
@@ -58,6 +58,19 @@ export const NotificationsStore = signalStore(
     return {
       refreshCount,
       loadList,
+
+      /**
+       * `NotificationRaised` push. The payload is thin by design (§7) and carries none of
+       * the fields the panel renders, so the badge is bumped locally and the full row is
+       * fetched only when the panel is actually open — a background error nobody is looking
+       * at costs one integer, not a request.
+       */
+      applyRaised(): void {
+        patchState(store, { unread: store.unread() + 1 });
+        if (store.open()) {
+          void loadList();
+        }
+      },
 
       async toggle(): Promise<void> {
         const open = !store.open();

@@ -4,6 +4,7 @@ import { firstValueFrom } from 'rxjs';
 
 import { VolumesApi } from '../../core/api/volumes-api.service';
 import { VolumeDetailDto, VolumeDto } from '../../core/models/catalog.models';
+import { VolumeStatusChanged } from '../../core/realtime/realtime.models';
 
 interface VolumesState {
   volumes: VolumeDto[];
@@ -29,7 +30,8 @@ const initial: VolumesState = {
  * Volumes list + selected detail. The list is split into catalogable volumes (the
  * main view) and excluded ones (cloud/system, behind a "show all" toggle); the user
  * can re-enable a false positive. `rescan` triggers a server-side scan then refreshes
- * the list so counts/checkpoints catch up. No real-time yet (step 10).
+ * the list so counts/checkpoints catch up. `VolumeStatusChanged` pushes keep the online
+ * flag and the free-space figure current without a reload (step 10c).
  */
 export const VolumesStore = signalStore(
   { providedIn: 'root' },
@@ -59,6 +61,33 @@ export const VolumesStore = signalStore(
           patchState(store, { selected, detailLoading: false });
         } catch (e) {
           patchState(store, { error: (e as Error).message, detailLoading: false });
+        }
+      },
+
+      /**
+       * `VolumeStatusChanged` push: a volume was mounted or unplugged. `dataIsLive` /
+       * `isStale` are the server's derived flags, so they move with `isOnline` here too —
+       * leaving them behind would show a last-known figure as if it were live (§ honesty).
+       */
+      applyVolumeStatus(message: VolumeStatusChanged): void {
+        const apply = <T extends { id: number; isOnline: boolean; freeBytes: number;
+          lastSeenUtc: string; dataIsLive: boolean; isStale: boolean }>(v: T): T =>
+          v.id === message.volumeId
+            ? {
+                ...v,
+                isOnline: message.isOnline,
+                freeBytes: message.freeBytesLastKnown,
+                lastSeenUtc: message.lastSeenUtc,
+                dataIsLive: message.isOnline,
+                isStale: !message.isOnline,
+              }
+            : v;
+
+        patchState(store, { volumes: store.volumes().map(apply) });
+
+        const selected = store.selected();
+        if (selected && selected.id === message.volumeId) {
+          patchState(store, { selected: apply(selected) });
         }
       },
 

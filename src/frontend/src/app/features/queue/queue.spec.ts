@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { QueueApi } from '../../core/api/queue-api.service';
 import { JobBlockReason, OperationJobDto, PagedResult } from '../../core/models/catalog.models';
 import { Queue } from './queue';
+import { QueueStore } from './queue.store';
 
 const blockedOn = (reason: JobBlockReason, dependsOnJobId: number | null): OperationJobDto => ({
   id: 7,
@@ -70,5 +71,45 @@ describe('Queue — blocked on another job', () => {
 
     expect(cmp.dependencyLead('DependencyPending')).toBe("In attesa dell'operazione");
     expect(cmp.dependencyLead('DependencyCancelled')).toBe('Dipendenza interrotta:');
+  });
+});
+
+describe('Queue — no polling', () => {
+  it('starts no timer of its own: the hub pushes the rows that change', () => {
+    const interval = vi.spyOn(globalThis, 'setInterval');
+    try {
+      setup();
+      // jsdom drives requestAnimationFrame off a ~16ms interval of its own, so the check is
+      // "no polling cadence", not "no timer in the process".
+      const polls = interval.mock.calls.filter(([, ms]) => Number(ms) >= 1_000);
+      expect(polls).toEqual([]);
+    } finally {
+      interval.mockRestore();
+    }
+  });
+
+  it('renders a row the store gained after init, with no reload of its own', async () => {
+    const empty: PagedResult<OperationJobDto> = { items: [], totalCount: 0, skip: 0, take: 50 };
+    const list = vi.fn(() => of(empty));
+    TestBed.configureTestingModule({
+      providers: [
+        provideZonelessChangeDetection(),
+        { provide: QueueApi, useValue: { list } },
+        { provide: ActivatedRoute, useValue: { queryParamMap: of(new Map()) } },
+      ],
+    });
+    const fixture = TestBed.createComponent(Queue);
+    await fixture.whenStable();
+
+    const store = TestBed.inject(QueueStore);
+    await store.load();
+    list.mockClear();
+
+    store.applyStateChanged({
+      jobId: 7, state: 'Completed', blockReason: 'None', errorMessage: null,
+    });
+    await fixture.whenStable();
+
+    expect(list).not.toHaveBeenCalled();
   });
 });

@@ -147,6 +147,16 @@ export const SearchStore = signalStore(
       async loadPage(skip: number): Promise<void> {
         await doSearch(skip);
       },
+      /**
+       * `ProjectionChanged` push (§5). Re-runs the current page of the current query so the
+       * projected name/path and the badge follow the queue. Volume is not filtered on here:
+       * a search spans every volume, so any overlay change can touch the visible rows.
+       */
+      invalidate(): void {
+        if (store.results() === null) return;
+        void doSearch(store.currentSkip());
+      },
+
       clear(): void {
         patchState(store, { text: '', results: null, error: null, currentSkip: 0, selectedItems: [] });
       },

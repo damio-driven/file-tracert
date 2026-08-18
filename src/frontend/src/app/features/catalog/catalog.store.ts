@@ -131,6 +131,19 @@ export const CatalogStore = signalStore(
         await loadChildren(store.currentDirId(), skip);
       },
 
+      /**
+       * `ProjectionChanged` push (§5): the `Pending*` overlay moved, so the badges and the
+       * projected names/positions on screen are stale. A null `volumeId` means the change
+       * spanned more than one volume, so it always applies. Nothing is reloaded when the
+       * screen has no folder open — there is no view to invalidate.
+       */
+      invalidate(volumeId: number | null): void {
+        const vol = store.selectedVolume();
+        if (!vol || store.children() === null) return;
+        if (volumeId !== null && volumeId !== vol.id) return;
+        void loadChildren(store.currentDirId(), store.fileSkip());
+      },
+
       clear(): void {
         patchState(store, { ...initial });
       },

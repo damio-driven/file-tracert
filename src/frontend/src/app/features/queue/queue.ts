@@ -1,5 +1,5 @@
 import {
-  ChangeDetectionStrategy, Component, OnDestroy, OnInit, computed, effect, inject,
+  ChangeDetectionStrategy, Component, OnInit, computed, effect, inject,
 } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, RouterLink } from '@angular/router';
@@ -23,10 +23,9 @@ const TERMINAL_STATES = new Set<JobState>(['Completed', 'Failed', 'Cancelled']);
   templateUrl: './queue.html',
   styleUrl: './queue.scss',
 })
-export class Queue implements OnInit, OnDestroy {
+export class Queue implements OnInit {
   protected readonly store = inject(QueueStore);
   private readonly route = inject(ActivatedRoute);
-  private pollTimer: ReturnType<typeof setInterval> | null = null;
 
   private readonly queryParams = toSignal(this.route.queryParamMap);
 
@@ -54,19 +53,9 @@ export class Queue implements OnInit, OnDestroy {
   }
 
   ngOnInit(): void {
+    // One load. From here the hub patches the rows it changes (step 10c): no timer, so a
+    // queue left open overnight costs nothing and a byte counter still moves once a second.
     this.store.load();
-    this.pollTimer = setInterval(() => {
-      if (this.store.hasActiveJobs()) {
-        this.store.refresh();
-      }
-    }, 2500);
-  }
-
-  ngOnDestroy(): void {
-    if (this.pollTimer !== null) {
-      clearInterval(this.pollTimer);
-      this.pollTimer = null;
-    }
   }
 
   protected stateVariant(state: JobState): PillVariant {

@@ -2,6 +2,7 @@ import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { of } from 'rxjs';
+import { vi } from 'vitest';
 
 import { App } from './app';
 import { DashboardApi } from './core/api/dashboard-api.service';
@@ -56,6 +57,20 @@ describe('App shell', () => {
 
     expect(el.querySelector('.navfoot')?.textContent).toContain('servizio attivo');
     expect(el.querySelector('.navfoot')?.textContent).toContain('file');
+  });
+
+  it('starts no polling timer: the bell and the scan flag ride the hub', async () => {
+    const interval = vi.spyOn(globalThis, 'setInterval');
+    try {
+      const fixture = TestBed.createComponent(App);
+      await fixture.whenStable();
+      // jsdom drives requestAnimationFrame off a ~16ms interval of its own, so the check is
+      // "no polling cadence", not "no timer in the process".
+      const polls = interval.mock.calls.filter(([, ms]) => Number(ms) >= 1_000);
+      expect(polls).toEqual([]);
+    } finally {
+      interval.mockRestore();
+    }
   });
 
   it('hides the scan flag when nothing is scanning', async () => {

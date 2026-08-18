@@ -39,10 +39,9 @@ describe('ScanStatusStore', () => {
     expect(store.isScanning()).toBe(true);
     expect(store.activeCount()).toBe(1);
     expect(store.byVolume().get(7)?.phase).toBe('Writing');
-    store.stop();
   });
 
-  it('swallows a failed poll without throwing', async () => {
+  it('swallows a failed read without throwing', async () => {
     const store = configure(() => {
       throw new Error('network down');
     });
@@ -51,15 +50,46 @@ describe('ScanStatusStore', () => {
     expect(store.isScanning()).toBe(false);
   });
 
-  it('start is idempotent and polls at least once', async () => {
+  it('reads the tracker once on demand, never on a timer', async () => {
     const status = vi.fn(() => of([scan]));
     const store = configure(status);
 
-    store.start();
-    store.start();
-    await Promise.resolve();
+    await store.refresh();
 
-    expect(status).toHaveBeenCalled();
-    store.stop();
+    expect(status).toHaveBeenCalledTimes(1);
   });
+
+  it('a ScanProgress push adds the volume and then updates it in place', () => {
+    const store = configure(() => of([]));
+
+    store.applyScanProgress(scan);
+    store.applyScanProgress({ ...scan, itemsWritten: 90_000, phase: 'ReadingMetadata' });
+
+    expect(store.activeCount()).toBe(1);
+    expect(store.byVolume().get(7)?.itemsWritten).toBe(90_000);
+    expect(store.byVolume().get(7)?.phase).toBe('ReadingMetadata');
+  });
+
+  it('keeps other volumes untouched', () => {
+    const store = configure(() => of([]));
+
+    store.applyScanProgress(scan);
+    store.applyScanProgress({ ...scan, volumeId: 9, label: 'Backup' });
+    store.applyScanProgress({ ...scan, itemsSeen: 1 });
+
+    expect(store.activeCount()).toBe(2);
+    expect(store.byVolume().get(9)?.label).toBe('Backup');
+  });
+
+  it.each(['Done', 'Failed'] as const)(
+    'drops the volume on the terminal %s frame — that frame is how "finished" reads apart from "the connection died"',
+    (phase) => {
+      const store = configure(() => of([]));
+      store.applyScanProgress(scan);
+
+      store.applyScanProgress({ ...scan, phase });
+
+      expect(store.isScanning()).toBe(false);
+    },
+  );
 });
