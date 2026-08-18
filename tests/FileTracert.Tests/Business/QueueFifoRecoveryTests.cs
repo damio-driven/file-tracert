@@ -97,7 +97,7 @@ public sealed class QueueFifoRecoveryTests : IDisposable
     private JobExecutionEngine MakeEngine(IFileMover mover, FileTracertDbContext db)
     {
         var indexUpdater = TestProjection.Index(db);
-        var notifications = new FileTracert.Business.Notifications.NotificationService(db);
+        var notifications = new FileTracert.Business.Notifications.NotificationService(db, TestProjection.Realtime());
         return new JobExecutionEngine(db, mover, _ledger, indexUpdater, TestProjection.Overlay(db), notifications,
             TimeProvider.System, TestProjection.Realtime(), NullLogger<JobExecutionEngine>.Instance);
     }

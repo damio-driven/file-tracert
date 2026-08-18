@@ -58,7 +58,7 @@ public sealed class ScanServiceTests
             new DirectoryMerger(ctx, new BulkIndexWriter(ctx), NullLogger<DirectoryMerger>.Instance),
             fts ?? new FakeFileSearchIndex(),
             notifications ?? new FakeNotificationPublisher(),
-            tracker ?? new ScanStatusTracker(), NullLogger<ScanService>.Instance)
+            tracker ?? new ScanStatusTracker(TestProjection.Realtime(), TimeProvider.System), NullLogger<ScanService>.Instance)
         {
             FileBatchSize = batchSize,
         };
@@ -344,7 +344,7 @@ public sealed class ScanServiceTests
             new DirectoryMerger(ctx, new BulkIndexWriter(ctx), NullLogger<DirectoryMerger>.Instance),
             new FakeFileSearchIndex(),
             new FakeNotificationPublisher(),
-            new ScanStatusTracker(),
+            new ScanStatusTracker(TestProjection.Realtime(), TimeProvider.System),
             NullLogger<ScanService>.Instance)
         {
             FileBatchSize = batchSize,

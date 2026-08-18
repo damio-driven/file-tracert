@@ -63,7 +63,7 @@ public sealed class ScanLockContentionTests
                 new DirectoryMerger(ctx, new BulkIndexWriter(ctx), NullLogger<DirectoryMerger>.Instance),
                 new FakeFileSearchIndex(),
                 new FakeNotificationPublisher(),
-                new ScanStatusTracker(),
+                new ScanStatusTracker(TestProjection.Realtime(), TimeProvider.System),
                 NullLogger<ScanService>.Instance)
             {
                 FileBatchSize = 1,

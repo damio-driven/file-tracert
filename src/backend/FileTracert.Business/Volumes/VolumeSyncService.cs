@@ -1,3 +1,4 @@
+﻿using FileTracert.Business.Realtime;
 using FileTracert.Contracts.Platform;
 using FileTracert.Data;
 using FileTracert.Data.Entities;
@@ -15,12 +16,18 @@ public sealed class VolumeSyncService
 {
     private readonly IVolumeProbe _probe;
     private readonly FileTracertDbContext _db;
+    private readonly RealtimeEvents _realtime;
     private readonly ILogger<VolumeSyncService> _logger;
 
-    public VolumeSyncService(IVolumeProbe probe, FileTracertDbContext db, ILogger<VolumeSyncService> logger)
+    public VolumeSyncService(
+        IVolumeProbe probe,
+        FileTracertDbContext db,
+        RealtimeEvents realtime,
+        ILogger<VolumeSyncService> logger)
     {
         _probe = probe;
         _db = db;
+        _realtime = realtime;
         _logger = logger;
     }
 
@@ -39,6 +46,11 @@ public sealed class VolumeSyncService
         var now = DateTime.UtcNow;
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var cameOnline = new List<Volume>();
+        // Volumes whose pushed state actually moved. A quiet cycle — the common case, every few
+        // seconds — must publish nothing at all, or the client would repaint the dashboard on a
+        // timer for no reason.
+        var changed = new List<Volume>();
+        var newlyDiscovered = new List<Volume>();
 
         foreach (var p in probed)
         {
@@ -61,11 +73,22 @@ public sealed class VolumeSyncService
                     cameOnline.Add(volume);
                 }
 
+                var wasOnline = volume.IsOnline;
+                var previousFreeBytes = volume.FreeBytesLastKnown;
+
                 VolumeMapper.ApplyLiveState(volume, p, now);
+
+                if (wasOnline != volume.IsOnline || previousFreeBytes != volume.FreeBytesLastKnown)
+                {
+                    changed.Add(volume);
+                }
             }
             else
             {
-                _db.Volumes.Add(VolumeMapper.MapNew(p, now));
+                var added = VolumeMapper.MapNew(p, now);
+                _db.Volumes.Add(added);
+                // Id is assigned by the save below; announce it only after it exists.
+                newlyDiscovered.Add(added);
             }
         }
 
@@ -76,6 +99,11 @@ public sealed class VolumeSyncService
         {
             if (!seen.Contains(volume.VolumeGuid))
             {
+                if (volume.IsOnline)
+                {
+                    changed.Add(volume);
+                }
+
                 volume.IsOnline = false;
                 VolumeMapper.ApplyOfflineReclassification(volume);
             }
@@ -88,6 +116,13 @@ public sealed class VolumeSyncService
             _logger.LogInformation(
                 "Volume sync: {Count} volume(s) came back online ({Guids}).",
                 cameOnline.Count, string.Join(", ", cameOnline.Select(v => v.VolumeGuid)));
+        }
+
+        // Published after the save, so every id exists and every value is the committed one.
+        foreach (var volume in changed.Concat(newlyDiscovered))
+        {
+            await _realtime.VolumeStatusChangedAsync(
+                volume.Id, volume.IsOnline, volume.FreeBytesLastKnown, volume.LastSeenUtc);
         }
 
         return [.. cameOnline.Select(v => v.Id)];

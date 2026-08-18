@@ -1,3 +1,4 @@
+﻿using FileTracert.Business.Realtime;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Notifications;
 using FileTracert.Data;
@@ -13,8 +14,13 @@ namespace FileTracert.Business.Notifications;
 public sealed class NotificationService : INotificationPublisher
 {
     private readonly FileTracertDbContext _db;
+    private readonly RealtimeEvents _realtime;
 
-    public NotificationService(FileTracertDbContext db) => _db = db;
+    public NotificationService(FileTracertDbContext db, RealtimeEvents realtime)
+    {
+        _db = db;
+        _realtime = realtime;
+    }
 
     public async Task PublishAsync(
         NotificationSeverity severity,
@@ -24,7 +30,7 @@ public sealed class NotificationService : INotificationPublisher
         int? volumeId,
         CancellationToken ct)
     {
-        _db.Notifications.Add(new Notification
+        var notification = new Notification
         {
             TimestampUtc = DateTime.UtcNow,
             Severity = severity,
@@ -34,8 +40,13 @@ public sealed class NotificationService : INotificationPublisher
             VolumeId = volumeId,
             IsRead = false,
             IsDismissed = false,
-        });
+        };
+        _db.Notifications.Add(notification);
 
         await _db.SaveChangesAsync(ct);
+
+        // After the save: the row (and its Id) exists, so a client that reacts by fetching the
+        // bell finds exactly what the push announced.
+        await _realtime.NotificationRaisedAsync(notification);
     }
 }

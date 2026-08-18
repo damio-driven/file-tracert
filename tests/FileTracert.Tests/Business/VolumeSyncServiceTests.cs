@@ -39,7 +39,7 @@ public sealed class VolumeSyncServiceTests
         await using (var ctx = harness.CreateContext())
         {
             var probe = new FakeVolumesProbe([Probed("A", free: 777), Probed("B", fs: "exFAT")]);
-            await new VolumeSyncService(probe, ctx, NullLogger<VolumeSyncService>.Instance).SyncAsync(CancellationToken.None);
+            await new VolumeSyncService(probe, ctx, TestProjection.Realtime(), NullLogger<VolumeSyncService>.Instance).SyncAsync(CancellationToken.None);
         }
 
         await using var read = harness.CreateContext();
@@ -79,7 +79,7 @@ public sealed class VolumeSyncServiceTests
         await using (var ctx = harness.CreateContext())
         {
             var probe = new FakeVolumesProbe([Probed("Back"), Probed("Steady"), Probed("BrandNew")]);
-            cameOnline = await new VolumeSyncService(probe, ctx, NullLogger<VolumeSyncService>.Instance)
+            cameOnline = await new VolumeSyncService(probe, ctx, TestProjection.Realtime(), NullLogger<VolumeSyncService>.Instance)
                 .SyncAsync(CancellationToken.None);
         }
 
@@ -111,7 +111,7 @@ public sealed class VolumeSyncServiceTests
         // Probe returns nothing — the cloud drive stays offline.
         await using (var ctx = harness.CreateContext())
         {
-            await new VolumeSyncService(new FakeVolumesProbe([]), ctx, NullLogger<VolumeSyncService>.Instance)
+            await new VolumeSyncService(new FakeVolumesProbe([]), ctx, TestProjection.Realtime(), NullLogger<VolumeSyncService>.Instance)
                 .SyncAsync(CancellationToken.None);
         }
 
@@ -141,7 +141,7 @@ public sealed class VolumeSyncServiceTests
 
         await using (var ctx = harness.CreateContext())
         {
-            await new VolumeSyncService(new FakeVolumesProbe([]), ctx, NullLogger<VolumeSyncService>.Instance)
+            await new VolumeSyncService(new FakeVolumesProbe([]), ctx, TestProjection.Realtime(), NullLogger<VolumeSyncService>.Instance)
                 .SyncAsync(CancellationToken.None);
         }
 

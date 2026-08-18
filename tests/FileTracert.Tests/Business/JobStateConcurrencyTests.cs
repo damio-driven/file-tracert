@@ -72,7 +72,7 @@ public sealed class JobStateConcurrencyTests : IDisposable
         var ledger = Substitute.For<ISpaceLedger>();
         ledger.ReleaseAsync(default, default).ReturnsForAnyArgs(Task.CompletedTask);
         var indexUpdater = TestProjection.Index(db);
-        var notifications = new FileTracert.Business.Notifications.NotificationService(db);
+        var notifications = new FileTracert.Business.Notifications.NotificationService(db, TestProjection.Realtime());
         return new JobExecutionEngine(db, _mover, ledger, indexUpdater, TestProjection.Overlay(db), notifications,
             TimeProvider.System, TestProjection.Realtime(), NullLogger<JobExecutionEngine>.Instance);
     }

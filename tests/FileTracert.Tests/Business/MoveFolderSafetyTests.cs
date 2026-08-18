@@ -173,7 +173,7 @@ public sealed class MoveFolderSafetyTests : IDisposable
         return new JobExecutionEngine(
             db, _mover, _ledger,
             TestProjection.Index(db), TestProjection.Overlay(db),
-            new NotificationService(db),
+            new NotificationService(db, TestProjection.Realtime()),
             TimeProvider.System, TestProjection.Realtime(), NullLogger<JobExecutionEngine>.Instance);
     }
 

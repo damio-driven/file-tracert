@@ -136,7 +136,7 @@ public sealed class ScanFtsSyncTests
             new DirectoryMerger(ctx, new BulkIndexWriter(ctx), NullLogger<DirectoryMerger>.Instance),
             new FileSearchIndex(ctx),
             new FakeNotificationPublisher(),
-            new ScanStatusTracker(),
+            new ScanStatusTracker(TestProjection.Realtime(), TimeProvider.System),
             NullLogger<ScanService>.Instance)
         {
             FileBatchSize = batchSize,

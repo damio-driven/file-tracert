@@ -75,7 +75,7 @@ public sealed class ScanShutdownTests
                 new DirectoryMerger(ctx, new BulkIndexWriter(ctx), NullLogger<DirectoryMerger>.Instance),
                 new FakeFileSearchIndex(),
                 new FakeNotificationPublisher(),
-                new ScanStatusTracker(),
+                new ScanStatusTracker(TestProjection.Realtime(), TimeProvider.System),
                 NullLogger<ScanService>.Instance);
 
             var act = async () => await sut.ScanVolumeAsync(volumeId, cts.Token);

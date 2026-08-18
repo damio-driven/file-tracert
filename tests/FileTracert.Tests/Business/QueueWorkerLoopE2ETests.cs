@@ -112,7 +112,7 @@ public sealed class QueueWorkerLoopE2ETests : IDisposable
     private JobExecutionEngine MakeEngine(FileTracertDbContext db)
     {
         var indexUpdater = TestProjection.Index(db);
-        var notifications = new FileTracert.Business.Notifications.NotificationService(db);
+        var notifications = new FileTracert.Business.Notifications.NotificationService(db, TestProjection.Realtime());
         return new JobExecutionEngine(db, _mover, _ledger, indexUpdater, TestProjection.Overlay(db), notifications,
             TimeProvider.System, TestProjection.Realtime(), NullLogger<JobExecutionEngine>.Instance);
     }

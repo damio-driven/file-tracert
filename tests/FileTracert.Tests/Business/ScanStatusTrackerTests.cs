@@ -9,13 +9,13 @@ public sealed class ScanStatusTrackerTests
     [Fact]
     public void Snapshot_is_empty_when_no_scan_is_active()
     {
-        new ScanStatusTracker().Snapshot().Should().BeEmpty();
+        new ScanStatusTracker(TestProjection.Realtime(), TimeProvider.System).Snapshot().Should().BeEmpty();
     }
 
     [Fact]
     public void Begin_then_report_tracks_phase_and_counts()
     {
-        var tracker = new ScanStatusTracker();
+        var tracker = new ScanStatusTracker(TestProjection.Realtime(), TimeProvider.System);
 
         tracker.Begin(7, "Data");
         tracker.ReportSeen(7, 142_000, currentRoot: "Photos");
@@ -35,7 +35,7 @@ public sealed class ScanStatusTrackerTests
     [Fact]
     public void Begin_starts_in_enumerating_phase()
     {
-        var tracker = new ScanStatusTracker();
+        var tracker = new ScanStatusTracker(TestProjection.Realtime(), TimeProvider.System);
         tracker.Begin(1, null);
 
         tracker.Snapshot().Single().Phase.Should().Be(ScanPhase.Enumerating);
@@ -44,7 +44,7 @@ public sealed class ScanStatusTrackerTests
     [Fact]
     public void Complete_removes_the_entry()
     {
-        var tracker = new ScanStatusTracker();
+        var tracker = new ScanStatusTracker(TestProjection.Realtime(), TimeProvider.System);
         tracker.Begin(1, "A");
         tracker.Complete(1);
 
@@ -54,7 +54,7 @@ public sealed class ScanStatusTrackerTests
     [Fact]
     public void Fail_removes_the_entry()
     {
-        var tracker = new ScanStatusTracker();
+        var tracker = new ScanStatusTracker(TestProjection.Realtime(), TimeProvider.System);
         tracker.Begin(1, "A");
         tracker.Fail(1);
 
@@ -64,7 +64,7 @@ public sealed class ScanStatusTrackerTests
     [Fact]
     public void Tracks_multiple_volumes_independently()
     {
-        var tracker = new ScanStatusTracker();
+        var tracker = new ScanStatusTracker(TestProjection.Realtime(), TimeProvider.System);
         tracker.Begin(1, "A");
         tracker.Begin(2, "B");
         tracker.ReportSeen(2, 50);
@@ -77,7 +77,7 @@ public sealed class ScanStatusTrackerTests
     [Fact]
     public void Updates_to_an_untracked_volume_are_ignored()
     {
-        var tracker = new ScanStatusTracker();
+        var tracker = new ScanStatusTracker(TestProjection.Realtime(), TimeProvider.System);
 
         // No Begin → these must be no-ops, not exceptions, and must not create an entry.
         tracker.ReportSeen(99, 10);

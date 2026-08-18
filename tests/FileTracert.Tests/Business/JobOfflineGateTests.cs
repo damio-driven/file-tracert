@@ -125,7 +125,7 @@ public sealed class JobOfflineGateTests : IDisposable
         return new JobExecutionEngine(
             db, mover, _ledger,
             TestProjection.Index(db), TestProjection.Overlay(db),
-            new FileTracert.Business.Notifications.NotificationService(db),
+            new FileTracert.Business.Notifications.NotificationService(db, TestProjection.Realtime()),
             TimeProvider.System, TestProjection.Realtime(), NullLogger<JobExecutionEngine>.Instance);
     }
 

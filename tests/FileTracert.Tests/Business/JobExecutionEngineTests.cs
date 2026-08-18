@@ -128,7 +128,7 @@ public sealed class JobExecutionEngineTests : IDisposable
         var db = _harness.CreateContext();
         var fts = new FakeFileSearchIndex();
         var indexUpdater = TestProjection.Index(db, fts);
-        var notifications = new FileTracert.Business.Notifications.NotificationService(db);
+        var notifications = new FileTracert.Business.Notifications.NotificationService(db, TestProjection.Realtime());
 
         return new JobExecutionEngine(
             db, mover, _ledger, indexUpdater, TestProjection.Overlay(db), notifications,
