@@ -26,10 +26,14 @@ public sealed class FileTracertAppFactory : WebApplicationFactory<global::Progra
     public IFileMetadataReader MetadataReader { get; set; } = new FakeFileMetadataReader(new Dictionary<string, FileMetadata>());
     public IFileSystemBrowser FileSystemBrowser { get; set; } =
         new FakeFileSystemBrowser(new Dictionary<string, IReadOnlyList<FolderNode>>());
+    public IDeviceWatcher DeviceWatcher { get; set; } = new FakeDeviceWatcher();
     public Func<FileTracertDbContext, CancellationToken, Task>? Seed { get; set; }
 
     public int VolumeSyncIntervalSeconds { get; set; } = 1;
     public int ScanPollIntervalSeconds { get; set; } = 1;
+
+    /// <summary>Short by default: tests raise their whole burst in a tight loop.</summary>
+    public int DeviceChangeDebounceMilliseconds { get; set; } = 200;
 
     /// <summary>Hosting environment; flip to "Production" to assert dev-only wiring is absent.</summary>
     public string EnvironmentName { get; set; } = "Development";
@@ -38,6 +42,7 @@ public sealed class FileTracertAppFactory : WebApplicationFactory<global::Progra
     public bool DisableVolumeSync { get; set; }
     public bool DisableScan { get; set; }
     public bool DisableQueue { get; set; }
+    public bool DisableDeviceWatcher { get; set; }
 
     public string Token => Services.GetRequiredService<IApiTokenAccessor>().Token!;
 
@@ -47,6 +52,9 @@ public sealed class FileTracertAppFactory : WebApplicationFactory<global::Progra
         builder.UseSetting("FileTracert:DatabasePath", _dbPath);
         builder.UseSetting("FileTracert:VolumeSyncIntervalSeconds", VolumeSyncIntervalSeconds.ToString());
         builder.UseSetting("FileTracert:ScanPollIntervalSeconds", ScanPollIntervalSeconds.ToString());
+        builder.UseSetting(
+            "FileTracert:DeviceChangeDebounceMilliseconds",
+            DeviceChangeDebounceMilliseconds.ToString());
 
         builder.ConfigureTestServices(services =>
         {
@@ -55,6 +63,7 @@ public sealed class FileTracertAppFactory : WebApplicationFactory<global::Progra
             Replace<IDirectoryEnumerator>(services, DirectoryEnumerator);
             Replace<IFileMetadataReader>(services, MetadataReader);
             Replace<IFileSystemBrowser>(services, FileSystemBrowser);
+            Replace<IDeviceWatcher>(services, DeviceWatcher);
 
             if (Seed is not null)
             {
@@ -74,6 +83,11 @@ public sealed class FileTracertAppFactory : WebApplicationFactory<global::Progra
             if (DisableQueue)
             {
                 RemoveHostedService<QueueProcessorWorker>(services);
+            }
+
+            if (DisableDeviceWatcher)
+            {
+                RemoveHostedService<DeviceWatcherWorker>(services);
             }
         });
     }

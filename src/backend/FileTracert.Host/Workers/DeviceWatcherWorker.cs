@@ -24,6 +24,7 @@ public sealed class DeviceWatcherWorker : BackgroundService
     private readonly VolumeSyncCycle _cycle;
     private readonly IServiceProvider _services;
     private readonly TimeSpan _debounce;
+    private readonly int _syncIntervalSeconds;
     private readonly ILogger<DeviceWatcherWorker> _logger;
 
     /// <summary>
@@ -49,6 +50,7 @@ public sealed class DeviceWatcherWorker : BackgroundService
         _cycle = cycle;
         _services = services;
         _debounce = TimeSpan.FromMilliseconds(Math.Max(0, options.Value.DeviceChangeDebounceMilliseconds));
+        _syncIntervalSeconds = options.Value.VolumeSyncIntervalSeconds;
         _logger = logger;
     }
 
@@ -144,16 +146,13 @@ public sealed class DeviceWatcherWorker : BackgroundService
     {
         try
         {
-            var interval = _services.GetRequiredService<IOptions<FileTracertOptions>>()
-                .Value.VolumeSyncIntervalSeconds;
-
             using var scope = _services.CreateScope();
             await scope.ServiceProvider.GetRequiredService<INotificationPublisher>().PublishAsync(
                 NotificationSeverity.Warning,
                 "DeviceWatcher",
                 "Rilevamento automatico dei drive non attivo",
                 $"Impossibile registrarsi alle notifiche di sistema: i volumi collegati o scollegati " +
-                $"vengono comunque riconosciuti entro {interval} secondi.\n\n{ex}",
+                $"vengono comunque riconosciuti entro {_syncIntervalSeconds} secondi.\n\n{ex}",
                 null,
                 ct);
         }
