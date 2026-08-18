@@ -1,13 +1,16 @@
 ﻿using FileTracert.Business.Notifications;
 using FileTracert.Business.Operations;
 using FileTracert.Business.Projection;
+using FileTracert.Business.Realtime;
 using FileTracert.Business.Scanning;
 using FileTracert.Business.Setup;
 using FileTracert.Business.Volumes;
 using FileTracert.Contracts.Notifications;
 using FileTracert.Contracts.Operations;
+using FileTracert.Contracts.Realtime;
 using FileTracert.Contracts.Scanning;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace FileTracert.Business;
 
@@ -62,6 +65,13 @@ public static class BusinessServiceCollectionExtensions
 
         // Revaluator runs after every completed job to wake Blocked(InsufficientSpace) jobs.
         services.AddScoped<BlockedJobRevaluator>();
+
+        // Real-time (§7). The transport is a Host concern, so Business binds the no-op port by
+        // default — the harness and migration-only startups have no client to talk to — and Host
+        // REPLACES it with the SignalR-backed one. TryAdd, so an implementation registered before
+        // this call is left alone. RealtimeEvents is the single guarded gateway (§9).
+        services.TryAddSingleton<IRealtimePublisher, NullRealtimePublisher>();
+        services.AddSingleton<RealtimeEvents>();
 
         // Real wall clock for the engine's copy-progress throttle; tests substitute a fake.
         services.AddSingleton(TimeProvider.System);
