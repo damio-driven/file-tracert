@@ -1,0 +1,92 @@
+// Titlebar exception flag. Same vocabulary as .scan-flag (pill radius, dot + label, tinted
+// state background) so the bar reads as one row of instruments rather than a pile of
+// widgets. Amber while it is still trying, red once it has given up — the two are different
+// news, and the label says which without relying on the colour.
+:host {
+  display: contents;
+}
+
+.conn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 4px 11px;
+  border-radius: var(--r-pill);
+  background: var(--wait-bg);
+  color: var(--amber);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  white-space: nowrap;
+
+  &.conn--offline {
+    background: var(--block-bg);
+    color: var(--red);
+  }
+}
+
+// Padding collapses when there is no button to make room for.
+.conn:not(.conn--offline) {
+  padding-right: 11px;
+}
+
+.conn__dot {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, currentColor 32%, transparent);
+  border-top-color: currentColor;
+  animation: ft-conn-spin 0.9s linear infinite;
+
+  .conn--offline & {
+    border: 0;
+    background: currentColor;
+    animation: none;
+  }
+}
+
+.conn__action {
+  padding: 2px 9px;
+  border: 1px solid color-mix(in srgb, currentColor 40%, transparent);
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition:
+    background var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out);
+
+  &:hover {
+    background: color-mix(in srgb, currentColor 18%, transparent);
+    border-color: currentColor;
+  }
+
+  &:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: 2px;
+  }
+
+  &:active {
+    background: color-mix(in srgb, currentColor 26%, transparent);
+  }
+}
+
+@keyframes ft-conn-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .conn__dot {
+    animation: none;
+    border-top-color: color-mix(in srgb, currentColor 32%, transparent);
+    background: currentColor;
+  }
+
+  .conn__action {
+    transition: none;
+  }
+}
