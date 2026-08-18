@@ -24,6 +24,14 @@ public sealed class FileTracertOptions
     /// <summary>How often <see cref="Workers.VolumeSyncWorker"/> reconciles volumes.</summary>
     public int VolumeSyncIntervalSeconds { get; set; } = 60;
 
+    /// <summary>
+    /// How long <see cref="Workers.DeviceWatcherWorker"/> waits after the first notification of a
+    /// burst before syncing. Windows fires several notifications for a single insertion; this
+    /// window collapses them into one cycle. Long enough to catch the burst, short enough that the
+    /// remount still feels instant.
+    /// </summary>
+    public int DeviceChangeDebounceMilliseconds { get; set; } = 1000;
+
     /// <summary>How often <see cref="Workers.ScanWorker"/> looks for volumes still needing a full scan.</summary>
     public int ScanPollIntervalSeconds { get; set; } = 30;
 
