@@ -18,6 +18,7 @@ public static class PlatformServiceCollectionExtensions
         services.AddSingleton<IFileMetadataReader, ManagedFileMetadataReader>();
         services.AddSingleton<IFileSystemBrowser, ManagedFileSystemBrowser>();
         services.AddSingleton<IFileMover, Win32FileMover>();
+        services.AddSingleton<IDeviceWatcher, Win32DeviceWatcher>();
         return services;
     }
 }
