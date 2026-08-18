@@ -10,6 +10,13 @@ import { VolumesStore } from '../../features/volumes/volumes.store';
 import { RealtimeService } from './realtime.service';
 
 /**
+ * Enqueuing a selection of files raises one ProjectionChanged per job. Reloading the open
+ * folder and the search page fifty times in a row would be fifty requests for one user
+ * action, so the burst is collected and applied once.
+ */
+const PROJECTION_COALESCE_MS = 300;
+
+/**
  * The one place that knows both SignalR and the stores. Components never see either: the
  * hub patches the same SignalStores the screens already read, so a screen written before
  * step 10c reacts to a push without a line of change (§8).
@@ -29,6 +36,8 @@ export class RealtimeBridge {
   private readonly dashboard = inject(DashboardStore);
 
   private started = false;
+  private projectionHandle: ReturnType<typeof setTimeout> | null = null;
+  private projectionVolumeId: number | null = null;
 
   /** Registers every handler, then opens the connection. Called once, by the initializer. */
   start(): Promise<void> {
@@ -42,14 +51,33 @@ export class RealtimeBridge {
     this.realtime.on('VolumeStatusChanged', (m) => this.volumes.applyVolumeStatus(m));
     this.realtime.on('ScanProgress', (m) => this.scans.applyScanProgress(m));
     this.realtime.on('NotificationRaised', () => this.notifications.applyRaised());
-    this.realtime.on('ProjectionChanged', (m) => {
-      this.catalog.invalidate(m.volumeId);
-      this.search.invalidate();
-    });
+    this.realtime.on('ProjectionChanged', (m) => this.queueProjectionRefresh(m.volumeId));
 
     this.realtime.onReconnected(() => this.refreshAll());
 
     return this.realtime.start();
+  }
+
+  /**
+   * Collects a burst of overlay changes. A burst that names two different volumes (or one
+   * that names none, a cross-volume move) widens to "everything on screen": narrowing it to
+   * one of them would leave the other showing an overlay that has already moved.
+   */
+  private queueProjectionRefresh(volumeId: number | null): void {
+    if (this.projectionHandle === null) {
+      this.projectionVolumeId = volumeId;
+      this.projectionHandle = setTimeout(() => {
+        this.projectionHandle = null;
+        const scope = this.projectionVolumeId;
+        this.projectionVolumeId = null;
+        this.catalog.invalidate(scope);
+        this.search.invalidate();
+      }, PROJECTION_COALESCE_MS);
+      return;
+    }
+    if (this.projectionVolumeId !== volumeId) {
+      this.projectionVolumeId = null;
+    }
   }
 
   /**

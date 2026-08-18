@@ -10,6 +10,7 @@ import { QueueApi } from '../api/queue-api.service';
 import { SearchApi } from '../api/search-api.service';
 import { ScansApi } from '../api/scans-api.service';
 import { VolumesApi } from '../api/volumes-api.service';
+import { CatalogStore } from '../../features/catalog/catalog.store';
 import { QueueStore } from '../../features/queue/queue.store';
 import { ScanStatusStore } from '../../features/scans/scan-status.store';
 import { VolumesStore } from '../../features/volumes/volumes.store';
@@ -80,7 +81,10 @@ function setup() {
 }
 
 describe('RealtimeBridge', () => {
-  afterEach(() => TestBed.resetTestingModule());
+  afterEach(() => {
+    vi.useRealTimers();
+    TestBed.resetTestingModule();
+  });
 
   it('registers every hub message before opening the connection', async () => {
     const { realtime, bridge } = setup();
@@ -161,5 +165,36 @@ describe('RealtimeBridge', () => {
     realtime.dropAndRecover();
 
     expect(queueList).toHaveBeenCalledTimes(1);
+  });
+
+  it('collects a burst of overlay changes into one refresh', async () => {
+    vi.useFakeTimers();
+    const { realtime, bridge } = setup();
+    await bridge.start();
+    const catalog = TestBed.inject(CatalogStore);
+    const invalidate = vi.spyOn(catalog, 'invalidate');
+
+    for (let i = 0; i < 50; i++) {
+      realtime.emit('ProjectionChanged', { volumeId: 1, jobId: i });
+    }
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(invalidate).toHaveBeenCalledTimes(1);
+    expect(invalidate).toHaveBeenCalledWith(1);
+  });
+
+  it('widens the refresh when the burst spans more than one volume', async () => {
+    vi.useFakeTimers();
+    const { realtime, bridge } = setup();
+    await bridge.start();
+    const catalog = TestBed.inject(CatalogStore);
+    const invalidate = vi.spyOn(catalog, 'invalidate');
+
+    realtime.emit('ProjectionChanged', { volumeId: 1, jobId: 1 });
+    realtime.emit('ProjectionChanged', { volumeId: 2, jobId: 2 });
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(invalidate).toHaveBeenCalledTimes(1);
+    expect(invalidate).toHaveBeenCalledWith(null);
   });
 });

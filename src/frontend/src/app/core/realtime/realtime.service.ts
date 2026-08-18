@@ -35,7 +35,6 @@ export class RealtimeService {
   private retryHandle: ReturnType<typeof setTimeout> | null = null;
   private attempts = 0;
   private starting = false;
-  private stopped = false;
 
   /**
    * Subscribe to one hub message. Call before {@link start}: handlers are registered on the
@@ -52,32 +51,18 @@ export class RealtimeService {
 
   /** Opens the connection. Safe to call once; the app initializer owns the single call. */
   async start(): Promise<void> {
-    this.stopped = false;
     await this.connect();
   }
 
   /** "Riconnetti": the user asking now instead of waiting out the retry timer. */
   async reconnectNow(): Promise<void> {
     this.clearRetry();
-    this.stopped = false;
     this.state.set('reconnecting');
     await this.connect();
   }
 
-  /** Closes the connection for good (no retry). */
-  async stop(): Promise<void> {
-    this.stopped = true;
-    this.clearRetry();
-    const connection = this.connection;
-    this.connection = null;
-    if (connection) {
-      await connection.stop().catch((e: unknown) => this.logger.error(`realtime: stop failed — ${describe(e)}`));
-    }
-    this.state.set('offline');
-  }
-
   private async connect(): Promise<void> {
-    if (this.starting || this.stopped) {
+    if (this.starting) {
       return;
     }
     this.starting = true;
@@ -115,9 +100,6 @@ export class RealtimeService {
     });
     connection.onclose(() => {
       // SignalR has exhausted its own ramp. From here the retry is ours.
-      if (this.stopped) {
-        return;
-      }
       this.state.set('offline');
       this.scheduleRetry();
     });
@@ -136,7 +118,7 @@ export class RealtimeService {
   }
 
   private scheduleRetry(): void {
-    if (this.retryHandle !== null || this.stopped) {
+    if (this.retryHandle !== null) {
       return;
     }
     this.retryHandle = setTimeout(() => {

@@ -9,7 +9,6 @@ import { HubConnectionBuilder, LogLevel } from '@microsoft/signalr';
 export interface HubLike {
   on(method: string, handler: (payload: never) => void): void;
   start(): Promise<void>;
-  stop(): Promise<void>;
   onreconnecting(callback: () => void): void;
   onreconnected(callback: () => void): void;
   onclose(callback: () => void): void;

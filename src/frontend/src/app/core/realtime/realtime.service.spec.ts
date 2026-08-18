@@ -10,7 +10,6 @@ import { RealtimeService } from './realtime.service';
 class FakeHub implements HubLike {
   readonly handlers = new Map<string, (payload: never) => void>();
   startCalls = 0;
-  stopCalls = 0;
   startResult: Promise<void> = Promise.resolve();
 
   private reconnecting: (() => void) | null = null;
@@ -23,10 +22,6 @@ class FakeHub implements HubLike {
   start(): Promise<void> {
     this.startCalls++;
     return this.startResult;
-  }
-  stop(): Promise<void> {
-    this.stopCalls++;
-    return Promise.resolve();
   }
   onreconnecting(cb: () => void): void {
     this.reconnecting = cb;
