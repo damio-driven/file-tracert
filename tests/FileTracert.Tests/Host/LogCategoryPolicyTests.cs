@@ -1,4 +1,4 @@
-using FileTracert.Host.Logging;
+﻿using FileTracert.Host.Logging;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
 
@@ -34,6 +34,24 @@ public sealed class LogCategoryPolicyTests
         LogCategoryPolicy.IsEnabled(category, LogLevel.Debug, LogLevel.Debug).Should().BeTrue();
         LogCategoryPolicy.IsEnabled(category, LogLevel.Debug, LogLevel.Information).Should().BeFalse();
         LogCategoryPolicy.IsEnabled(category, LogLevel.Information, LogLevel.Information).Should().BeTrue();
+    }
+
+    /// <summary>
+    /// Step 10b relies on this: the SignalR client authenticates the socket with
+    /// <c>?access_token=…</c> (a WebSocket handshake cannot carry a custom header), and a query
+    /// string is the kind of value that leaks through request logging. Kestrel's request line is
+    /// written by <c>Microsoft.AspNetCore.Hosting.Diagnostics</c> at Information — capped away
+    /// here at every user level, so the token never reaches the log DB. Verified, not assumed.
+    /// </summary>
+    [Theory]
+    [InlineData(LogLevel.Trace)]
+    [InlineData(LogLevel.Debug)]
+    [InlineData(LogLevel.Information)]
+    public void Request_lines_are_never_logged_so_the_hub_query_token_stays_out_of_the_log(LogLevel userMinimum)
+    {
+        LogCategoryPolicy
+            .IsEnabled("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Information, userMinimum)
+            .Should().BeFalse();
     }
 
     [Fact]
