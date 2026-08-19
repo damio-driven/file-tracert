@@ -92,12 +92,66 @@ export async function openFolder(page: Page, name: string): Promise<void> {
   await expect(page.locator('.breadcrumb-seg--current')).toHaveText(name);
 }
 
+/** One breadcrumb of the Catalogo, to walk back up without reloading anything. */
+export const crumb = (page: Page, name: string): Locator =>
+  page.locator('.breadcrumb-seg', { hasText: exact(name) });
+
 /** Walks the Catalogo from the volume root down to the sandbox, one lazy level at a time. */
 export async function openPath(page: Page, segments: readonly string[]): Promise<void> {
   for (const segment of segments) {
     await openFolder(page, segment);
   }
 }
+
+// ── Picker (Sposta selezionati…) ───────────────────────────────────────────────────────────────
+
+/** The move picker dialog. */
+export const picker = (page: Page): Locator => page.getByRole('dialog', { name: 'Sposta file' });
+
+/**
+ * Points the picker at a destination folder: the volume, then one click per level.
+ *
+ * The volume is chosen by index because the option's value is an Angular `ngValue` token, not the
+ * volume id, and its label is assembled from three interpolations — the letter is the one part
+ * that identifies the volume to a person reading the list.
+ */
+export async function pickDestination(
+  page: Page,
+  letter: string,
+  segments: readonly string[],
+): Promise<void> {
+  const dialog = picker(page);
+  const select = dialog.locator('#picker-vol');
+  const index = await select.evaluate(
+    (element, wanted) =>
+      Array.from((element as HTMLSelectElement).options).findIndex((option) =>
+        option.text.includes(`(${wanted})`),
+      ),
+    letter,
+  );
+  expect(index, `no destination volume mounted on ${letter}`).toBeGreaterThan(0);
+  await select.selectOption({ index });
+
+  // The folder list is the same lazy catalog the Catalogo screen browses, so each level waits for
+  // the crumb the answer produced before the next click.
+  for (const segment of segments) {
+    await dialog
+      .locator('button.folder-row')
+      // On the name, not on the whole row: the row also prints how much the folder holds.
+      .filter({ has: page.locator('.folder-row-name', { hasText: exact(segment) }) })
+      .click();
+    await expect(dialog.locator('.folder-crumb.active')).toHaveText(segment);
+  }
+}
+
+// ── Coda ──────────────────────────────────────────────────────────────────────────────────────
+
+/** One job row of the Coda, by the id the API gave the job. */
+export const jobRow = (page: Page, jobId: number): Locator => page.locator(`tr#job-${jobId}`);
+
+/** The state pill of a job row: "In attesa", "Bloccato", "Completato"… */
+export const jobState = (page: Page, jobId: number): Locator =>
+  jobRow(page, jobId).locator('ft-pill');
 
 /** A locator that matches the whole text and nothing more of it. */
 function exact(text: string): RegExp {
