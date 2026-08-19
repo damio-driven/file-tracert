@@ -1,4 +1,4 @@
-import type { Locator, Page } from '@playwright/test';
+import { expect, type Locator, type Page } from '@playwright/test';
 
 /**
  * The handful of places two specs both need to point at. Deliberately small: a page object per
@@ -45,3 +45,64 @@ export const watchFolder = (page: Page, name: string): Locator =>
 
 /** The list of monitored roots on the Setup screen. */
 export const watchedRootRows = (page: Page): Locator => page.locator('ul.roots li.root');
+
+/** What the page recorded for one watched selector: whether it ever appeared, and its first text. */
+export interface Appearance {
+  readonly seen: boolean;
+  readonly text: string;
+}
+
+/**
+ * Records the appearance of elements that are only there while something is happening.
+ *
+ * A progress indicator is a state the product enters and leaves on its own. Asserting it with a
+ * poll makes the test a race against the work it started: fast enough, and the whole event fits
+ * between two polls and the assertion fails without anything being wrong. So the browser is asked
+ * to remember instead — a MutationObserver installed *before* the action latches the first
+ * sighting of each selector, and the assertion reads the latch, which cannot expire.
+ */
+export async function latchAppearances(page: Page, selectors: string[]): Promise<void> {
+  await page.evaluate((watched) => {
+    const seen: Record<string, string> = {};
+    (window as unknown as { __ftSeen: Record<string, string> }).__ftSeen = seen;
+
+    const sweep = (): void => {
+      for (const selector of watched) {
+        if (selector in seen) {
+          continue;
+        }
+        const element = document.querySelector(selector);
+        if (element !== null) {
+          seen[selector] = (element.textContent ?? '').replace(/\s+/g, ' ').trim();
+        }
+      }
+    };
+
+    sweep();
+    new MutationObserver(sweep).observe(document.documentElement, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+    });
+  }, selectors);
+}
+
+/** Waits until the latch has recorded this selector, and returns what it recorded. */
+export async function appearanceOf(page: Page, selector: string): Promise<Appearance> {
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          (s) => s in (window as unknown as { __ftSeen: Record<string, string> }).__ftSeen,
+          selector,
+        ),
+      { message: `"${selector}" never appeared` },
+    )
+    .toBe(true);
+
+  const text = await page.evaluate(
+    (s) => (window as unknown as { __ftSeen: Record<string, string> }).__ftSeen[s] ?? '',
+    selector,
+  );
+  return { seen: true, text };
+}

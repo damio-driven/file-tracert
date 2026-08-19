@@ -11,6 +11,12 @@ const LAST_PORT = 5279;
 /** Port 5005 is the development Host. Never ours. */
 export const DEV_PORT = 5005;
 
+// A guard, not decoration: it fires the moment someone widens the range over the developer's own
+// Host instead of leaving that discovery to a confusing test run against the wrong service.
+if (DEV_PORT >= FIRST_PORT && DEV_PORT <= LAST_PORT) {
+  throw new Error(`The end-to-end port range ${FIRST_PORT}-${LAST_PORT} must not contain ${DEV_PORT}.`);
+}
+
 function isFree(port: number): Promise<boolean> {
   return new Promise((resolve) => {
     const server = net.createServer();
@@ -28,9 +34,6 @@ function isFree(port: number): Promise<boolean> {
  */
 export async function reserveHostPort(): Promise<number> {
   for (let port = FIRST_PORT; port <= LAST_PORT; port++) {
-    if (port === DEV_PORT) {
-      continue;
-    }
     if (await isFree(port)) {
       return port;
     }

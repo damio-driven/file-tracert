@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "test": "playwright test",
+    "typecheck": "tsc -p tsconfig.json",
     "test:headed": "playwright test --headed",
     "test:ui": "playwright test --ui",
     "report": "playwright show-report .artifacts/report"

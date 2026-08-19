@@ -1,6 +1,6 @@
-import { execFile, spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { openSync, closeSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { hostExePath, hostProjectDir, startHostScript, stopHostScript } from './paths.js';
@@ -12,15 +12,15 @@ const TOKEN_PLACEHOLDER = '__FT_TOKEN__';
 export interface HostOptions {
   /** Directory that will hold the throwaway database and the Host's log. */
   readonly workDir: string;
-  /**
-   * Seconds between automatic scan sweeps. The default is an hour so that a scan only ever
-   * happens because a test asked for one: with the shipped 30 s the worker would pick a freshly
-   * added watched root up on its own and race the click the test is trying to prove.
-   */
-  readonly scanPollIntervalSeconds?: number;
-  /** Seconds between volume re-syncs. The sweep at startup happens regardless of this value. */
-  readonly volumeSyncIntervalSeconds?: number;
 }
+
+/**
+ * Seconds between automatic scan sweeps, and between volume re-syncs. An hour, so that a scan
+ * only ever happens because a test asked for one: with the shipped 30 s the worker would pick a
+ * freshly added watched root up on its own and race the click the test is trying to prove. The
+ * sweeps that run once at startup happen regardless.
+ */
+const IDLE_INTERVAL_SECONDS = 3600;
 
 /** How long a Host may take to answer its first request. */
 const START_TIMEOUT_MS = 60_000;
@@ -35,8 +35,10 @@ function isAlive(pid: number): boolean {
     // Signal 0 does not deliver anything; it only asks whether the process is there.
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    // EPERM means "there, but not yours to signal" — the opposite of gone. Reading it as gone
+    // would make the teardown accuse the Host of having exited on its own.
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
   }
 }
 
@@ -97,8 +99,8 @@ export class HostProcess {
         '-PidPath', pidPath,
         '-Port', String(port),
         '-DatabasePath', databasePath,
-        '-VolumeSyncIntervalSeconds', String(options.volumeSyncIntervalSeconds ?? 3600),
-        '-ScanPollIntervalSeconds', String(options.scanPollIntervalSeconds ?? 3600),
+        '-VolumeSyncIntervalSeconds', String(IDLE_INTERVAL_SECONDS),
+        '-ScanPollIntervalSeconds', String(IDLE_INTERVAL_SECONDS),
       ],
       launcherLog,
     );
@@ -110,8 +112,34 @@ export class HostProcess {
     }
 
     const host = new HostProcess(pid, port, `http://127.0.0.1:${port}`, databasePath, logPath);
-    await host.waitUntilServing();
+    try {
+      await host.waitUntilServing();
+      await host.assertUsingThrowawayDatabase();
+    } catch (error) {
+      // The process is running and nobody is holding it yet: left alone it would keep the port
+      // and keep the database open, so the sandbox could not be deleted and the next run would
+      // start on a dirty artifacts folder.
+      host.forceKill();
+      throw error;
+    }
     return host;
+  }
+
+  /**
+   * The isolation rule with an assertion behind it. If the database path ever failed to reach the
+   * Host, `DatabaseLocation.Resolve` would silently fall back to %LOCALAPPDATA%\FileTracert —
+   * the user's real catalog — and migrate it. Checking that the file this Host was told to create
+   * exists turns that from a silent accident into an immediate, named failure.
+   */
+  private async assertUsingThrowawayDatabase(): Promise<void> {
+    try {
+      await access(this.databasePath);
+    } catch {
+      throw new Error(
+        `The Host is serving but did not create ${this.databasePath}. It may be running on ` +
+          `another database — refusing to continue.\n${await this.readLog()}`,
+      );
+    }
   }
 
   /**
@@ -221,31 +249,53 @@ export class HostProcess {
     }
 
     const deadline = Date.now() + STOP_TIMEOUT_MS;
-    while (Date.now() < deadline) {
-      if (!isAlive(this.pid)) {
-        return;
+    let gone = false;
+    while (!gone && Date.now() < deadline) {
+      gone = !isAlive(this.pid);
+      if (!gone) {
+        await sleep(POLL_INTERVAL_MS);
       }
-      await sleep(POLL_INTERVAL_MS);
     }
 
     const log = await this.readLog();
-    this.forceKill();
-    throw new Error(
-      `The Host (pid ${this.pid}) did not stop within ${STOP_TIMEOUT_MS} ms` +
-        (sendFailure === null ? '' : ` (Ctrl+Break could not be delivered: ${sendFailure})`) +
-        `.\n${log}`,
-    );
+    if (!gone) {
+      this.forceKill();
+      throw new Error(
+        `The Host (pid ${this.pid}) did not stop within ${STOP_TIMEOUT_MS} ms` +
+          (sendFailure === null ? '' : ` (Ctrl+C could not be delivered: ${sendFailure})`) +
+          `.\n${log}`,
+      );
+    }
+
+    // A Host that is gone is not proof of a graceful stop: if the event never reached it, it
+    // died of something else and the shutdown path was never exercised. Reporting a clean stop
+    // there would be the silence §9 forbids.
+    if (sendFailure !== null) {
+      throw new Error(
+        `The Host stopped, but Ctrl+C was never delivered to it (${sendFailure}), ` +
+          `so nothing here proves it shut down cleanly.\n${log}`,
+      );
+    }
   }
 
-  /** Last resort, used when the graceful stop failed and when the whole run is torn down. */
+  /**
+   * Last resort, used when the graceful stop failed and when the whole run is torn down.
+   * Synchronous on purpose: it is called from a `process.on('exit')` handler, where anything
+   * asynchronous is queued and then never runs.
+   */
   forceKill(): void {
     if (!isAlive(this.pid)) {
       return;
     }
-    try {
-      execFile('taskkill', ['/PID', String(this.pid), '/T', '/F'], { windowsHide: true });
-    } catch {
-      // Nothing left to try; the failure that brought us here is the one being reported.
+    const result = spawnSync('taskkill', ['/PID', String(this.pid), '/T', '/F'], {
+      windowsHide: true,
+    });
+    if (result.error !== undefined || result.status !== 0) {
+      // Nothing left to try, but a service that will not die is worth a line on the console.
+      process.stderr.write(
+        `[e2e] could not kill the Host (pid ${this.pid}): ` +
+          `${result.error ?? `taskkill exited with ${result.status}`}\n`,
+      );
     }
   }
 }

@@ -1,7 +1,14 @@
 import { expect, test } from '../src/fixtures.js';
 import type { TreeSpec } from '../src/sandbox.js';
 import { watchSandbox } from '../src/scenario.js';
-import { dashboardCard, detailValue, scanFlag, volumeListRow } from '../src/screens.js';
+import {
+  appearanceOf,
+  dashboardCard,
+  detailValue,
+  latchAppearances,
+  scanFlag,
+  volumeListRow,
+} from '../src/screens.js';
 
 /**
  * A tree big enough that the scan is a visible event rather than an instant. The progress flag is
@@ -32,22 +39,24 @@ test.describe('Scansione', () => {
     await row.click();
     await expect(detailValue(page, 'Ultima scansione')).toContainText('mai');
 
+    // Armed before the click: progress is a state the product leaves on its own, and polling for
+    // it would be a race against the scan finishing rather than a test of it starting.
+    // The selected row swaps its metadata line for a progress bar, which is why it is watched
+    // through the selection and not through that line any more.
+    const FLAG = '.titlebar .scan-flag';
+    const ROW_PROGRESS = 'li.vrow.sel ft-scan-progress';
+    const DETAIL_PROGRESS = '.detail ft-scan-progress';
+    await latchAppearances(page, [FLAG, ROW_PROGRESS, DETAIL_PROGRESS]);
+
     await page.getByRole('button', { name: '↻ Ri-scansiona' }).click();
 
-    // Nothing was reloaded and nothing polls: this can only have arrived over the hub. All three
-    // places are watched from the same instant — asserted one after the other, the later ones
-    // would be racing the scan's own end rather than waiting for its start.
-    const flag = scanFlag(page);
-    await Promise.all([
-      expect(flag).toContainText('scansione in corso'),
-      // The selected row swaps its metadata line for a progress bar, which is why it is found by
-      // the selection and not by that line any more.
-      expect(page.locator('li.vrow.sel ft-scan-progress')).toBeVisible(),
-      expect(page.locator('.detail ft-scan-progress')).toBeVisible(),
-    ]);
+    // Nothing was reloaded and nothing polls: this can only have arrived over the hub.
+    expect((await appearanceOf(page, FLAG)).text).toContain('scansione in corso');
+    expect((await appearanceOf(page, ROW_PROGRESS)).seen).toBe(true);
+    expect((await appearanceOf(page, DETAIL_PROGRESS)).seen).toBe(true);
 
     // The terminal frame is what takes the flag away — a socket that simply died would leave it up.
-    await expect(flag).toBeHidden({ timeout: 120_000 });
+    await expect(scanFlag(page)).toBeHidden({ timeout: 120_000 });
 
     // What the scan wrote is what the sandbox holds.
     await api.waitForScan((await api.volumeForDrive(sandbox.driveRoot)).id, seeded.fileCount);

@@ -1,4 +1,5 @@
 import { expect, test } from '../src/fixtures.js';
+import { serviceTray } from '../src/screens.js';
 
 /**
  * The product as the user starts it: the Host serves the built SPA from its own origin, stamps
@@ -13,7 +14,7 @@ test.describe('Avvio e autenticazione', () => {
 
     // The tray is the shell's own verdict on the service: it flips to "non raggiungibile" the
     // moment a call fails, so reading "servizio attivo" is the screen saying the API answered.
-    const tray = page.locator('.titlebar__right .tray');
+    const tray = serviceTray(page);
     await expect(tray).toHaveText(/servizio attivo/);
     await expect(tray).not.toHaveClass(/tray--down/);
 
@@ -25,6 +26,7 @@ test.describe('Avvio e autenticazione', () => {
 
   test('il token arriva al browser dal meta tag che il Host timbra su index.html', async ({
     page,
+    playwright,
     host,
   }) => {
     await page.goto('/');
@@ -32,7 +34,18 @@ test.describe('Avvio e autenticazione', () => {
     const stamped = await page.locator('meta[name="ft-token"]').getAttribute('content');
     expect(stamped, 'the placeholder was never replaced').not.toBe('__FT_TOKEN__');
     expect(stamped ?? '').toMatch(/^[0-9A-F]{64}$/);
-    expect(stamped).toBe(await host.token());
+
+    // And it is a token that works: the value the browser was handed, sent back through the auth
+    // middleware. Comparing it with a second read of the same tag would only prove it is stable.
+    const asBrowser = await playwright.request.newContext({
+      baseURL: host.baseURL,
+      extraHTTPHeaders: { 'X-FileTracert-Token': stamped! },
+    });
+    try {
+      expect((await asBrowser.get('/api/dashboard')).status()).toBe(200);
+    } finally {
+      await asBrowser.dispose();
+    }
   });
 
   test('senza token il servizio risponde 401, con il token risponde 200', async ({

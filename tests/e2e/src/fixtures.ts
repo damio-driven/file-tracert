@@ -1,7 +1,7 @@
 import { test as base } from '@playwright/test';
 
 import { Api } from './api.js';
-import { HostProcess, type HostOptions } from './host.js';
+import { HostProcess } from './host.js';
 import { Sandbox } from './sandbox.js';
 
 /**
@@ -9,17 +9,26 @@ import { Sandbox } from './sandbox.js';
  * does not leave a service holding a port and a database behind.
  */
 const liveHosts = new Set<HostProcess>();
-process.on('exit', () => {
+
+function killEveryHost(): void {
   for (const host of liveHosts) {
     host.forceKill();
   }
-});
+}
+
+// `forceKill` is synchronous because an `exit` handler never gets to run anything it queues,
+// and the signals are registered as well: on Windows Ctrl+C does not reliably raise `exit`.
+process.on('exit', killEveryHost);
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK'] as const) {
+  process.on(signal, () => {
+    killEveryHost();
+    process.exit(1);
+  });
+}
 
 export interface HostFixtures {
   /** The throwaway folder tree this test may touch — and the only one it may touch. */
   sandbox: Sandbox;
-  /** Knobs for the Host, overridable per test with `test.use({ hostOptions: … })`. */
-  hostOptions: Omit<HostOptions, 'workDir'>;
   /** A real Host process, serving the built SPA over a database created for this test alone. */
   host: HostProcess;
   /** The same HTTP API the SPA uses, with the same token the browser was given. */
@@ -45,10 +54,8 @@ export const test = base.extend<HostFixtures>({
     await sandbox.dispose();
   },
 
-  hostOptions: [{}, { option: true }],
-
-  host: async ({ sandbox, hostOptions }, use, testInfo) => {
-    const host = await HostProcess.start({ ...hostOptions, workDir: sandbox.workDir });
+  host: async ({ sandbox }, use, testInfo) => {
+    const host = await HostProcess.start({ workDir: sandbox.workDir });
     liveHosts.add(host);
     try {
       await use(host);
@@ -89,4 +96,3 @@ export const test = base.extend<HostFixtures>({
 });
 
 export { expect } from '@playwright/test';
-export { DEFAULT_TREE } from './sandbox.js';

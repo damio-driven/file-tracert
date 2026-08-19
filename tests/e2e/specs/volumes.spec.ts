@@ -19,7 +19,7 @@ test.describe('Volumi', () => {
     sandbox,
     api,
   }) => {
-    const volume = await watchSandbox(api, sandbox);
+    await watchSandbox(api, sandbox);
     const letter = sandbox.driveRoot.slice(0, 2);
 
     await page.goto('/volumes');
@@ -33,7 +33,12 @@ test.describe('Volumi', () => {
     await expect(detailValue(page, 'Volume GUID')).toHaveText(
       /^\\\\\?\\Volume\{[0-9a-fA-F-]{36}\}\\$/,
     );
-    await expect(detailValue(page, 'Serial / Filesystem')).toContainText(volume.fileSystem);
+    // Not compared with the value the API returned — that is the same source the screen read,
+    // and two copies of one mistake agree. A filesystem name Windows can actually mount is what
+    // there is to check without asking the product what it thinks it saw.
+    await expect(detailValue(page, 'Serial / Filesystem')).toHaveText(
+      /·\s(NTFS|ReFS|exFAT|FAT32|FAT)\s·/,
+    );
     await expect(page.locator('.detail ft-panel .head .caption')).toContainText(
       `montato su ${letter}`,
     );
@@ -65,7 +70,9 @@ test.describe('Volumi', () => {
     const roots = watchedRootRows(page);
     await expect(roots).toHaveCount(1);
     await expect(roots.first()).toContainText(sandbox.volumeRelativePath);
-    await expect(roots.first().getByText('Attiva', { exact: true })).toBeVisible();
+    // The pill, not the text: the row also carries a button labelled "Attiva" — the one offered
+    // when the root is suspended — so plain text would be satisfied by the opposite state.
+    await expect(roots.first().locator('ft-pill')).toHaveText('Attiva');
 
     // And the Volumi screen, which reads it back from the service, agrees.
     await page.goto('/volumes');

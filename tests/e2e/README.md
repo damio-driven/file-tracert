@@ -9,7 +9,7 @@ browser, SignalR sul socket vero, le schermate che reagiscono.
 
 ```powershell
 cd tests\e2e
-npm install                 # una volta
+npm ci                            # una volta
 npx playwright install chromium   # una volta: scarica il browser
 npm test
 ```
@@ -24,15 +24,21 @@ Varianti utili:
 | `npm test -- specs/scan.spec.ts` | un solo file |
 | `npm run test:headed` | col browser a schermo |
 | `npm run report` | apre il report HTML dell'ultima passata |
-| `$env:FT_E2E_SKIP_BUILD='1'; npm test` | salta la build (se hai appena compilato a mano) |
+| `npm run typecheck` | `tsc --noEmit` (Playwright transpila senza controllare i tipi) |
+| `$env:FT_E2E_SKIP_BUILD='1'; npm test` | salta la build — controlla solo che gli artefatti **esistano**, non che siano aggiornati |
 
 ## Cosa serve
 
 - **Windows.** I test parlano con la piattaforma vera: volumi, filesystem, console control event
   per lo spegnimento. Non girano altrove.
-- **Nessuna elevazione.** Senza privilegi di amministratore il giornale USN non è accessibile e la
-  scansione ripiega sull'**enumerazione** (il prodotto lo fa apposta, con una notifica). Un PASS
-  qui non è quindi una prova del percorso USN — è la stessa scelta già fatta dall'harness.
+- **Nessuna elevazione — obbligatorio, e il `globalSetup` si rifiuta di partire da elevato.**
+  Il motore di scansione si sceglie dal **filesystem**, non da un'impostazione: su NTFS la
+  scansione *prova sempre* il giornale USN. Non elevati, Windows rifiuta e il prodotto ripiega
+  sull'**enumerazione della sola cartella monitorata** — l'unico percorso che resta dentro la
+  sandbox. Elevati, `EnsureJournal` **creerebbe** un giornale sul volume di sistema (una modifica
+  persistente fuori dalla sandbox, fatta da un test) e la lettura snapshot camminerebbe l'intera
+  MFT del disco dello sviluppatore. Perciò: un PASS qui **non** è una prova del percorso USN — è
+  la stessa scelta già fatta dall'harness — e da elevato la suite non parte affatto.
 - **Il Host chiuso.** La build del backend fallisce su una DLL bloccata se un Host di sviluppo sta
   girando da questa copia di lavoro.
 - **Niente CI.** Come l'harness: richiede Windows e un filesystem vero.
@@ -46,7 +52,9 @@ che i test popolano e scansionano.
 Le garanzie, in ordine di importanza:
 
 - **Mai il database reale.** Ogni Host parte con `FileTracert:DatabasePath` dentro `.artifacts`;
-  `%LOCALAPPDATA%\FileTracert` non viene mai aperto.
+  `%LOCALAPPDATA%\FileTracert` non viene mai aperto. Non è solo una configurazione: appena il Host
+  risponde, il test **verifica che quel file esista davvero**, così un binding rotto diventa un
+  errore con un nome invece di una migrazione silenziosa del catalogo dell'utente.
 - **Mai la porta 5005.** Gli Host dei test prendono la prima porta libera nell'intervallo
   5180–5279, così una sessione end-to-end non parla con l'istanza che stai usando.
 - **Mai un file fuori dalla sandbox.** I flussi coperti da questo checkpoint *leggono* il disco
@@ -69,7 +77,10 @@ Le garanzie, in ordine di importanza:
 - **Zero retry** (`playwright.config.ts`). Un retry nasconde esattamente la classe di difetti che
   questo livello esiste per trovare.
 - **Nessuna attesa a tempo.** Le attese sono asserzioni web-first sulla UI, o `expect.poll` su una
-  condizione dell'API. `waitForTimeout` non compare da nessuna parte.
+  condizione dell'API. `waitForTimeout` non compare da nessuna parte. Gli stati **transitori** (la
+  barra di avanzamento della scansione) non si aspettano affatto: un `MutationObserver` installato
+  *prima* dell'azione ne registra la comparsa, così l'asserzione non corre contro la fine del
+  lavoro che ha appena avviato.
 - **Niente rete.** Ogni richiesta che non sia diretta al proprio Host viene rifiutata dal
   contesto del browser (`index.html` linka i font di Google): un prodotto loopback non deve
   dipendere dalla rete nemmeno per essere provato.

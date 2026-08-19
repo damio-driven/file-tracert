@@ -70,7 +70,7 @@ export class Sandbox {
     const filesDir = path.join(caseDir, 'files');
     const workDir = path.join(caseDir, 'host');
 
-    await rm(caseDir, { recursive: true, force: true });
+    await removeInsideArtifacts(caseDir);
     await mkdir(filesDir, { recursive: true });
     await mkdir(path.join(workDir, 'db'), { recursive: true });
 
@@ -104,11 +104,20 @@ export class Sandbox {
 
   /** Removes every byte this sandbox put on disk. Nothing outside `.artifacts` is reachable. */
   async dispose(): Promise<void> {
-    const target = path.resolve(this.caseDir);
-    const allowed = path.resolve(artifactsRoot);
-    if (target === allowed || !target.startsWith(allowed + path.sep)) {
-      throw new Error(`Refusing to delete ${target}: it is not inside ${allowed}.`);
-    }
-    await rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    await removeInsideArtifacts(this.caseDir);
   }
+}
+
+/**
+ * The only deletion this suite performs, and the one place the containment rule is written.
+ * Both the setup and the teardown go through it: a guard that protects one of the two protects
+ * nothing.
+ */
+async function removeInsideArtifacts(target: string): Promise<void> {
+  const resolved = path.resolve(target);
+  const allowed = path.resolve(artifactsRoot);
+  if (resolved === allowed || !resolved.startsWith(allowed + path.sep)) {
+    throw new Error(`Refusing to delete ${resolved}: it is not inside ${allowed}.`);
+  }
+  await rm(resolved, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }
