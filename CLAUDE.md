@@ -590,7 +590,7 @@ Prossimo, in ordine:
    assenti di `IBulkIndexWriter`. C'è un test che **fissa** il comportamento attuale.
 2. **Step 12 — Test UI end-to-end (Playwright).**
 
-### Fatto nello step 11a (2026-08-19, commit `455c9ac`…`de7aa68`)
+### Fatto nello step 11a (2026-08-19, commit `455c9ac`…`c399048`)
 **WP5 chiuso**: i quattro difetti di correttezza dell'indice che sopravvivevano fino al re-scan
 successivo (#6, C19, C16, P2) e il **FAIL harness pre-esistente** di `job-dependencies` sulla
 coppia *cross*.
@@ -656,7 +656,7 @@ coppia *cross*.
   (114 132 directory, 742 033 file, 28 job): righe intatte, `foreign_key_check` 0 violazioni,
   `integrity_check` ok.
 La **code review finale** (indipendente, sulle modifiche di questo giro) ha trovato una cosa
-**bloccante** e quattro minori, tutte corrette nel commit `de7aa68`. La bloccante: un `MoveFile`
+**bloccante** e quattro minori, tutte corrette nel commit `91dca4b`. La bloccante: un `MoveFile`
 **intra-volume** il cui file aveva nel frattempo cambiato drive veniva ri-puntato là in silenzio —
 il `TargetRelativePath` di un move è un percorso che l'utente ha scelto *su quel volume* e non
 nomina alcun drive, quindi seguire il file avrebbe scritto file veri su un disco mai scelto, senza
