@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, OnInit, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, DestroyRef, OnInit, inject, signal } from '@angular/core';
 
 import { FtPanel } from '../../shared/components/ft-panel/ft-panel';
 import { FtPill, PillVariant } from '../../shared/components/ft-pill/ft-pill';
@@ -37,6 +37,14 @@ export class Logs implements OnInit {
 
   private searchTimer: ReturnType<typeof setTimeout> | null = null;
 
+  constructor() {
+    // C29 — the debounce must not outlive the view. `LogsStore` is app-level, so a timer that
+    // fires after the user has navigated away rewrites the filters of a screen nobody is
+    // looking at and spends a request doing it. Whoever comes back would find results they
+    // never asked for.
+    inject(DestroyRef).onDestroy(() => this.clearSearchTimer());
+  }
+
   ngOnInit(): void {
     void this.store.init();
   }
@@ -50,10 +58,18 @@ export class Logs implements OnInit {
   }
 
   protected onSearch(value: string): void {
+    this.clearSearchTimer();
+    this.searchTimer = setTimeout(() => {
+      this.searchTimer = null;
+      void this.store.applyFilters({ search: value });
+    }, 300);
+  }
+
+  private clearSearchTimer(): void {
     if (this.searchTimer !== null) {
       clearTimeout(this.searchTimer);
+      this.searchTimer = null;
     }
-    this.searchTimer = setTimeout(() => void this.store.applyFilters({ search: value }), 300);
   }
 
   protected onLevelChange(value: string): void {

@@ -1,7 +1,7 @@
 import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { of } from 'rxjs';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { LogsApi } from '../../core/api/logs-api.service';
 import { LogEntryDto } from '../../core/models/catalog.models';
@@ -99,5 +99,56 @@ describe('Logs screen', () => {
     await fixture.whenStable();
 
     expect(setLevel).toHaveBeenCalledWith('Warning');
+  });
+});
+
+// C29 — the 300 ms search debounce used to survive the view: navigate away inside the window
+// and the timer still rewrote the app-level LogsStore and spent a request on a dead screen.
+describe('Logs search debounce', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('does not fire after the view is destroyed', async () => {
+    const getLogs = vi.fn(() => of({ items: entries, totalCount: 1, skip: 0, take: 50 }));
+    TestBed.configureTestingModule({
+      imports: [Logs],
+      providers: [provideZonelessChangeDetection(), { provide: LogsApi, useValue: api({ getLogs }) }],
+    });
+
+    const fixture = TestBed.createComponent(Logs);
+    await fixture.whenStable();
+
+    vi.useFakeTimers();
+    const search = (fixture.nativeElement as HTMLElement)
+      .querySelector<HTMLInputElement>('input[type="search"]')!;
+    search.value = 'boom';
+    search.dispatchEvent(new Event('input'));
+
+    getLogs.mockClear();
+    fixture.destroy();
+    vi.advanceTimersByTime(1000);
+
+    expect(getLogs).not.toHaveBeenCalled();
+  });
+
+  it('still fires while the view is alive', async () => {
+    const getLogs = vi.fn(() => of({ items: entries, totalCount: 1, skip: 0, take: 50 }));
+    TestBed.configureTestingModule({
+      imports: [Logs],
+      providers: [provideZonelessChangeDetection(), { provide: LogsApi, useValue: api({ getLogs }) }],
+    });
+
+    const fixture = TestBed.createComponent(Logs);
+    await fixture.whenStable();
+
+    vi.useFakeTimers();
+    const search = (fixture.nativeElement as HTMLElement)
+      .querySelector<HTMLInputElement>('input[type="search"]')!;
+    search.value = 'boom';
+    search.dispatchEvent(new Event('input'));
+
+    getLogs.mockClear();
+    vi.advanceTimersByTime(300);
+
+    expect(getLogs).toHaveBeenCalled();
   });
 });
