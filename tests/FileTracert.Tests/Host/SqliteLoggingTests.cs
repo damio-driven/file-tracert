@@ -22,7 +22,7 @@ public sealed class SqliteLoggingTests : IDisposable
     public SqliteLoggingTests()
     {
         SQLitePCL.Batteries.Init();
-        _store = new SqliteLogStore($"Data Source={_dbPath}");
+        _store = new SqliteLogStore(SqliteTestDatabase.ConnectionString(_dbPath));
         _store.EnsureSchema();
     }
 

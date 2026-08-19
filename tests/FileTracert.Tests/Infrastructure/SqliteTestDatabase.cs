@@ -1,3 +1,4 @@
+using FileTracert.Host.Configuration;
 using Microsoft.Data.Sqlite;
 
 namespace FileTracert.Tests.Infrastructure;
@@ -81,6 +82,11 @@ public static class SqliteTestDatabase
         }
     }
 
-    /// <summary>The exact connection string every caller here uses, so the pool key matches.</summary>
-    private static string ConnectionString(string databasePath) => $"Data Source={databasePath}";
+    /// <summary>
+    /// The one place the test suite spells a SQLite connection string, delegated to the product's
+    /// own helper. The pool is keyed by this string: a teardown that builds it a second way frees
+    /// nothing, and does so in silence. <c>SqliteTestDatabaseContractTests</c> is the alarm.
+    /// </summary>
+    public static string ConnectionString(string databasePath) =>
+        DatabaseLocation.ConnectionString(databasePath);
 }

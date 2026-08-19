@@ -40,7 +40,10 @@ public sealed class ProcessWideStateGuardTests
         var root = RepositoryRoot();
 
         var offenders = new List<string>();
-        foreach (var directory in new[] { Path.Combine(root, "src"), Path.Combine(root, "tests") })
+        // `src/backend`, not `src`: the only C# lives there, and walking `src/frontend` would
+        // mean walking node_modules and dist — under exactly the concurrent `ng build` this
+        // suite is supposed to survive.
+        foreach (var directory in new[] { Path.Combine(root, "src", "backend"), Path.Combine(root, "tests") })
         {
             foreach (var file in Directory.EnumerateFiles(directory, "*.cs", SearchOption.AllDirectories))
             {
@@ -70,13 +73,15 @@ public sealed class ProcessWideStateGuardTests
     }
 
     /// <summary>
-    /// Drops <c>//</c> and <c>/* */</c> comments. Deliberately crude — it only has to tell
-    /// code from prose, and the one thing it must never do is hide a real call.
+    /// Drops the comments that explain the rule, so the files documenting it are not read as
+    /// breaking it. The one thing it must never do is hide a real call, so a line comment is
+    /// only dropped when it <em>starts</em> the line: stripping from any <c>//</c> would also
+    /// eat the code after a string literal that happens to contain one.
     /// </summary>
     private static string WithoutComments(string source)
     {
         var withoutBlocks = Regex.Replace(source, @"/\*.*?\*/", " ", RegexOptions.Singleline);
-        return Regex.Replace(withoutBlocks, @"//[^\n]*", " ");
+        return Regex.Replace(withoutBlocks, @"(?m)^[ \t]*//[^\n]*", " ");
     }
 
     /// <summary>Walks up from the test binaries to the repository (the folder holding src and tests).</summary>

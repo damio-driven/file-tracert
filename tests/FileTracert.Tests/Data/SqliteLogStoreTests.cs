@@ -18,7 +18,7 @@ public sealed class SqliteLogStoreTests : IDisposable
     public SqliteLogStoreTests()
     {
         SQLitePCL.Batteries.Init();
-        _store = new SqliteLogStore($"Data Source={_dbPath}");
+        _store = new SqliteLogStore(SqliteTestDatabase.ConnectionString(_dbPath));
         _store.EnsureSchema();
     }
 
@@ -142,7 +142,7 @@ public sealed class SqliteLogStoreTests : IDisposable
         var t0 = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
         await _store.WriteBatchAsync([Record(2, "shared", t0)], CancellationToken.None);
 
-        var reader = new SqliteLogStore($"Data Source={_dbPath}");
+        var reader = new SqliteLogStore(SqliteTestDatabase.ConnectionString(_dbPath));
         var page = await reader.QueryAsync(new LogQuery(0, 50), CancellationToken.None);
 
         page.Items.Should().ContainSingle(e => e.Message == "shared");
@@ -231,7 +231,8 @@ public sealed class SqliteLogStoreTests : IDisposable
         // Grow the WAL: bulk-write with auto-checkpoint disabled so frames accumulate.
         // Keep this connection open across the checkpoint+assert: closing the last connection
         // makes SQLite checkpoint and delete the -wal file, which would hide the effect.
-        await using var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={_dbPath}");
+        await using var conn = new Microsoft.Data.Sqlite.SqliteConnection(
+            SqliteTestDatabase.ConnectionString(_dbPath));
         await conn.OpenAsync();
         await Exec(conn, "PRAGMA wal_autocheckpoint=0;");
         var payload = new string('x', 4000);

@@ -40,7 +40,7 @@ public sealed class SqliteFileContext : IDisposable
     public FileTracertDbContext CreateContext()
     {
         var builder = new DbContextOptionsBuilder<FileTracertDbContext>()
-            .UseSqlite(new SqliteConnection($"Data Source={_path}"))
+            .UseSqlite(new SqliteConnection(SqliteTestDatabase.ConnectionString(_path)))
             .AddInterceptors(new AuditingSaveChangesInterceptor(), new ShortBusyTimeoutInterceptor(_busyTimeoutMs));
 
         return new FileTracertDbContext(builder.Options);

@@ -1,5 +1,6 @@
 using FileTracert.Contracts.Platform;
 using FileTracert.Data;
+using FileTracert.Host.Configuration;
 using FileTracert.Host.Infrastructure;
 using FileTracert.Host.Workers;
 using FileTracert.Tests.Business;
@@ -25,12 +26,11 @@ public sealed class FileTracertAppFactory : WebApplicationFactory<global::Progra
     public string DatabasePath => _dbPath;
 
     /// <summary>
-    /// The dedicated log database the host derives from <see cref="DatabasePath"/> — same rule
-    /// as <c>DatabaseLocation.ResolveLogs</c>, so teardown releases the pool the host really used.
+    /// The dedicated log database, resolved by the host's own rule rather than by a copy of it:
+    /// teardown has to release the pool the host really opened, and a second implementation that
+    /// drifts would free nothing, in silence.
     /// </summary>
-    public string LogDatabasePath => Path.Combine(
-        Path.GetDirectoryName(_dbPath)!,
-        Path.GetFileNameWithoutExtension(_dbPath) + "-logs.db");
+    public string LogDatabasePath => DatabaseLocation.ResolveLogs(_dbPath);
 
     public IVolumeProbe Probe { get; set; } = new FakeVolumesProbe([]);
     public IUsnReader UsnReader { get; set; } = new FakeUsnReader([], 0);
