@@ -1,0 +1,2 @@
+# Everything the suite produces: throwaway databases, sandboxes, traces, screenshots, reports.
+.artifacts/
