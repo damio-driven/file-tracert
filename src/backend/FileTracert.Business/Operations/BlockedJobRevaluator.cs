@@ -234,12 +234,21 @@ public sealed class BlockedJobRevaluator
         // and the completion. Until this runs the ledger under-counts this job's demand; a
         // revaluation pass is single-threaded and the next candidate is judged after it, so no
         // decision is taken on the gap.
+        //
+        // NOT cancellable, deliberately, and for the same reason the engine's post-commit mirror
+        // updates are not: the rows are already committed. Honouring the token here would abort
+        // between the durable fact and its mirror, and since the mirror — not the table — is what
+        // every feasibility decision is computed from, the two would stay apart until a restart
+        // rebuilt it. That is not a shutdown-only hazard: `CancelAsync` runs a revaluation on the
+        // request's own token, so a user closing the tab mid-cancel would leave the queue judging
+        // the next job against a reservation the database holds and the ledger cannot see.
         if (normalizeReservation)
         {
-            await _ledger.ReleaseInMemoryAsync(job.Id, ct);
+            await _ledger.ReleaseInMemoryAsync(job.Id, CancellationToken.None);
             await _ledger.RegisterReservationInMemoryAsync(
                 job.Id, job.SequenceOrder, job.TargetVolumeId!.Value,
-                job.RequiredBytesTarget, job.SourceVolumeId, job.FreedBytesSource, ct);
+                job.RequiredBytesTarget, job.SourceVolumeId, job.FreedBytesSource,
+                CancellationToken.None);
         }
 
         _logger.LogInformation(

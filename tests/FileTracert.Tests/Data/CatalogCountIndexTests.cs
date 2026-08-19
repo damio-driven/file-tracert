@@ -62,6 +62,24 @@ public sealed class CatalogCountIndexTests : IDisposable
         using var db = _harness.CreateContext();
         var (volumeId, parentId) = await SeedAsync(db);
 
+        // The claim is about a catalog with real weight — a four-row table is a thin place to
+        // assert a query plan, even though SQLite plans from the schema (this application never
+        // runs ANALYZE, as the class comment says). Bulked out with raw SQL: what is being
+        // measured is the plan, and EF change tracking over thousands of entities is not.
+        var now = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.fffffff");
+#pragma warning disable EF1002 // every interpolated value is an int or produced right here
+        await db.Database.ExecuteSqlRawAsync($"""
+            WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 20000)
+            INSERT INTO Files
+              (VolumeId, DirectoryId, Name, Extension, Category, SizeBytes,
+               CreatedUtc, ModifiedUtc, Attributes, IsIncluded, IsPresent,
+               LastIndexedUtc, PendingState, RowCreatedUtc, RowUpdatedUtc)
+            SELECT {volumeId}, {parentId}, 'bulk' || n || '.jpg', 'jpg', 'Image', 1024,
+                   '{now}', '{now}', 0, 1, 1, '{now}', 'None', '{now}', '{now}'
+            FROM seq
+            """);
+#pragma warning restore EF1002
+
         // Verbatim the Catalog's counter predicate (CatalogController.GetChildren).
         var counter = db.Files.AsNoTracking()
             .Where(f => ((f.DirectoryId == parentId && f.PendingDirectoryId == null) || f.PendingDirectoryId == parentId) &&
@@ -80,8 +98,6 @@ public sealed class CatalogCountIndexTests : IDisposable
         plan.Should().Contain("COVERING INDEX IX_Files_DirectoryId_PendingDirectoryId_IsIncluded_IsPresent");
         plan.Should().Contain("IX_Files_PendingDirectoryId_IsIncluded_IsPresent");
         plan.Should().NotContain("SCAN f");
-
-        volumeId.Should().BePositive();
     }
 
     [Fact]

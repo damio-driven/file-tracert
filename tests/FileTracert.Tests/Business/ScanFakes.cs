@@ -132,6 +132,7 @@ internal sealed class FakeFileSearchIndex : IFileSearchIndex
     public Task SyncVolumeFromDbAsync(int volumeId, CancellationToken ct) => Task.CompletedTask;
     public Task RebuildAsync(CancellationToken ct) => Task.CompletedTask;
     public Task SyncFilesAsync(IReadOnlyCollection<int> fileIds, CancellationToken ct) => Task.CompletedTask;
+    public Task SyncDirectoriesAsync(IReadOnlyCollection<int> directoryIds, CancellationToken ct) => Task.CompletedTask;
     public Task PruneVolumeAsync(int volumeId, CancellationToken ct) => Task.CompletedTask;
     public Task UpsertAsync(int fileId, string name, string path, CancellationToken ct) => Task.CompletedTask;
     public Task RemoveAsync(int fileId, CancellationToken ct) => Task.CompletedTask;

@@ -197,11 +197,14 @@ public sealed class SearchCountCapTests : IAsyncLifetime
             result.TotalCount.Should().Be(Cap);
 
             // Both statements of one SearchAsync walk the view. The page query is ORDER BY +
-            // LIMIT 20 over the whole match set — it walks all of it either way — so the run
-            // costs `seeded` for the page plus whatever the count spends. Capped: exactly Cap.
-            // Clamped after the fact (the old spelling): another full `seeded`.
-            visits.Should().Be(seeded + Cap,
-                "the count must stop at the cap ({0}) instead of walking all {1} matches",
+            // LIMIT 20 over the whole match set — it walks all of it either way, and how many
+            // times is the planner's business, not this test's — so the assertion is on the half
+            // the cap governs: clamping after the fact costs a second full `seeded`, stopping at
+            // the cap costs `Cap`. Bounded rather than pinned to an exact number, so a future
+            // SQLite that plans the PAGE differently reports a planner change, not a regression
+            // in the thing under test. Today's figures: 25 000 here, 30 000 before the fix.
+            visits.Should().BeLessThan(seeded * 2,
+                "the count must stop at the cap ({0}) instead of walking all {1} matches again",
                 Cap, seeded);
         }
         finally

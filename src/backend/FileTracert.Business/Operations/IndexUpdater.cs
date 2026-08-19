@@ -402,19 +402,12 @@ public sealed class IndexUpdater
     /// could drift. The path it builds is the directory's saved <c>MaterializedPath</c> joined
     /// with that name, i.e. exactly what this method used to assemble by hand.</para>
     /// </summary>
-    private async Task UpdateFtsForDirsAsync(List<DirectoryNode> dirs, CancellationToken ct)
-    {
-        var dirIds = dirs.Select(d => d.Id).ToHashSet();
-
-        // Ids only — the whole point is that no file row is materialised. The inclusion filter is
-        // left to SyncFilesAsync, which removes the entry of anything not indexable instead of
-        // silently leaving a stale one behind.
-        var fileIds = await _db.Files.AsNoTracking()
-            .Where(f => dirIds.Contains(f.DirectoryId))
-            .Select(f => f.Id)
-            .ToListAsync(ct);
-
-        await _fts.SyncFilesAsync(fileIds, ct);
-    }
+    private Task UpdateFtsForDirsAsync(List<DirectoryNode> dirs, CancellationToken ct) =>
+        // Named by DIRECTORY, so not one file id crosses the boundary — see
+        // IFileSearchIndex.SyncDirectoriesAsync for why that matters: pruning stale entries
+        // requires covering the excluded and absent rows too, and those are exactly what a
+        // narrowed filter piles up. The cost is a pair of statements per chunk of directories,
+        // whatever the subtree holds.
+        _fts.SyncDirectoriesAsync([.. dirs.Select(d => d.Id)], ct);
 
 }

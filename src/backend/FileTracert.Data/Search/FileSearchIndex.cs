@@ -124,6 +124,33 @@ public sealed class FileSearchIndex : IFileSearchIndex
         }
     }
 
+    public async Task SyncDirectoriesAsync(IReadOnlyCollection<int> directoryIds, CancellationToken ct)
+    {
+        if (directoryIds.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var chunk in directoryIds.Chunk(IdChunkSize))
+        {
+            var list = string.Join(", ", chunk);
+
+            // The row set is named by directory and never crosses the boundary: the DELETE finds
+            // the affected entries through Files itself (a seek on the leading column of
+            // IX_Files_DirectoryId_PendingDirectoryId_IsIncluded_IsPresent), and the INSERT rebuilds
+            // exactly the includable ones. Ids inlined for the same reason as SyncFilesAsync —
+            // ints, nothing to escape, and SQLite has no array-valued parameter.
+            var deleteSql =
+                "DELETE FROM FileSearchIndex WHERE rowid IN " +
+                "(SELECT Id FROM Files WHERE DirectoryId IN (" + list + "))";
+            var insertSql = $"{InsertProjectedSql} WHERE f.DirectoryId IN ({list}) AND {IndexableSql}";
+
+            // Delete first, always — FTS5 has no ON CONFLICT (same rule as SyncFilesAsync).
+            await _db.Database.ExecuteSqlRawAsync(deleteSql, ct);
+            await _db.Database.ExecuteSqlRawAsync(insertSql, ct);
+        }
+    }
+
     public async Task PruneVolumeAsync(int volumeId, CancellationToken ct)
     {
         await _db.Database.ExecuteSqlAsync(

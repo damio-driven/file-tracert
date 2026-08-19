@@ -71,6 +71,7 @@ public sealed class IndexUpdaterTests : IDisposable
         public Task SyncVolumeFromDbAsync(int volumeId, CancellationToken ct) => Task.CompletedTask;
         public Task RebuildAsync(CancellationToken ct) => Task.CompletedTask;
         public Task SyncFilesAsync(IReadOnlyCollection<int> fileIds, CancellationToken ct) => Task.CompletedTask;
+        public Task SyncDirectoriesAsync(IReadOnlyCollection<int> directoryIds, CancellationToken ct) => Task.CompletedTask;
         public Task PruneVolumeAsync(int volumeId, CancellationToken ct) => Task.CompletedTask;
         public Task UpsertAsync(int fileId, string name, string path, CancellationToken ct)
         { Upserts.Add((fileId, name, path)); return Task.CompletedTask; }
@@ -235,6 +236,12 @@ public sealed class IndexUpdaterTests : IDisposable
     /// The cancel reconciliation re-points landed items to the target volume too, so it carries
     /// the same rule — otherwise a cancelled cross-volume job leaves the very violation the
     /// completion path now avoids.
+    ///
+    /// <para>It also runs the REAL search index (step 11e): this is the third of the three call
+    /// sites that stopped upserting per file, and the one where the sync moved from BEFORE the
+    /// <c>SaveChanges</c> to after it — the old order rebuilt each entry from a row whose new
+    /// <c>DirectoryId</c> was not written yet, and got away with it only because the path was also
+    /// passed in by hand. Reading the entry back is what shows the new order is right.</para>
     /// </summary>
     [Fact]
     public async Task Cancel_reconciliation_drops_the_source_FRN_of_landed_items()
@@ -254,12 +261,21 @@ public sealed class IndexUpdaterTests : IDisposable
             job.Items.Add(Item(1, @"Docs\report.txt", @"Archive\report.txt"));
             db.OperationJobs.Add(job);
             db.SaveChanges();
+
+        }
+
+        // Index both files where they physically are, the way a scan would: what follows is a
+        // RE-sync of an existing entry, which is where a stale one would survive.
+        await using (var db = _harness.CreateContext())
+        {
+            await new FileSearchIndex(db).RebuildAsync(CancellationToken.None);
         }
 
         await using (var db = _harness.CreateContext())
         {
             var job = await db.OperationJobs.Include(j => j.Items).SingleAsync();
-            await TestProjection.Index(db, new RecordingFts()).ReconcileCancelledJobAsync(job, CancellationToken.None);
+            await TestProjection.Index(db, new FileSearchIndex(db))
+                .ReconcileCancelledJobAsync(job, CancellationToken.None);
         }
 
         await using (var probe = _harness.CreateContext())
@@ -268,6 +284,11 @@ public sealed class IndexUpdaterTests : IDisposable
             moved.VolumeId.Should().Be(TgtVol);
             moved.UsnFileRef.Should().BeNull();
         }
+
+        // The landed item is searchable where it now lives — built from the saved row, not from a
+        // path handed over alongside it. The untouched file keeps the entry it already had.
+        FtsRows().Should().Contain((1, "report.txt", @"Archive\report.txt"));
+        FtsRows().Should().Contain((9, "unrelated.txt", @"Archive\unrelated.txt"));
     }
 
     // ── seed helpers ──────────────────────────────────────────────────────────

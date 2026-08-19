@@ -128,6 +128,7 @@ public sealed class IndexUpdateFailOnceScenario : Scenario
         public Task SyncVolumeFromDbAsync(int volumeId, CancellationToken ct) => _inner.SyncVolumeFromDbAsync(volumeId, ct);
         public Task RebuildAsync(CancellationToken ct) => _inner.RebuildAsync(ct);
         public Task SyncFilesAsync(IReadOnlyCollection<int> fileIds, CancellationToken ct) => _inner.SyncFilesAsync(fileIds, ct);
+        public Task SyncDirectoriesAsync(IReadOnlyCollection<int> directoryIds, CancellationToken ct) => _inner.SyncDirectoriesAsync(directoryIds, ct);
         public Task PruneVolumeAsync(int volumeId, CancellationToken ct) => _inner.PruneVolumeAsync(volumeId, ct);
         public Task RemoveAsync(int fileId, CancellationToken ct) => _inner.RemoveAsync(fileId, ct);
         public Task<PagedResult<int>> SearchAsync(FileSearchQuery query, CancellationToken ct) => _inner.SearchAsync(query, ct);

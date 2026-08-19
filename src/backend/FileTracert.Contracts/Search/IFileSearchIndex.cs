@@ -27,6 +27,22 @@ public interface IFileSearchIndex
     Task SyncFilesAsync(IReadOnlyCollection<int> fileIds, CancellationToken ct);
 
     /// <summary>
+    /// Re-syncs the entries of every file that sits in these directories, without the caller ever
+    /// naming a file. Same semantics as <see cref="SyncFilesAsync"/> — each affected entry is
+    /// removed and re-added from the current row, so what is no longer includable ends up removed
+    /// — but the set is expressed by DIRECTORY, which is what a folder rename or a folder move
+    /// actually changed.
+    ///
+    /// <para>It exists because the alternative costs the wrong thing: to prune stale entries the
+    /// caller would have to hand over the ids of ALL the files under the subtree, excluded and
+    /// absent ones included, and those are exactly the rows a narrowed filter accumulates in bulk.
+    /// A folder holding a million excluded files and a hundred indexed ones would marshal a million
+    /// ints to re-sync a hundred entries. Expressed by directory, the work is one pair of
+    /// statements per chunk of DIRECTORIES and the row set never leaves the database.</para>
+    /// </summary>
+    Task SyncDirectoriesAsync(IReadOnlyCollection<int> directoryIds, CancellationToken ct);
+
+    /// <summary>
     /// Drops the entries of every file of the volume that is excluded or no longer on disk.
     /// Run at the end of a scan, after the absent pass has flagged them.
     /// </summary>
