@@ -20,7 +20,8 @@ const items: SelectedItem[] = [
 
 const feasibility: FeasibilityResult = {
   feasible: true, requiredBytes: 1000, reservedBytes: 0,
-  availableEstimateBytes: 9000, deficitBytes: 0, estimateIsLive: true, blockingVolumeId: null,
+  availableEstimateBytes: 9000, deficitBytes: 0, marginBytes: 30, estimateIsLive: true,
+  blockingVolumeId: null,
 };
 
 function dir(id: number, name: string): CatalogDirDto {
@@ -402,5 +403,45 @@ describe('OperationPicker new folder name', () => {
 
     cmp.confirmNewFolder();
     expect(cmp.newFolderSegments()).toEqual(['Foto 2025']);
+  });
+});
+
+// 11b split RequiredBytes from MarginBytes, but the deficit still INCLUDES the margin. Showing
+// the deficit alone gives a number the user cannot find anywhere in their own file sizes.
+describe('OperationPicker space verdict', () => {
+  it('names the margin alongside the requirement when the batch fits', async () => {
+    const { cmp, fixture } = setup();
+
+    await cmp.runPreview();
+    await fixture.whenStable();
+
+    const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
+    expect(text).toContain('di margine');
+    expect(text).toContain('disponibile');
+  });
+
+  it('breaks the deficit down into requirement + margin when it does not fit', async () => {
+    const { cmp, fixture, previewBatch } = setup();
+    previewBatch.mockImplementationOnce(() => of({
+      feasible: false, requiredBytes: 1000, reservedBytes: 0, availableEstimateBytes: 400,
+      deficitBytes: 630, marginBytes: 30, estimateIsLive: true, blockingVolumeId: 2,
+    }));
+
+    await cmp.runPreview();
+    await fixture.whenStable();
+
+    const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
+    expect(text).toContain('Mancano');
+    expect(text).toContain('di margine di sicurezza');
+  });
+
+  it('says in words, not with a symbol, that the figure is a last-known one', async () => {
+    const { cmp, fixture, previewBatch } = setup();
+    previewBatch.mockImplementationOnce(() => of({ ...feasibility, estimateIsLive: false }));
+
+    await cmp.runPreview();
+    await fixture.whenStable();
+
+    expect((fixture.nativeElement as HTMLElement).textContent).toContain('ultimo dato noto');
   });
 });

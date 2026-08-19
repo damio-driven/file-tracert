@@ -230,15 +230,19 @@
               @if (p.feasible) {
                 <ft-pill variant="done">Fattibile</ft-pill>
                 <span class="feasibility-detail txt-faint">
-                  Richiesto {{ p.requiredBytes | bytes }} ·
-                  Disponibile {{ p.availableEstimateBytes | bytes }}
-                  @if (!p.estimateIsLive) { <span class="stale-flag" title="Stima su dati offline">~</span> }
+                  Richiesto {{ p.requiredBytes | bytes }}@if (p.marginBytes > 0) {<span> + {{ p.marginBytes | bytes }} di margine</span>} ·
+                  disponibile {{ p.availableEstimateBytes | bytes }}
+                  @if (!p.estimateIsLive) { <span class="ft-stale">ultimo dato noto</span> }
                 </span>
               } @else {
                 <ft-pill variant="block">Spazio insufficiente</ft-pill>
+                <!-- The deficit already includes the margin, so naming only the deficit would
+                     give a number nobody can reconcile with the size of their own files. -->
                 <span class="feasibility-detail txt-faint">
-                  Mancano {{ p.deficitBytes | bytes }}
-                  @if (!p.estimateIsLive) { <span class="stale-flag" title="Stima su dati offline">~</span> }
+                  Mancano {{ p.deficitBytes | bytes }} ·
+                  richiesto {{ p.requiredBytes | bytes }}@if (p.marginBytes > 0) {<span> + {{ p.marginBytes | bytes }} di margine di sicurezza</span>} ·
+                  disponibile {{ p.availableEstimateBytes | bytes }}
+                  @if (!p.estimateIsLive) { <span class="ft-stale">ultimo dato noto</span> }
                 </span>
               }
             </div>

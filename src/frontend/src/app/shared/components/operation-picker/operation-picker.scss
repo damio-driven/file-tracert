@@ -332,12 +332,6 @@
   line-height: 1.4;
 }
 
-.stale-flag {
-  color: var(--txt-faint);
-  margin-left: 2px;
-  font-size: 11px;
-}
-
 // Cold open: the volume list is not here yet. A skeleton shaped like the control it replaces,
 // so the dialog does not jump when the real one arrives (C27).
 .picker-loading {

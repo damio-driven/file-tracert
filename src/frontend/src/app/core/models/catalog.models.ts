@@ -274,10 +274,19 @@ export type JobBlockReason =
 
 export interface FeasibilityResult {
   feasible: boolean;
+  /** The honest size of the operation: file bytes, margin excluded. */
   requiredBytes: number;
   reservedBytes: number;
   availableEstimateBytes: number;
+  /**
+   * How much is missing to satisfy `requiredBytes + marginBytes` — the margin is INSIDE this
+   * number, which is why the UI must name it rather than show a deficit nobody can reconcile
+   * with the file sizes.
+   */
   deficitBytes: number;
+  /** Safety cushion the queue demands on top of `requiredBytes` (AppSettings.SpaceMarginPercent). */
+  marginBytes: number;
+  /** False when the free-space figure is the last known one, not a live reading. */
   estimateIsLive: boolean;
   blockingVolumeId: number | null;
 }

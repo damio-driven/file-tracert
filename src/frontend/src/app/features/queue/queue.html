@@ -171,13 +171,20 @@
                       } @else {
                         <span class="block-reason">{{ blockReasonLabel(job.blockReason) }}</span>
                       }
-                      @if (job.feasibility && job.feasibility.deficitBytes > 0) {
-                        <span class="block-deficit mono">
-                          −{{ job.feasibility.deficitBytes | bytes }}
-                          @if (!job.feasibility.estimateIsLive) {
-                            <span class="stale-flag" title="Stima su dati offline">~</span>
-                          }
-                        </span>
+                      @if (job.feasibility; as f) {
+                        @if (f.deficitBytes > 0) {
+                          <!-- The margin is part of the deficit: quoting only the deficit would
+                               name bytes the user cannot find in their own file sizes. -->
+                          <span class="block-deficit mono">
+                            −{{ f.deficitBytes | bytes }}
+                            @if (f.marginBytes > 0) {
+                              <span class="txt-faint">· margine {{ f.marginBytes | bytes }}</span>
+                            }
+                            @if (!f.estimateIsLive) {
+                              <span class="ft-stale">ultimo dato noto</span>
+                            }
+                          </span>
+                        }
                       }
                     </div>
                   }
