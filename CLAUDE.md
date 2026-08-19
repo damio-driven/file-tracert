@@ -577,8 +577,8 @@ Prossimo, in ordine:
 1. **Work package minori rimanenti** (dalla code review): ~~indice/ricerca (WP5)~~ —
    **fatto allo step 11a**; ~~spazio (WP6)~~ — **fatto allo step 11b**;
    ~~logging/shutdown (WP8)~~ — **fatto allo step 11c**; ~~frontend/UX (WP7)~~ —
-   **fatto allo step 11d**; restano
-   **efficienza** (11e), **cleanup** (11f, incl. eventuale
+   **fatto allo step 11d**; ~~efficienza (WP9)~~ — **fatto allo step 11e**; resta
+   **cleanup** (11f, incl. eventuale
    spostamento di `ScanPath` in `Contracts` come da review, e la discrepanza §3:
    `IBulkIndexWriter` sta in `Data/Indexing` e `IFileSearchIndex` in
    `Contracts/Search`, mentre §3 li dà entrambi in `Contracts` — segnalata allo
@@ -591,6 +591,196 @@ Prossimo, in ordine:
    ma chiuderlo vuol dire portare l'insieme escluso dentro il merge e il pass degli
    assenti di `IBulkIndexWriter`. C'è un test che **fissa** il comportamento attuale.
 2. **Step 12 — Test UI end-to-end (Playwright).**
+
+### Fatto nello step 11e (2026-08-19, commit `ec725c3`…`d7f7748`)
+**WP9 chiuso** (E1, E3, E4, E5, E6, E7, E8; E2 era già chiuso allo step 9a). La radice è sempre la
+stessa: **SQLite ha un solo scrittore**, quindi ogni statement di troppo su un percorso caldo non è
+«un po' più lento», è tempo in cui non scrive nessun altro — scan e coda compresi.
+**Ogni fix porta un numero misurato, e i millisecondi non sono mai il numero**: si contano
+statement, transazioni, byte allocati, visite di riga. Un test che asserisce un conteggio fallisce
+su qualunque macchina nell'istante in cui qualcuno rimette una query dentro un ciclo; un test che
+asserisce un tempo racconta l'umore del portatile.
+- **E3 — il COUNT della ricerca si ferma al cap.** `SELECT MIN(COUNT(*), 10000)` limitava il numero
+  *stampato*, non il lavoro: visitava ogni match FTS e faceva due join per ciascuno prima di
+  buttare via l'eccedenza. Ora `SELECT COUNT(*) FROM (SELECT 1 … LIMIT 10000)`, che dà la stessa
+  risposta per ogni dimensione (`MIN(n, cap)` e «conta al più cap righe» coincidono sempre).
+  Misurato **sullo statement di produzione**, non su una copia: `Files` viene ombreggiata da una
+  view che porta una UDF contatore nella WHERE, così il numero è quante righe lo statement ha
+  davvero percorso. Su 15 000 match il COUNT passa da **15 000 a 10 000** visite; il divario cresce
+  con il match set (a 100 000 match: 10 000 invece di 100 000).
+- **E7 — i watched root si ordinano una volta.** Quale root governa un item è una domanda che lo
+  scan pone per **ogni voce enumerata**, milioni su un volume vero, e la risposta veniva calcolata
+  ricostruendo ogni volta un `Where` + `OrderByDescending` + `FirstOrDefault`. L'ordinamento è una
+  proprietà del **set di root**: non può cambiare da un item al successivo. Ora vive in un valore
+  `RootsBySpecificity` — il tipo porta l'invariante, così un array non ordinato non si può passare
+  per sbaglio (sarebbe una risposta sbagliata in silenzio, non un errore di compilazione) — e la
+  domanda per item è una passeggiata first-match. Per strada `ScanPath.IsWithin` ha perso la sua
+  allocazione: `path.StartsWith(root + '\\')` costruiva una stringa prefisso per root per item.
+  Stessa regola, stessi tre casi, scritta su span. Misura con
+  `GC.GetAllocatedBytesForCurrentThread` su 200 000 risoluzioni contro 4 root annidati:
+  **83 200 000 byte → 0** (416 B per item; sul volume da 3 milioni di voci del finding, ~1,2 GB di
+  allocazione che non avviene più). `IsWithin` **non aveva un test proprio** — era coperto solo
+  attraverso i chiamanti, e uno di quelli è il guard di enqueue: ora ne ha uno che tiene la vecchia
+  scrittura come **oracolo** e le confronta su radice del volume, uguaglianza, confine di segmento,
+  path più corto del root, case folding nei due versi, non-ASCII e coppie surrogate — cioè dove
+  l'assunzione «il case folding ordinale non cambia la lunghezza», su cui poggia la versione a span,
+  poteva rompersi (`08d1e8c`).
+- **E5 — i contatori del Catalogo non escono più dall'indice, e metà del finding non reggeva.**
+  Prima di scrivere una riga è stata fatta la misura che il task chiedeva, e ha smentito la
+  diagnosi: con le statistiche che l'applicazione **ha davvero** — non esegue mai `ANALYZE` — il
+  pianificatore risponde al predicato proiettato in MULTI-INDEX OR, cioè **due seek**, non le
+  scansioni di tabella che il finding assumeva. Il rewrite in count raggruppati misura 122–449 ms
+  contro 176–239 ms della forma in essere, su 300 000 file in 499 sottocartelle: **dentro il
+  rumore**, in cambio di tre round trip invece di uno. La forma resta. *(Nota per chi un giorno
+  aggiungesse una manutenzione `ANALYZE`: con le statistiche popolate lo stesso piano collassa a
+  scansioni e il listato passa a ~13 s. È un dirupo latente, non un problema di oggi.)*
+  Quel che restava è reale e non è una questione di millisecondi: trovate le righe con il seek,
+  SQLite risaliva alla **riga di tabella** di ogni file contato per leggere due booleani — un
+  listato di 499 cartelle da ~600 file sono ~300 000 lookup per due numeri su un badge. I flag ora
+  viaggiano **con la chiave**: gli indici FK di `Files` diventano
+  `(DirectoryId, PendingDirectoryId, IsIncluded, IsPresent)` e
+  `(PendingDirectoryId, IsIncluded, IsPresent)`. **Non è un indice in più**: guidano con la stessa
+  foreign key, quindi la convenzione EF non crea più quelli stretti e il numero di B-tree per riga
+  inserita non cambia — cosa che conta, perché uno scan inserisce milioni di righe. Verificato sul
+  ferro: togliendo la migration i tempi di scan non si muovono (re-scan 1,25–1,58 s senza, 1,06–1,87 s
+  con). Il ramo dominante ora legge `SEARCH … USING COVERING INDEX`.
+- **E6 — un aggregato per tabella.** `GET /api/dashboard` faceva cinque domande al database per una
+  striscia di card, e due percorrevano **due volte** la tabella più grande del database — quella su
+  cui lo scan sta scrivendo. Ora tre, nella stessa forma `GroupBy(_ => 1)` che 11d aveva introdotto
+  per `QueueTotals`, invece di un secondo idioma accanto al primo. Misura con un interceptor di
+  comandi EF: **5 statement → 3**, di cui **2 passate su `Files` → 1**. Sparisce anche la stampella
+  `totalFiles == 0 ? 0 : sum`, che esisteva perché `SUM` su zero righe è NULL e non entra in un
+  `long`: senza righe non c'è gruppo, e `CatalogTotals.Empty` risponde per lui.
+- **E1 — la lista della coda smette di materializzare ogni item.** Mostrava il path sorgente di un
+  job caricandone l'**intera** collezione di item per prenderne il primo: per un `MoveFolder`
+  cross-volume è un'entità per file, cioè 100 000 righe sull'heap per stampare un path — e di nuovo
+  per ogni job della pagina. Ora due round trip aggregati per tutta la pagina (il minimo id per job,
+  poi i path di quegli id), e «primo» è ancorato all'**id più basso** invece che all'ordine che il
+  database restituisce a caso: una riga non deve iniziare a mostrare un file diverso per un motivo
+  che non c'entra. Misura in byte allocati da un `ListAsync`: job da 20 item **56 240 B**, da 2 000
+  item **2 479 712 B** (44×, ~1,2 KB per item) → **70 096 B** e **69 352 B**, piatto. Il job da
+  100 000 item del finding passa da ~120 MB per caricamento di pagina agli stessi ~70 KB.
+- **E4 — upsert FTS set-based per i rename di cartella.** `UpsertAsync` è un DELETE più un INSERT, e
+  tre percorsi lo chiamavano **per file**: rename di cartella, move di cartella intra-volume, move
+  cross-volume, più la riconciliazione del cancel. Un rename su 50 000 file erano 100 000 statement,
+  e il ciclo che li produceva materializzava prima la `FileEntry` completa di ognuno per leggerne il
+  nome. Ora il lotto è espresso **per directory**, con `IFileSearchIndex.SyncDirectoriesAsync` (§3:
+  il SQL sta in `Data`) che fa `DELETE` + `INSERT … SELECT` per lotto di **cartelle**: nemmeno un id
+  di file attraversa il confine. Misura su una tabella FTS5 vera con l'interceptor: 600 file
+  **1 200 → 2 statement** — e 2 non è «600 arrotondato», è *una* cartella: il conto segue la forma
+  dell'albero, mai il numero di file dentro. Allocazione, a caldo: **398 KB / 4 215 KB → 182 KB /
+  182 KB** per 25 / 500 file, cioè **piatta**.
+  La forma per-directory è la correzione della review (vedi sotto): il primo tentativo passava gli
+  **id dei file**, e per poter *potare* le entry stantie doveva nominare anche le righe escluse e
+  assenti — che sono esattamente quelle che un filtro ristretto accumula (dallo step 11a anche tutto
+  ciò che sta sotto una cartella esclusa). Una cartella con 900 file esclusi e 100 indicizzati
+  costava gli statement di mille: l'ottimizzazione di punta sarebbe regredita proprio sui cataloghi
+  che ne hanno più bisogno. C'è un test su quel caso.
+  **Due comportamenti convergono sulla regola invece di parafrasarla**, ed è voluto: il nome
+  indicizzato è ora quello **proiettato** che la costante condivisa di §5/9b definisce — questo era
+  l'unico dei quattro percorsi di popolamento a scrivere il nome fisico a mano — e un file escluso o
+  assente ora **perde** la sua entry invece di essere saltato, quindi un rename di cartella non lo
+  lascia più puntato al path vecchio. Il percorso del cancel ha anche spostato la sync **dopo** il
+  `SaveChanges`: ricostruiva le entry da righe il cui nuovo `DirectoryId` non era ancora scritto, ed
+  era corretto solo perché il path veniva passato a mano.
+- **E8 — una sola transazione per sbloccare un job.** Erano tre scritture separate: stato e overlay
+  sulla connessione del servizio, poi `ISpaceLedger.ReleaseAsync` che apre uno scope e una
+  connessione propri, poi `ReserveAsync` che ne apre altri. Su SQLite sono tre turni all'unico write
+  lock del processo, e una rivalutazione sblocca job in ciclo. Ora una: le metà **durevoli** del
+  ledger passano dal contesto del chiamante (`SpaceLedger.DeactivateEntriesAsync` e
+  `BuildReservationEntries` sono statiche esattamente per questo, e il completamento le usava già
+  così); solo lo specchio in memoria segue il commit. **Non** reintroduce il deadlock che il retry
+  evita committando prima: ciò che sarebbe un SQLITE_BUSY auto-inflitto è chiamare i metodi del
+  ledger che aprono **scope propri** mentre si tiene il write lock, e quelli qui non si chiamano
+  più. E **rafforza** la crash-safety invece di barattarla: la regola di WP1 (finding #5 — il
+  movimento durevole del ledger nella stessa transazione del cambio di stato) sul rilascio **non
+  valeva**, perché seguiva il commit; un crash lì in mezzo lasciava un job `Pending` con la riserva
+  rilasciata e non ripresa, cioè sotto-riservato rispetto a tutta la coda. C'è un test che fa
+  fallire la scrittura del ledger e trova il job ancora `Blocked` con la vecchia riserva in piedi.
+  Misura: **2 transazioni esplicite → 1** (il terzo write è un `ExecuteUpdate` singolo, per cui EF
+  non apre una transazione propria).
+- **Verifica**: xUnit **735 verdi** (+72), build backend pulita (warnings-as-errors). Frontend non
+  toccato, quindi nessun `ng build`. **RED dimostrato rimettendo il prodotto com'era**, un fix alla
+  volta: 30 000 visite invece di 25 000 (E3), 83 MB allocati invece di 0 (E7), `SEARCH … USING
+  INDEX` senza COVERING (E5), 5 statement invece di 3 (E6), 2,4 MB per pagina invece di 70 KB (E1),
+  1 200 statement invece di 4, un file con rinomina in coda indicizzato sotto il nome fisico e un
+  file escluso rimasto puntato al path vecchio (E4), 2 transazioni e un job `Pending` dopo una
+  scrittura fallita del ledger (E8).
+- **Harness sul ferro** (`D:\Collaudo\A` ↔ `C:\Collaudo\B` — il drive `E:` non esiste su questa
+  macchina): **44 scenari, 44 PASS / 0 FAIL**, eseguito due volte (prima e dopo le correzioni della
+  review). Passa anche `job-dependencies` sulla coppia *cross*, che allo step 10b era l'unico FAIL
+  (pre-esistente).
+  Tempi di scan su `D:\Collaudo\A`, 2 002 file, tre run per configurazione: primo scan
+  **2,7–5,6 s**, re-scan **1,06–1,87 s**. Sono **più lenti** dell'ultima misura registrata (step 10a:
+  1,08 s / 0,59 s) e **non per colpa di questo giro**: il log dell'harness dice che il giornale USN
+  non è disponibile (processo non elevato), quindi ogni scan qui percorre il motore a
+  **enumerazione**. Le due verifiche che contano sono state fatte a parte, revertendo un commit alla
+  volta nella working directory: **E5 non muove i tempi** (senza la migration: re-scan 1,25–1,58 s;
+  con: 1,06–1,87 s) ed **E7 nemmeno**, il che è **atteso** e va detto invece che nascosto —
+  l'harness configura **un solo** watched root e 2 002 file sono tre ordini di grandezza sotto il
+  volume su cui il difetto morde. La prova di E7 è il contatore di allocazione, non il cronometro.
+La **code review finale** (indipendente, sulle modifiche di questo giro) non ha trovato nulla di
+bloccante — ha verificato una per una le sette equivalenze, incluse le due delicate: il case folding
+`OrdinalIgnoreCase` preserva la lunghezza (quindi l'`IsWithin` a span è esatto anche su coppie
+surrogate, perché il ramo che potrebbe spezzarne una richiede `path[root.Length] == '\\'` e cade
+comunque a `false`), e `OrderByDescending` è stabile (quindi il first-match sceglie lo stesso
+elemento a parità di lunghezza). Ha trovato **due cose sopra la soglia**, entrambe corrette in
+`d7f7748`: (1) le due chiamate allo specchio in memoria del ledger **dopo il commit** passavano
+ancora `ct` — le righe sono già committate, quindi onorare il token lì separa il fatto durevole
+dalla sua copia in memoria, che è ciò su cui ogni decisione di fattibilità viene calcolata, e non è
+un rischio solo di shutdown perché `CancelAsync` esegue una rivalutazione sul token della richiesta;
+ora `CancellationToken.None`, com'era già in `JobExecutionEngine`; (2) il resync FTS del rename di
+cartella, per poter potare le entry stantie, nominava **anche** le righe escluse e assenti (vedi E4
+sopra) — risolto passando alla forma per-directory, che è anche più economica. Tre rilievi minori
+presi: l'asserzione di costo di E3 non fissa più un numero che dipende dal pianificatore, la
+riconciliazione del cancel gira ora sul `FileSearchIndex` **vero** (era l'unico dei tre punti di E4
+senza asserzioni sulle righe risultanti, ed è quello in cui la sync si è spostata da prima a dopo il
+`SaveChanges`), e il piano del covering index è asserito su 20 000 righe invece di 4. I rilievi
+lasciati consapevolmente sono in fondo.
+**Limiti noti e accettati:**
+- **La suite è instabile sotto carico**, e questo giro allarga la finestra invece di crearla: 735
+  verdi su una macchina tranquilla, ma in un run pieno **sotto build concorrente** 1–2 test di
+  integrazione *Host* possono fallire con corse sulla **vita delle connessioni SQLite**
+  (`ObjectDisposedException` su `sqlite3_create_collation`, oppure una scrittura all'Event Log
+  Windows senza elevazione). **Il test che fallisce cambia a ogni run** — `AuthEndpointTests`,
+  `DomainApiTests`, `DeviceWatcherWorkerTests`, `DatabaseInitializerTests` — e **tutti passano in
+  isolamento** (verificato 4 run su 4 per ciascuno, sia con sia senza le correzioni della review).
+  La causa è pre-esistente (TestServer paralleli che condividono connessioni in pool); i 72 test
+  aggiunti qui, alcuni dei quali seminano 12–25 000 righe, aggiungono il carico che la rende
+  visibile. Da chiudere tenendo esplicitamente aperta la `SqliteConnection` nei test Host, non
+  ignorando un rosso.
+- **Il paging delle sottocartelle del Catalogo resta aperto** (§7 dice paging *ovunque*). Con
+  l'indice covering il listato non paginato è una scansione di range sola, ma resta senza limite
+  superiore: una cartella con 100 000 sottocartelle le restituisce tutte, e i due contatori
+  correlati girano una volta per ciascuna. Chiuderlo cambia `CatalogChildrenDto` e la schermata
+  (serve un «carica altro» per le cartelle): è una **decisione di prodotto**, non un'ottimizzazione,
+  e questo task non tocca il frontend.
+- **Il dirupo `ANALYZE`.** Tutte le misure di E5 valgono per un database senza statistiche, che è
+  quello che l'app produce oggi. Se un giorno si aggiunge una manutenzione che esegue `ANALYZE`, il
+  MULTI-INDEX OR del Catalogo va rivalutato: con `PendingDirectoryId` NULL su quasi tutte le righe
+  le statistiche fanno sembrare quell'indice inservibile e il pianificatore torna alla scansione.
+- **E3 non ha una prova di costo *automatica* sullo statement di produzione senza puntelli.** Il
+  numero è misurato sullo statement vero, ma per farlo il test sostituisce `Files` con una view:
+  SQLite non espone al client alcun contatore di lavoro per statement, e i millisecondi non sono un
+  contatore. Il puntello vive nel test, mai nel prodotto.
+- **Il costo in scrittura degli indici E5 è misurato su 2 002 file**, dove non si vede. Su un volume
+  da milioni di righe le chiavi più larghe si pagano; restano comunque lo stesso *numero* di
+  B-tree per riga, che è il termine che domina.
+- **Il contatore `ChildCount` del Catalogo non è stato coperto** come quello dei file: gira sugli
+  stessi predicati proiettati ma su `Directories`, i cui indici portano solo la chiave, quindi
+  risale ancora alla riga per leggere `IsMaterialized`/`IsPresent`/`PendingState`. È la stessa
+  argomentazione di E5 su un volume di righe molto più piccolo, e allargare quell'indice costerebbe
+  anche `PendingState` (una stringa) nella chiave: lasciato **come decisione**, non come svista, in
+  attesa di un numero che la giustifichi.
+- **Una `DbUpdateException` sulla scrittura del ledger interrompe l'intera passata** di
+  rivalutazione invece di saltare il solo job (le altre save passano da
+  `SaveOrFollowConcurrentStateAsync`). Non è una regressione — anche prima l'eccezione usciva da
+  `UnblockAsync` — e la transazione fa rollback, quindi nulla resta a metà; è resilienza (§9),
+  candidata al giro di cleanup.
+- **Duplicazione lasciata a 11f**: l'idioma `GroupBy(_ => 1)` è ora scritto tre volte
+  (`CatalogTotals`, `VolumeTotals`, `QueueTotals`), e l'helper `FtsRows()` più la DDL della tabella
+  FTS5 sono copiati in tre file di test. Il secondo è il più fastidioso: è la definizione del
+  tokenizer, che può divergere in silenzio da quella della migration.
 
 ### Fatto nello step 11d (2026-08-19, commit `63a846d`…`af4196f`)
 **WP7 chiuso** (C17, C25, C27, C29, C30, K8, K9, K14): i difetti che l'utente incontra
