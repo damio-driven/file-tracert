@@ -24,11 +24,20 @@ public static class ScanPath
     public static string Join(string dir, string name) =>
         dir.Length == 0 ? name : dir + "\\" + name;
 
-    /// <summary>True when <paramref name="path"/> sits within <paramref name="root"/> (root "" = whole volume).</summary>
+    /// <summary>
+    /// True when <paramref name="path"/> sits within <paramref name="root"/> (root "" = whole volume).
+    ///
+    /// Spelled over spans rather than as <c>Equals(path, root) || path.StartsWith(root + '\\')</c>
+    /// because the scan asks this question once per enumerated item per watched root — millions of
+    /// times on a real volume — and that second clause allocated a fresh <c>root + '\\'</c> string
+    /// every single time (E7). Same rule, same three cases: the whole volume, an exact match, or a
+    /// prefix that ends on a segment boundary so <c>Docs</c> never contains <c>Documents</c>.
+    /// </summary>
     public static bool IsWithin(string path, string root) =>
         root.Length == 0 ||
-        string.Equals(path, root, StringComparison.OrdinalIgnoreCase) ||
-        path.StartsWith(root + '\\', StringComparison.OrdinalIgnoreCase);
+        (path.Length >= root.Length &&
+         (path.Length == root.Length || path[root.Length] == '\\') &&
+         path.AsSpan(0, root.Length).Equals(root, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// True when the two paths designate overlapping trees: equal, or one an ancestor of the

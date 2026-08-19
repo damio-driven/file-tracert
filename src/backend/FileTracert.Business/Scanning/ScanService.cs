@@ -230,7 +230,10 @@ public sealed class ScanService
         IReadOnlyDictionary<string, EffectiveFilter> filters,
         CancellationToken ct)
     {
-        var rootKeys = filters.Keys.ToList();
+        // E7: ordered ONCE, outside the loop. Which root governs an item is asked for every single
+        // enumerated entry — millions on a real volume — but the ordering that makes "most
+        // specific" mean anything belongs to the root set, not to the item.
+        var rootsBySpecificity = RootsBySpecificity.Of(filters.Keys);
 
         var dirs = new List<ScanItem>();
         var files = new List<ScanItem>();
@@ -268,7 +271,7 @@ public sealed class ScanService
 
             // Find the most specific active root that contains this item — the same rule the
             // single-path resolution uses, spelled once (C19).
-            var rootKey = RootFilterResolver.MostSpecificRoot(rootKeys, item.RelativePath);
+            var rootKey = rootsBySpecificity.Governing(item.RelativePath);
             if (rootKey is null)
             {
                 continue;

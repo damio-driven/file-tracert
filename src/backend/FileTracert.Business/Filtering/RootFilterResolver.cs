@@ -8,6 +8,48 @@ using Microsoft.Extensions.Logging;
 namespace FileTracert.Business.Filtering;
 
 /// <summary>
+/// A watched-root set already ordered from most to least specific, so answering "which root
+/// governs this path?" is a first-match walk instead of a filter-and-sort.
+///
+/// <para>E7 — the scan asks that question for EVERY enumerated item (millions on a real volume),
+/// and the ordering is a property of the root SET: it cannot change from one item to the next.
+/// Rebuilding it per item — a <c>Where</c>, an <c>OrderByDescending</c> and the buffer + index map
+/// its sort allocates — was the same work done over and over. The ordering lives in this type
+/// rather than in a bare <c>string[]</c> so an unordered array cannot be passed by mistake: the
+/// answer would be silently wrong, not a compile error.</para>
+/// </summary>
+public readonly struct RootsBySpecificity
+{
+    private readonly string[] _roots;
+
+    private RootsBySpecificity(string[] roots) => _roots = roots;
+
+    /// <summary>
+    /// Orders the roots once. <c>OrderByDescending</c> is stable, so roots of equal length keep
+    /// the caller's order — the same tie-break the per-item chain had.
+    /// </summary>
+    public static RootsBySpecificity Of(IEnumerable<string> normalizedRoots) =>
+        new([.. normalizedRoots.OrderByDescending(root => root.Length)]);
+
+    /// <summary>
+    /// The most specific root containing <paramref name="relativePath"/>, or null when none does.
+    /// First match wins, which is the same answer as "keep the containing ones, take the longest",
+    /// because the candidates are visited longest first. Allocates nothing: an indexed walk over
+    /// the array, and <see cref="ScanPath.IsWithin"/> no longer builds a prefix string per call.
+    /// </summary>
+    public string? Governing(string relativePath)
+    {
+        var roots = _roots;
+        for (int i = 0; i < roots.Length; i++)
+        {
+            if (ScanPath.IsWithin(relativePath, roots[i]))
+                return roots[i];
+        }
+        return null;
+    }
+}
+
+/// <summary>
 /// Answers "which filter governs THIS path on THIS volume?" outside the scan pipeline.
 ///
 /// The scan resolves one <see cref="EffectiveFilter"/> per watched root up front and matches
@@ -33,12 +75,12 @@ public sealed class RootFilterResolver
     /// <paramref name="relativePath"/>, or null when none does. Roots must already be
     /// normalized (<see cref="ScanPath.Normalize"/>); containment is the single
     /// segment-aware, case-insensitive predicate <see cref="ScanPath.IsWithin"/>.
+    ///
+    /// <para>For a one-off question. A caller that asks it in a loop orders the roots once with
+    /// <see cref="RootsBySpecificity.Of"/> and reuses the result.</para>
     /// </summary>
     public static string? MostSpecificRoot(IEnumerable<string> normalizedRoots, string relativePath) =>
-        normalizedRoots
-            .Where(root => ScanPath.IsWithin(relativePath, root))
-            .OrderByDescending(root => root.Length)
-            .FirstOrDefault();
+        RootsBySpecificity.Of(normalizedRoots).Governing(relativePath);
 
     /// <summary>
     /// The effective filter governing <paramref name="relativePath"/> on
