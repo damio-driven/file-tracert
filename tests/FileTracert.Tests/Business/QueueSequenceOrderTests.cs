@@ -55,7 +55,7 @@ public sealed class QueueSequenceOrderTests : IDisposable
     private QueueService Svc(params IInterceptor[] interceptors)
     {
         var db = _harness.CreateContext(interceptors);
-        return new QueueService(db, _ledger, _cancellation,
+        return new QueueService(db, _ledger, TestProjection.Space(db, _ledger), _cancellation,
             NSubstitute.Substitute.For<IFileMover>(), new QueueSignal(),
             TestProjection.Index(db), TestProjection.Overlay(db), TestProjection.Unblocker(db),
             TestProjection.Revaluator(db, _ledger),

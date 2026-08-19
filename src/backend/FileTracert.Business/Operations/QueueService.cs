@@ -22,6 +22,7 @@ public sealed class QueueService : IQueueService
 
     private readonly FileTracertDbContext _db;
     private readonly ISpaceLedger _ledger;
+    private readonly SpaceCheck _spaceCheck;
     private readonly IJobCancellationRegistry _cancellation;
     private readonly IFileMover _mover;
     private readonly IQueueSignal _signal;
@@ -35,6 +36,7 @@ public sealed class QueueService : IQueueService
     public QueueService(
         FileTracertDbContext db,
         ISpaceLedger ledger,
+        SpaceCheck spaceCheck,
         IJobCancellationRegistry cancellation,
         IFileMover mover,
         IQueueSignal signal,
@@ -47,6 +49,7 @@ public sealed class QueueService : IQueueService
     {
         _db = db;
         _ledger = ledger;
+        _spaceCheck = spaceCheck;
         _cancellation = cancellation;
         _mover = mover;
         _signal = signal;
@@ -140,9 +143,10 @@ public sealed class QueueService : IQueueService
 
         // Prospective job: it would land at the end of the queue, so all active deltas apply
         // (planning view — promised liberations count, the queue materializes them in order).
-        return await _ledger.ComputeFeasibilityAsync(
-            vol.Id, vol.FreeBytesLastKnown, vol.IsOnline, totalBytes, marginBytes: 0,
-            excludeJobId: null, sequenceOrder: null, includeQueuedLiberations: true, ct);
+        // The free bytes come from the drive when it answers, and EstimateIsLive says which of
+        // the two it was: the UI must never dress a last-known figure as a live one.
+        return await _spaceCheck.PlanAsync(
+            vol, totalBytes, excludeJobId: null, sequenceOrder: null, ct);
     }
 
     public async Task<FeasibilityResult> PreviewBatchAsync(
@@ -172,9 +176,8 @@ public sealed class QueueService : IQueueService
                 .FirstOrDefaultAsync(v => v.Id == volumeId, ct)
                 ?? throw new InvalidOperationException($"Target volume {volumeId} not found.");
 
-            var f = await _ledger.ComputeFeasibilityAsync(
-                vol.Id, vol.FreeBytesLastKnown, vol.IsOnline, requiredBytes, marginBytes: 0,
-                excludeJobId: null, sequenceOrder: null, includeQueuedLiberations: true, ct);
+            var f = await _spaceCheck.PlanAsync(
+                vol, requiredBytes, excludeJobId: null, sequenceOrder: null, ct);
 
             if (tightest is null ||
                 f.AvailableEstimateBytes - f.RequiredBytes < tightest.AvailableEstimateBytes - tightest.RequiredBytes)
@@ -486,18 +489,11 @@ public sealed class QueueService : IQueueService
             FeasibilityResult? feasibility = null;
             if (job.State == JobState.Blocked && job.TargetVolumeId.HasValue && job.TargetVolume is not null)
             {
-                // Hard view: the deficit shown for a Blocked job must explain the block,
-                // i.e. match the engine's execution-time re-check, not the planning estimate.
-                feasibility = await _ledger.ComputeFeasibilityAsync(
-                    job.TargetVolumeId.Value,
-                    job.TargetVolume.FreeBytesLastKnown,
-                    job.TargetVolume.IsOnline,
-                    job.RequiredBytesTarget,
-                    marginBytes: 0,
-                    excludeJobId: job.Id,
-                    sequenceOrder: job.SequenceOrder,
-                    includeQueuedLiberations: false,
-                    ct);
+                // Hard view: the deficit shown for a Blocked job must explain the block, i.e.
+                // match the engine's execution-time re-check — same object, same live figure,
+                // same margin — instead of a planning estimate that would quote a different
+                // number than the one that parked the job.
+                feasibility = (await _spaceCheck.EvaluateHardAsync(job, ct)).Feasibility;
             }
             dtos.Add(MapToDto(job, [.. job.Items], feasibility));
         }
@@ -788,9 +784,8 @@ public sealed class QueueService : IQueueService
             job.RequiredBytesTarget = file.SizeBytes;
             job.FreedBytesSource = file.SizeBytes;
 
-            var f = await _ledger.ComputeFeasibilityAsync(
-                targetVol.Id, targetVol.FreeBytesLastKnown, targetVol.IsOnline, file.SizeBytes, marginBytes: 0,
-                excludeJobId: null, sequenceOrder: null, includeQueuedLiberations: true, ct);
+            var f = await _spaceCheck.PlanAsync(
+                targetVol, file.SizeBytes, excludeJobId: null, sequenceOrder: null, ct);
 
             job.EstimateIsLive = f.EstimateIsLive;
             if (!f.Feasible)
@@ -886,9 +881,8 @@ public sealed class QueueService : IQueueService
 
         if (total > 0)
         {
-            var f = await _ledger.ComputeFeasibilityAsync(
-                targetVol.Id, targetVol.FreeBytesLastKnown, targetVol.IsOnline, total, marginBytes: 0,
-                excludeJobId: null, sequenceOrder: null, includeQueuedLiberations: true, ct);
+            var f = await _spaceCheck.PlanAsync(
+                targetVol, total, excludeJobId: null, sequenceOrder: null, ct);
 
             job.EstimateIsLive = f.EstimateIsLive;
             if (!f.Feasible)

@@ -88,7 +88,7 @@ public sealed class QueueFifoRecoveryTests : IDisposable
     // ── wiring (real services, fresh DbContext each) ──────────────────────────
 
     private QueueService MakeQueueService(FileTracertDbContext db) =>
-        new(db, _ledger, _cancellation, Substitute.For<IFileMover>(), new QueueSignal(),
+        new(db, _ledger, TestProjection.Space(db, _ledger), _cancellation, Substitute.For<IFileMover>(), new QueueSignal(),
             TestProjection.Index(db), TestProjection.Overlay(db),
             TestProjection.Unblocker(db),
             TestProjection.Revaluator(db, _ledger),

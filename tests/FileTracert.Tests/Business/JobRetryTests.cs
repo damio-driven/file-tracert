@@ -73,7 +73,7 @@ public sealed class JobRetryTests : IDisposable
     private QueueService MakeQueue()
     {
         var db = _harness.CreateContext();
-        return new QueueService(db, _ledger, new JobCancellationRegistry(), _mover,
+        return new QueueService(db, _ledger, TestProjection.Space(db, _ledger), new JobCancellationRegistry(), _mover,
             new QueueSignal(),
             TestProjection.Index(db), TestProjection.Overlay(db),
             TestProjection.Unblocker(db),

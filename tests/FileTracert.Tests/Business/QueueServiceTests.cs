@@ -54,10 +54,10 @@ public sealed class QueueServiceTests : IDisposable
 
     private readonly JobCancellationRegistry _cancellation = new();
 
-    private QueueService Svc()
+    private QueueService Svc(FileTracert.Contracts.Platform.IVolumeProbe? probe = null)
     {
         var db = _harness.CreateContext();
-        return new QueueService(db, _ledger, _cancellation,
+        return new QueueService(db, _ledger, TestProjection.Space(db, _ledger, probe), _cancellation,
             NSubstitute.Substitute.For<FileTracert.Contracts.Platform.IFileMover>(),
             new QueueSignal(),
             TestProjection.Index(db), TestProjection.Overlay(db),
@@ -373,6 +373,54 @@ public sealed class QueueServiceTests : IDisposable
         // No job should have been created.
         using var db = _harness.CreateContext();
         (await db.OperationJobs.CountAsync(None)).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Preview_quotes_the_drive_and_says_the_figure_is_live()
+    {
+        // The catalog believes 5 000 are free on Vol2; the drive really holds 42 000.
+        var f = await Svc(new StubFreeSpaceProbe(42_000)).PreviewAsync(new CreateJobRequest
+        {
+            Type = JobType.MoveFile,
+            SourceFileId = File1Id,
+            TargetVolumeId = Vol2Id,
+            TargetRelativePath = "Backup"
+        }, None);
+
+        f.AvailableEstimateBytes.Should().Be(42_000, "the preview asks the device, like the engine does");
+        f.EstimateIsLive.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Preview_of_an_unreachable_volume_falls_back_and_admits_it()
+    {
+        var f = await Svc(new StubFreeSpaceProbe(null)).PreviewAsync(new CreateJobRequest
+        {
+            Type = JobType.MoveFile,
+            SourceFileId = File1Id,
+            TargetVolumeId = Vol2Id,
+            TargetRelativePath = "Backup"
+        }, None);
+
+        f.AvailableEstimateBytes.Should().Be(5_000, "the last known figure is still worth showing");
+        f.EstimateIsLive.Should().BeFalse("but it must never be dressed up as live");
+        f.Feasible.Should().BeTrue("§4: planning never refuses on a volume it cannot see");
+    }
+
+    [Fact]
+    public async Task A_move_the_real_disk_cannot_hold_is_born_Blocked_not_refused()
+    {
+        var dto = await Svc(new StubFreeSpaceProbe(10)).EnqueueAsync(new CreateJobRequest
+        {
+            Type = JobType.MoveFile,
+            SourceFileId = File1Id,        // 1 000 bytes, and the drive holds 10
+            TargetVolumeId = Vol2Id,
+            TargetRelativePath = "Backup"
+        }, None);
+
+        dto.State.Should().Be("Blocked");
+        dto.BlockReason.Should().Be("InsufficientSpace");
+        dto.EstimateIsLive.Should().BeTrue("the verdict was taken on a figure read from the drive");
     }
 
     [Fact]

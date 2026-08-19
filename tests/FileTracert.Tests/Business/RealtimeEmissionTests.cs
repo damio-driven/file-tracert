@@ -236,7 +236,7 @@ public sealed class RealtimeEmissionTests : IDisposable
     {
         var db = _harness.CreateContext();
         return new QueueService(
-            db, _ledger, new JobCancellationRegistry(), Substitute.For<IFileMover>(), new QueueSignal(),
+            db, _ledger, TestProjection.Space(db, _ledger), new JobCancellationRegistry(), Substitute.For<IFileMover>(), new QueueSignal(),
             TestProjection.Index(db), TestProjection.Overlay(db), TestProjection.Unblocker(db),
             TestProjection.Revaluator(db, _ledger), Events(publisher), NullLogger<QueueService>.Instance);
     }

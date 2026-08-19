@@ -83,7 +83,7 @@ public sealed class JobPartialCleanupTests : IDisposable
         var ledger = Substitute.For<ISpaceLedger>();
         ledger.ReleaseAsync(default, default).ReturnsForAnyArgs(Task.CompletedTask);
         var db = _harness.CreateContext();
-        return new QueueService(db, ledger, new JobCancellationRegistry(),
+        return new QueueService(db, ledger, TestProjection.Space(db, ledger), new JobCancellationRegistry(),
             _mover, new QueueSignal(),
             TestProjection.Index(db), TestProjection.Overlay(db),
             TestProjection.Unblocker(db),

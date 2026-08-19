@@ -86,7 +86,7 @@ public sealed class JobCancellationTests : IDisposable
     {
         var db = _harness.CreateContext();
         var ledger = NoopLedger();
-        return new QueueService(db, ledger, _registry, Substitute.For<IFileMover>(),
+        return new QueueService(db, ledger, TestProjection.Space(db, ledger), _registry, Substitute.For<IFileMover>(),
             new QueueSignal(),
             TestProjection.Index(db), TestProjection.Overlay(db),
             TestProjection.Unblocker(db),

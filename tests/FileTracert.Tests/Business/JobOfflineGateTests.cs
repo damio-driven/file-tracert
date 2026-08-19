@@ -133,7 +133,7 @@ public sealed class JobOfflineGateTests : IDisposable
     {
         var db = _harness.CreateContext();
         return new QueueService(
-            db, _ledger, new JobCancellationRegistry(), mover, new QueueSignal(),
+            db, _ledger, TestProjection.Space(db, _ledger), new JobCancellationRegistry(), mover, new QueueSignal(),
             TestProjection.Index(db), TestProjection.Overlay(db),
             TestProjection.Unblocker(db),
             TestProjection.Revaluator(db, _ledger),

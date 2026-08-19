@@ -159,7 +159,7 @@ public sealed class MoveFolderSafetyTests : IDisposable
     private QueueService Queue()
     {
         var db = _harness.CreateContext();
-        return new QueueService(db, _ledger, new JobCancellationRegistry(),
+        return new QueueService(db, _ledger, TestProjection.Space(db, _ledger), new JobCancellationRegistry(),
             _mover, new QueueSignal(),
             TestProjection.Index(db), TestProjection.Overlay(db),
             TestProjection.Unblocker(db),
