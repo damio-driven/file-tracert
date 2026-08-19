@@ -68,10 +68,13 @@ public sealed class WatchedRootsService
         var root = await _db.WatchedRoots.Include(r => r.Volume).FirstOrDefaultAsync(r => r.Id == rootId, ct)
             ?? throw new KeyNotFoundException($"Watched root {rootId} not found.");
 
+        var wasActive = root.IsActive;
         if (request.IsActive is { } active)
         {
             root.IsActive = active;
         }
+
+        var perimeterChanged = root.IsActive != wasActive;
 
         ReconcileResultDto? reconcile = null;
         if (request.FilterOverride is { } overrideDto)
@@ -82,8 +85,19 @@ public sealed class WatchedRootsService
             root.FilterOverrideJson = SerializeOverride(overrideDto);
             var newFilter = EffectiveFilterBuilder.Build(settings, root.FilterOverrideJson);
 
-            var (inc, exc) = await _reconciler.ReconcileRootAsync(root, newFilter, ct);
-            reconcile = new ReconcileResultDto(inc, exc, FilterReconciler.FilterWidened(oldFilter, newFilter));
+            reconcile = await ReconcileAsync(
+                root, newFilter, widened: FilterReconciler.FilterWidened(oldFilter, newFilter) || perimeterChanged, ct);
+        }
+        else if (perimeterChanged)
+        {
+            // Switching a root off or on is a perimeter decision, and §4 says a perimeter decision
+            // is recorded on IsIncluded — never on IsPresent, and never by waiting for a scan. A
+            // root switched off soft-excludes its rows the way deleting it does; switched back on,
+            // the rows return without one disk read. NeedsScan is true either way for the same
+            // reason a widened allow-list needs one: what was never indexed cannot be un-excluded.
+            var settings = await _db.AppSettings.FirstAsync(ct);
+            var filter = EffectiveFilterBuilder.Build(settings, root.FilterOverrideJson);
+            reconcile = await ReconcileAsync(root, filter, widened: true, ct);
         }
 
         await _db.SaveChangesAsync(ct);
@@ -104,6 +118,23 @@ public sealed class WatchedRootsService
         await _db.SaveChangesAsync(ct);
 
         await tx.CommitAsync(ct);
+    }
+
+    /// <summary>
+    /// Recomputes inclusion under a root against its resolved filter — or excludes everything
+    /// under it when the root is not active, because an inactive root is a perimeter the scan will
+    /// not walk into, and a row inside it is excluded, not missing.
+    /// </summary>
+    private async Task<ReconcileResultDto> ReconcileAsync(
+        WatchedRoot root, EffectiveFilter filter, bool widened, CancellationToken ct)
+    {
+        if (!root.IsActive)
+        {
+            return new ReconcileResultDto(0, await _reconciler.ExcludeAllUnderAsync(root, ct), NeedsScan: false);
+        }
+
+        var (included, excluded) = await _reconciler.ReconcileRootAsync(root, filter, ct);
+        return new ReconcileResultDto(included, excluded, widened);
     }
 
     /// <summary>Serializes a per-root override; <c>UseDefault</c> (or null) → no override stored.</summary>
