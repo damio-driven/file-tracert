@@ -48,7 +48,10 @@ Uso personale/multimediale: si indicizzano solo i tipi di file scelti dall'utent
 ### Test
 - Backend: **xUnit** — unit + integration test, copertura completa
 - Frontend: **Vitest** (integrato in Angular 21) — unit + component test
-- E2E: **Playwright** sui flussi critici
+- E2E: **Playwright** sui flussi critici — progetto `tests/e2e` con npm proprio, si lancia con
+  `npm test` da lì (compila backend e frontend, poi avvia **un Host vero per test** su un DB
+  usa-e-getta). Windows, **non elevato** (il `globalSetup` si rifiuta di partire da elevato),
+  fuori CI — come l'harness. Dettagli in `tests/e2e/README.md`.
 
 ---
 
@@ -637,7 +640,84 @@ non ha una riconciliazione propria** — togliere un segmento escluso dice onest
 (11g) e non riammette nulla senza scansione, il che è corretto ma non è una riconciliazione. Vedi
 il paragrafo «Fatto nello step 11h».
 Prossimo, in ordine:
-1. **Step 12 — Test UI end-to-end (Playwright).**
+1. **Step 12b — flussi E2E di Catalogo, Ricerca, Coda e realtime.** Lo **step 12a**
+   (infrastruttura Playwright + avvio/auth, Dashboard, Volumi, scansione) è **fatto**.
+
+### Fatto nello step 12a (2026-08-19, commit `9da54f1`…`76fdebf`)
+Il **terzo livello della piramide** esiste: `tests/e2e`, Playwright su Chromium, che guida **il
+prodotto assemblato**. Copre avvio/autenticazione, Dashboard, Volumi (cartelle monitorate e
+filtri) e una scansione vera. Catalogo, Ricerca, Coda e realtime sono il **12b**.
+- **Il browser parla con il Host, non con `ng serve`** — questa è la decisione che struttura tutto
+  il resto. Stessa origine, token letto dal `<meta name="ft-token">` che il Host timbra su
+  `index.html`, WebSocket diretto verso `/hubs/events`. È il prodotto: `ng serve` + proxy sarebbe
+  stato più rapido da montare e avrebbe provato il percorso **dev** del token con un proxy in
+  mezzo al socket.
+- **Un Host per test**, su un database vuoto, ~4 s a testa. I contatori della Dashboard sono
+  **globali**: condividere un database vorrebbe dire scrivere asserzioni valide solo in un certo
+  ordine di esecuzione. Nessun `webServer` di Playwright — non saprebbe dare un Host per test.
+- **Avvio e spegnimento passano da due `.ps1`**, e non per gusto. Node non può avviare il Host
+  direttamente: `spawn({detached:true})` su Windows lo lascia **senza console**, un figlio
+  non-detached **condivide** quella del runner (un Ctrl+C per il Host colpirebbe Playwright), e
+  `Start-Process` con redirezione su file passa al Host **ogni handle ereditabile** — compresa la
+  pipe del runner, che resterebbe aperta finché vive il servizio: il pid viaggia quindi in un
+  file, non su stdout. Lo spegnimento è **CTRL_C_EVENT** (SIGINT per .NET): `taskkill` senza `/F`
+  non ferma un'app console senza finestra, e con `/F` è `TerminateProcess` — la sequenza di stop
+  dello step 11c non verrebbe eseguita e il test non proverebbe nulla. **Il test fallisce se il
+  Host non si spegne**, e anche se l'evento non è stato consegnato ma il processo è morto lo
+  stesso.
+- **Isolamento, in ordine di gravità:** mai il DB reale (`FileTracert:DatabasePath` dentro
+  `.artifacts`, **e** si verifica che quel file esista davvero prima di eseguire i test — un
+  binding rotto farebbe migrare il catalogo dell'utente in silenzio); mai la porta 5005 (range
+  dedicato 5180–5279, con un guard che scatta se qualcuno lo allarga); mai un file fuori dalla
+  sandbox (`Sandbox` cancella solo sotto `.artifacts`, e lo stesso guard vale per setup e
+  teardown). Il perimetro del catalogo è la sola cartella-sandbox: gli altri volumi restano come
+  li ha classificati il prodotto e **senza cartelle monitorate non vengono mai scansionati**.
+- **Da elevato la suite non parte.** Il motore si sceglie dal filesystem, non da un'impostazione:
+  su NTFS la scansione *prova sempre* USN, e con i privilegi `EnsureJournal` **creerebbe** un
+  giornale sul volume di sistema (modifica persistente fuori dalla sandbox, fatta da un test)
+  mentre lo snapshot camminerebbe l'intera MFT. Non elevati, Windows rifiuta e il prodotto ripiega
+  sull'enumerazione della sola cartella monitorata. Il `globalSetup` lo verifica e si ferma.
+- **Nessuna sincronizzazione a tempo**, e **zero retry** (un retry nasconde esattamente la classe
+  di difetti che questo livello esiste per trovare). Gli stati **transitori** non si aspettano:
+  un `MutationObserver` installato *prima* dell'azione registra la comparsa della barra di
+  scansione, così l'asserzione non corre contro la fine del lavoro che ha appena avviato.
+- **Un difetto del prodotto trovato dai test, e lasciato lì di proposito.** La schermata Volumi
+  **auto-seleziona** il primo volume catalogabile appena la lista arriva, e applica quella scelta
+  quando torna *la sua* richiesta. Il clic dell'utente ne manda una seconda: **vince la risposta
+  che atterra per ultima**, quindi su una macchina carica la selezione torna da sola sul primo
+  volume mentre l'utente sta guardando l'altro. È esattamente ciò che ha fatto cadere la seconda
+  delle tre passate (`76fdebf`). Il fix è della schermata, non del test, e sta fuori dal 12a: qui
+  il test smette solo di **asserire attraverso** una selezione che il prodotto può spostare.
+- **Verifica**: E2E **9 verdi ×3 di fila** (~2,2 min a passata, build inclusa); xUnit **786**
+  verdi, Vitest **244** verdi, build backend pulita (warnings-as-errors), `ng build` ok (restano
+  i 4 warning di budget SCSS, pre-esistenti). **RED dimostrato** due volte rompendo il prodotto:
+  tolto il timbro del token nel `<meta>` → 3 su 3 rossi, con la shell che dice *«servizio non
+  raggiungibile»*; tolta l'emissione di `ScanProgress` → **solo** il test della scansione rosso
+  («il flag non è mai comparso»), gli altri verdi. Prodotto ripristinato in entrambi i casi.
+La **code review finale** (indipendente, sulle modifiche di questo giro) ha trovato **nove** cose,
+tutte corrette nel commit `8046d7c`: un Host il cui avvio fallisce non veniva mai registrato per
+la pulizia (teneva porta e database, e il run successivo partiva su una cartella sporca); la
+pulizia d'emergenza non poteva funzionare (`process.on('exit')` esegue solo lavoro **sincrono**,
+`execFile` no); il caso elevato di cui sopra; l'assenza di un'asserzione dietro la regola del
+database; la corsa sullo stato transitorio della scansione; uno spegnimento che riportava
+«pulito» quando l'evento non era stato consegnato; due asserzioni **eco** (il filesystem
+confrontato col valore che l'API aveva dato alla schermata, e il token con una seconda lettura
+dello stesso tag); «Attiva» ambiguo tra la pill di un root attivo e il bottone offerto su uno
+sospeso; più i minori (EPERM letto come «processo morto», guard di cancellazione solo in
+teardown, shell che spezzava gli argomenti di build sugli spazi, export morti, lockfile che
+`npm ci` rifiutava, nessun typecheck).
+**Limiti noti e accettati:**
+- **La corsa dell'auto-selezione su Volumi resta aperta** (vedi sopra): è un difetto del prodotto,
+  candidato ai work package minori o al giro che tocca quella schermata.
+- **Non prova il percorso USN.** Vale per scelta (vedi sopra) e vale anche per l'harness.
+- **La prima passata di `ScanWorker`** all'avvio del Host corre contro l'`addWatchedRoot` del
+  test: oggi vince il test perché quel primo ciclo gira mentre la tabella dei volumi è ancora
+  vuota. Non è un difetto ora; se un domani uno spec aggiungesse un root più lentamente, la prima
+  asserzione a rompersi sarebbe *«Ultima scansione … mai»*.
+- **`FT_E2E_SKIP_BUILD=1` controlla che gli artefatti esistano, non che siano aggiornati.**
+- **La sandbox protegge la suite, non il prodotto.** Qui si legge soltanto il disco (una
+  scansione). Il 12b eseguirà **move e rename veri** sul volume di sistema, che questa suite rende
+  catalogabile: qualunque cosa limiti quelle operazioni va costruita **prima** del 12b, non dopo.
 
 ### Fatto nello step 11h (2026-08-19, commit `b0090c1`…`460495c`)
 **Una riga ricorda perché è esclusa, e la riconciliazione disfa solo ciò che ha diritto di
