@@ -1,7 +1,10 @@
+using FileTracert.Business.Filtering;
+using FileTracert.Business.Setup;
 using FileTracert.Contracts.Enums;
 using FileTracert.Data;
 using FileTracert.Data.Entities;
 using FileTracert.Data.Indexing;
+using FileTracert.Data.Search;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -63,6 +66,39 @@ public sealed class ExclusionCauseBackfillTests : IDisposable
         var included = await read.Files.SingleAsync(f => f.Name == "old.jpg");
         included.IsIncluded.Should().BeTrue();
         included.ExcludedByScan.Should().BeFalse("an included row carries no cause at all");
+    }
+
+    /// <summary>
+    /// The point of the pessimistic stamp: a reconciliation over a legacy row must NOT walk it back
+    /// into the Catalog on its own, however wide the filter gets. Run through the real
+    /// <see cref="FilterReconciler"/>, because "the flag is set" and "the reconciler honours it"
+    /// are two different claims.
+    /// </summary>
+    [Fact]
+    public async Task A_backfilled_row_does_not_come_back_on_a_widened_filter_alone()
+    {
+        await MigrateToAsync(PreviousMigration);
+        await SeedLegacyRowsAsync();
+
+        await using (var db = CreateContext())
+        {
+            await db.Database.MigrateAsync();
+        }
+
+        await using (var db = CreateContext())
+        {
+            var root = new WatchedRoot { VolumeId = 1, RelativePath = string.Empty, IsActive = true };
+            db.WatchedRoots.Add(root);
+            await db.SaveChangesAsync();
+
+            // The widest filter there is: every type allowed.
+            await new FilterReconciler(db, new FileSearchIndex(db)).ReconcileRootAsync(
+                root, new EffectiveFilter(new HashSet<string>(), []), CancellationToken.None);
+        }
+
+        await using var read = CreateContext();
+        (await read.Files.SingleAsync(f => f.Name == "old.txt")).IsIncluded
+            .Should().BeFalse("a legacy row whose cause is unknown stays out until a scan says otherwise");
     }
 
     /// <summary>

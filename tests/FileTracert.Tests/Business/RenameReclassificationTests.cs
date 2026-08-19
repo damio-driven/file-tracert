@@ -93,6 +93,62 @@ public sealed class RenameReclassificationTests : IDisposable
         hits.Items.Should().ContainSingle();
     }
 
+    /// <summary>
+    /// Step 11h. The rename knows the file's own name, attributes and path — not that a FOLDER
+    /// above it is Hidden. So it may not re-include a row the SCAN excluded: it does not have the
+    /// information, and saying yes anyway breaks the invariant that keeps the next scan's absence
+    /// pass off this row. That pass would then stamp <c>IsPresent = 0</c> on a file sitting on the
+    /// disk, which is the exact shape of the bug step 11g existed to remove.
+    /// </summary>
+    [Fact]
+    public async Task Rename_does_not_re_include_a_row_the_scan_excluded()
+    {
+        Seed(newName: "foto.txt", allowedExtensions: ["jpg", "txt"],
+             startsIncluded: false, excludedByScan: true);
+
+        await RunRenameAsync();
+
+        await using var probe = _harness.CreateContext();
+        var file = await probe.Files.SingleAsync();
+        file.Extension.Should().Be("txt", "the reclassification still happens");
+        file.ExcludedByScan.Should().BeTrue("only a scan can retract what a scan decided");
+        file.IsIncluded.Should().BeFalse(
+            "the allow-list is not the only gate, and the rename cannot see the folder above it");
+
+        var hits = await new FileSearchIndex(probe).SearchAsync(
+            Query("foto", Category: null), CancellationToken.None);
+        hits.Items.Should().BeEmpty("an excluded row is not a search hit whatever excluded it");
+    }
+
+    /// <summary>The invariant, stated once: an included row carries no cause at all.</summary>
+    [Fact]
+    public async Task Rename_back_into_the_allow_list_clears_the_type_cause()
+    {
+        Seed(newName: "foto.txt", allowedExtensions: ["jpg", "txt"], startsIncluded: false);
+
+        await RunRenameAsync();
+
+        await using var probe = _harness.CreateContext();
+        var file = await probe.Files.SingleAsync();
+        file.IsIncluded.Should().BeTrue();
+        (file.ExcludedByType || file.ExcludedByRoot || file.ExcludedByScan).Should().BeFalse();
+    }
+
+    /// <summary>…and the other direction writes the cause instead of an anonymous flag.</summary>
+    [Fact]
+    public async Task Rename_out_of_the_allow_list_records_the_type_as_the_cause()
+    {
+        Seed(newName: "foto.exe", allowedExtensions: ["jpg", "txt"]);
+
+        await RunRenameAsync();
+
+        await using var probe = _harness.CreateContext();
+        var file = await probe.Files.SingleAsync();
+        file.IsIncluded.Should().BeFalse();
+        file.ExcludedByType.Should().BeTrue("the allow-list is what rejected it");
+        file.ExcludedByScan.Should().BeFalse("the scan said nothing about this row");
+    }
+
     // ── plumbing ──────────────────────────────────────────────────────────────
 
     private async Task RunRenameAsync()
@@ -103,7 +159,9 @@ public sealed class RenameReclassificationTests : IDisposable
         await updater.UpdateAfterCompletionAsync(job, CancellationToken.None);
     }
 
-    private void Seed(string newName, string[]? allowedExtensions = null, bool startsIncluded = true)
+    private void Seed(
+        string newName, string[]? allowedExtensions = null, bool startsIncluded = true,
+        bool excludedByScan = false)
     {
         using var db = _harness.CreateContext();
 
@@ -127,6 +185,7 @@ public sealed class RenameReclassificationTests : IDisposable
         {
             Id = 1, VolumeId = 1, DirectoryId = 10, Name = "foto.jpg", Extension = "jpg",
             Category = FileCategory.Image, SizeBytes = 10, IsPresent = true, IsIncluded = startsIncluded,
+            ExcludedByScan = excludedByScan,
             FileCreatedUtc = DateTime.UtcNow, FileModifiedUtc = DateTime.UtcNow, LastIndexedUtc = DateTime.UtcNow,
         });
 

@@ -550,8 +550,12 @@ public sealed class ScanService
             {
                 // Deliberately does NOT claim they are still on disk: the scan did not look there,
                 // which is the whole reason their presence was left alone.
+                // "Rows recorded", not "rows newly hidden": the pass writes the cause on every row
+                // it applies to, and a row already excluded for another reason is counted here too
+                // when it learns this one. Both are real writes; neither is a user-visible change
+                // on its own.
                 _logger.LogInformation(
-                    "Volume {VolumeId}: {Count} file(s) outside the scanned perimeter, marked excluded " +
+                    "Volume {VolumeId}: {Count} row(s) recorded as outside the scanned perimeter " +
                     "(their presence is left as it was — this scan did not look there).",
                     volume.Id, closure.Excluded);
             }

@@ -78,11 +78,13 @@ public sealed class IndexUpdater
     /// comes back in is re-included. The search index follows in the same direction, because an
     /// excluded row that stayed in FTS would still be a hit.
     ///
-    /// <para><b>Known gap:</b> <c>ShouldIncludeFile</c> is no longer the WHOLE scan rule — since
-    /// the inherited-exclusion fix a scan also drops anything under an excluded folder. A rename
-    /// of such a file would re-include it here. Narrow, because after that fix no such row is
-    /// written any more; it can only be met in a catalog an older build produced, and the next
-    /// scan puts it back.</para>
+    /// <para>Step 11h closed what used to be a known gap here. A rename knows the file's own name,
+    /// attributes and path; it does NOT know that a folder above it is Hidden, which is what
+    /// <c>ExcludedByScan</c> records. So it writes only the causes it can decide — the allow-list,
+    /// and the perimeter rules it CAN evaluate — and derives <c>IsIncluded</c> from all three
+    /// instead of overwriting it. Re-including a scan-excluded row was not just optimistic: it
+    /// broke the invariant that keeps the next scan's absence pass off that row, and that pass
+    /// would then stamp <c>IsPresent = 0</c> on a file sitting on the disk.</para>
     /// </summary>
     private async Task RenameFileIndexAsync(OperationJob job, CancellationToken ct)
     {
@@ -101,8 +103,19 @@ public sealed class IndexUpdater
         file.Name = newName;
         file.Extension = extension;
         file.Category = FileFilter.ResolveCategory(extension, categories);
-        file.IsIncluded = FileFilter.ShouldIncludeFile(
-            item.TargetRelativePath, extension, file.Attributes, filter);
+        // The type cause is fully knowable from the new name, so it is recomputed both ways.
+        file.ExcludedByType = !FileFilter.IsAllowedType(extension, filter);
+
+        // The perimeter half is only ever SET here, never cleared: this call can see that the new
+        // path now carries an excluded segment, but it cannot see that the folder above the file
+        // is still Hidden. Clearing on "looks fine from here" is how a scan decision gets undone
+        // by something that never looked at the disk.
+        if (!FileFilter.IsInsidePerimeter(item.TargetRelativePath, file.Attributes, filter))
+        {
+            file.ExcludedByScan = true;
+        }
+
+        file.IsIncluded = !(file.ExcludedByType || file.ExcludedByRoot || file.ExcludedByScan);
 
         await _db.SaveChangesAsync(ct);
 

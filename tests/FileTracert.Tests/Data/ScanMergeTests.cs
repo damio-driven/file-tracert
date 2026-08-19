@@ -334,6 +334,83 @@ public sealed class ScanMergeTests
         seen.IsPresent.Should().BeTrue();
     }
 
+    /// <summary>
+    /// Step 11h moved the exclusion guard from <c>IsIncluded</c> to the cause's own column, so
+    /// running the pass twice must not move anything the second time — a scan that changes nothing
+    /// must write nothing.
+    /// </summary>
+    [Fact]
+    public async Task Closing_the_same_scan_twice_changes_nothing_the_second_time()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var fx = await SeedAsync(harness);
+
+        await using (var ctx = harness.CreateContext())
+        {
+            await new BulkIndexWriter(ctx).MergeScannedFilesAsync(
+                fx.VolumeId, [Scanned(fx.VolumeId, fx.SubDirId, "skipped.jpg")], T0, CancellationToken.None);
+        }
+
+        var scanStart = T0.AddHours(1);
+        SkippedScanArea[] areas = [new(fx.SubDirId, null, ScanSkipCause.FilteredOut)];
+
+        await using (var ctx = harness.CreateContext())
+        {
+            var writer = new BulkIndexWriter(ctx);
+            (await writer.ReconcileUnseenFilesAsync(fx.VolumeId, scanStart, areas, CancellationToken.None))
+                .Should().Be(new ScanClosureResult(Excluded: 1, Absent: 0));
+            (await writer.ReconcileUnseenFilesAsync(fx.VolumeId, scanStart, areas, CancellationToken.None))
+                .Should().Be(new ScanClosureResult(Excluded: 0, Absent: 0), "the cause is already on the row");
+        }
+
+        await using var read = harness.CreateContext();
+        var row = await read.Files.SingleAsync();
+        row.IsIncluded.Should().BeFalse();
+        row.IsPresent.Should().BeTrue("running the pass again must not turn an exclusion into an absence");
+    }
+
+    /// <summary>
+    /// The safety net under the new guard. If anything ever leaves a row carrying a cause AND
+    /// <c>IsIncluded = 1</c>, the pass must put it right rather than skip it — because the row would
+    /// otherwise fall through to the absence pass and be stamped "no longer on disk" for a file
+    /// that is sitting there. That is the exact bug step 11g existed to remove, and no guard on a
+    /// data-loss-shaped path should depend on an invariant holding everywhere else.
+    /// </summary>
+    [Fact]
+    public async Task A_row_that_carries_a_cause_but_still_claims_inclusion_is_re_excluded_not_flagged_absent()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var fx = await SeedAsync(harness);
+
+        await using (var ctx = harness.CreateContext())
+        {
+            await new BulkIndexWriter(ctx).MergeScannedFilesAsync(
+                fx.VolumeId, [Scanned(fx.VolumeId, fx.SubDirId, "skipped.jpg")], T0, CancellationToken.None);
+        }
+
+        // The broken state, written by hand: excluded by the scan, yet flagged included.
+        await using (var ctx = harness.CreateContext())
+        {
+            var row = await ctx.Files.SingleAsync();
+            row.ExcludedByScan = true;
+            row.IsIncluded = true;
+            await ctx.SaveChangesAsync();
+        }
+
+        await using (var ctx = harness.CreateContext())
+        {
+            var closure = await new BulkIndexWriter(ctx).ReconcileUnseenFilesAsync(
+                fx.VolumeId, T0.AddHours(1),
+                [new SkippedScanArea(fx.SubDirId, null, ScanSkipCause.FilteredOut)], CancellationToken.None);
+            closure.Absent.Should().Be(0);
+        }
+
+        await using var read = harness.CreateContext();
+        var repaired = await read.Files.SingleAsync();
+        repaired.IsIncluded.Should().BeFalse();
+        repaired.IsPresent.Should().BeTrue("the file is on the disk; the scan simply did not look");
+    }
+
     [Fact]
     public async Task A_single_skipped_file_is_excluded_without_touching_its_neighbours()
     {

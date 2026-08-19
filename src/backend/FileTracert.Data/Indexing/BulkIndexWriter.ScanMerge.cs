@@ -162,6 +162,12 @@ public sealed partial class BulkIndexWriter
     /// already excluded for a different reason still has to learn this one, or undoing that other
     /// reason would let it back in. (A <c>.tmp</c> inside a hidden folder is the case: excluded by
     /// type, and it must not return when the type filter widens.)
+    ///
+    /// <para>…plus <c>OR IsIncluded = 1</c>, which is the safety net under that change. A row
+    /// carrying the cause AND claiming inclusion is a broken invariant, and skipping it would drop
+    /// it into the ABSENCE pass — stamping "no longer on disk" on a file that is sitting there,
+    /// the exact bug step 11g removed. The pass repairs it instead. No guard on a data-loss-shaped
+    /// path should depend on an invariant holding everywhere else.</para>
     /// </summary>
     private static Task<int> ExcludeForCauseAsync(
         SqliteConnection conn, SqliteTransaction? tx, int volumeId,
@@ -176,7 +182,7 @@ public sealed partial class BulkIndexWriter
             $"""
             UPDATE Files
                SET {column} = 1, IsIncluded = 0, RowUpdatedUtc = $now
-             WHERE VolumeId = $vol AND {column} = 0
+             WHERE VolumeId = $vol AND ({column} = 0 OR IsIncluded = 1)
                AND LastIndexedUtc < $scanStart
                AND EXISTS (SELECT 1 FROM ScanSkipAreas s
                             WHERE s.DirectoryId = Files.DirectoryId
