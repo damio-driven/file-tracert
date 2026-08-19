@@ -1,3 +1,4 @@
+using FileTracert.Contracts.Scanning;
 using FileTracert.Data.Entities;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -103,7 +104,13 @@ public sealed partial class BulkIndexWriter
     /// Flags what the scan deliberately skipped as excluded, leaving <c>IsPresent</c> untouched:
     /// the file is on disk, it is simply outside the perimeter the user asked for (§4). The areas
     /// are staged the same way the merge stages its batch — a per-connection TEMP table — so the
-    /// pass stays one UPDATE whatever the number of rows behind those areas.
+    /// pass stays one UPDATE PER CAUSE whatever the number of rows behind those areas.
+    ///
+    /// <para>Two statements rather than one because the two causes are undone by different people
+    /// (step 11h) and a row must carry the one that is true of it. A single UPDATE could set both
+    /// flags with correlated CASE subqueries, at the price of asking the staging table three times
+    /// per row instead of once; a cause with no areas costs nothing here, and the common shape of a
+    /// scan closure is one cause or none at all.</para>
     /// </summary>
     private static async Task<int> ExcludeSkippedAsync(
         SqliteConnection conn, SqliteTransaction? tx, int volumeId,
@@ -113,42 +120,83 @@ public sealed partial class BulkIndexWriter
             """
             CREATE TEMP TABLE IF NOT EXISTS ScanSkipAreas (
                 DirectoryId INTEGER NOT NULL,
-                Name        TEXT    NULL
+                Name        TEXT    NULL,
+                Cause       TEXT    NOT NULL
             );
             """, ct);
         await ExecuteAsync(conn, tx,
             "CREATE INDEX IF NOT EXISTS IX_ScanSkipAreas_DirectoryId ON ScanSkipAreas(DirectoryId);", ct);
         await ExecuteAsync(conn, tx, "DELETE FROM ScanSkipAreas;", ct);
 
+        var causes = new HashSet<ScanSkipCause>();
         await using (var insert = conn.CreateCommand())
         {
             insert.Transaction = tx;
-            insert.CommandText = "INSERT INTO ScanSkipAreas (DirectoryId, Name) VALUES ($dir, $name);";
+            insert.CommandText =
+                "INSERT INTO ScanSkipAreas (DirectoryId, Name, Cause) VALUES ($dir, $name, $cause);";
             var dir = insert.Parameters.Add("$dir", SqliteType.Integer);
             var name = insert.Parameters.Add("$name", SqliteType.Text);
+            var cause = insert.Parameters.Add("$cause", SqliteType.Text);
 
             foreach (var area in skipped)
             {
                 dir.Value = area.DirectoryId;
                 name.Value = area.FileName is null ? DBNull.Value : area.FileName;
+                cause.Value = area.Cause.ToString();
+                causes.Add(area.Cause);
                 await insert.ExecuteNonQueryAsync(ct);
             }
         }
 
+        var excluded = 0;
+        foreach (var cause in causes)
+        {
+            excluded += await ExcludeForCauseAsync(conn, tx, volumeId, scanStartedUtc, now, cause, ct);
+        }
+
+        return excluded;
+    }
+
+    /// <summary>
+    /// One cause, one statement. The guard is the cause's OWN flag, not <c>IsIncluded</c>: a row
+    /// already excluded for a different reason still has to learn this one, or undoing that other
+    /// reason would let it back in. (A <c>.tmp</c> inside a hidden folder is the case: excluded by
+    /// type, and it must not return when the type filter widens.)
+    /// </summary>
+    private static Task<int> ExcludeForCauseAsync(
+        SqliteConnection conn, SqliteTransaction? tx, int volumeId,
+        DateTime scanStartedUtc, DateTime now, ScanSkipCause cause, CancellationToken ct)
+    {
+        var column = ColumnFor(cause);
+
         // A NULL Name means the whole directory. Name comparison is COLLATE NOCASE for the same
         // reason the merge matches that way: Windows does not distinguish case, SQLite's default
         // BINARY collation does.
-        return await ExecuteAsync(conn, tx,
-            """
+        return ExecuteAsync(conn, tx,
+            $"""
             UPDATE Files
-               SET IsIncluded = 0, RowUpdatedUtc = $now
-             WHERE VolumeId = $vol AND IsIncluded = 1
+               SET {column} = 1, IsIncluded = 0, RowUpdatedUtc = $now
+             WHERE VolumeId = $vol AND {column} = 0
                AND LastIndexedUtc < $scanStart
                AND EXISTS (SELECT 1 FROM ScanSkipAreas s
                             WHERE s.DirectoryId = Files.DirectoryId
+                              AND s.Cause = $cause
                               AND (s.Name IS NULL OR s.Name = Files.Name COLLATE NOCASE));
-            """, ct, ("$vol", volumeId), ("$scanStart", scanStartedUtc), ("$now", now));
+            """, ct,
+            ("$vol", volumeId), ("$scanStart", scanStartedUtc), ("$now", now), ("$cause", cause.ToString()));
     }
+
+    /// <summary>
+    /// The one place a scan-skip cause becomes a column name. Interpolated into the statement
+    /// rather than parameterised because a column name cannot be a parameter — which is safe here
+    /// precisely because it comes from this switch and never from a caller's string.
+    /// </summary>
+    private static string ColumnFor(ScanSkipCause cause) => cause switch
+    {
+        ScanSkipCause.InactiveRoot => "ExcludedByRoot",
+        ScanSkipCause.FilteredOut => "ExcludedByScan",
+        _ => throw new ArgumentOutOfRangeException(nameof(cause), cause, "Unknown scan skip cause."),
+    };
 
     /// <summary>
     /// Flags what the scan looked for and did not find. Only rows the filter includes: an excluded

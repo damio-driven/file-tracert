@@ -591,9 +591,9 @@ public sealed class ScanService
 
         foreach (var (path, id) in idByPath)
         {
-            if (!perimeter.Covers(path))
+            if (perimeter.SkipCause(path) is { } cause)
             {
-                areas.Add(new SkippedScanArea(id, FileName: null));
+                areas.Add(new SkippedScanArea(id, FileName: null, cause));
             }
         }
 
@@ -601,7 +601,10 @@ public sealed class ScanService
         {
             if (idByPath.TryGetValue(ScanPath.Parent(file), out var directoryId))
             {
-                areas.Add(new SkippedScanArea(directoryId, ScanPath.Name(file)));
+                // FilteredOut by construction: an item outside every active root never reaches
+                // ScanPerimeter.SkipFile, so a file on this list was offered to the filter and
+                // refused by it — the cause no setting can retract.
+                areas.Add(new SkippedScanArea(directoryId, ScanPath.Name(file), ScanSkipCause.FilteredOut));
                 continue;
             }
 

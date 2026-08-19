@@ -53,14 +53,31 @@ public sealed class ScanPerimeter
     /// True when the scan looked at <paramref name="relativePath"/>: inside an active root and not
     /// under an excluded subtree.
     /// </summary>
-    public bool Covers(string relativePath) =>
-        _roots.Governing(relativePath) is not null && !_excluded.Covers(relativePath);
+    public bool Covers(string relativePath) => SkipCause(relativePath) is null;
+
+    /// <summary>
+    /// Why the scan did not look at <paramref name="relativePath"/>, or null when it did.
+    ///
+    /// <para>The two answers are NOT interchangeable and that is the point of step 11h: outside
+    /// every active root is a setting the user can flip back, and reconciliation undoes it without
+    /// a disk read; rejected by the perimeter rules is a fact about the disk, and only another scan
+    /// can retract it. Asking the roots first is also the right precedence — an item outside every
+    /// active root was never offered to the filter at all, so it cannot have been "filtered out".
+    /// </para>
+    /// </summary>
+    public ScanSkipCause? SkipCause(string relativePath) =>
+        _roots.Governing(relativePath) is null ? ScanSkipCause.InactiveRoot
+        : _excluded.Covers(relativePath) ? ScanSkipCause.FilteredOut
+        : null;
 
     /// <summary>
     /// The files skipped one by one, once the subtree exclusions are known. A file under an
     /// excluded subtree is dropped from this list rather than reported twice: its whole directory
     /// is already outside the perimeter, and the directory is one row for the merge instead of one
     /// per file.
+    /// <para>Every one of them carries <see cref="ScanSkipCause.FilteredOut"/> by construction:
+    /// an item outside every active root is dropped before <see cref="SkipFile"/> is ever reached,
+    /// so a file that got this far was offered to the filter and refused by it.</para>
     /// </summary>
     public IReadOnlyList<string> SkippedFiles => _skippedFiles;
 

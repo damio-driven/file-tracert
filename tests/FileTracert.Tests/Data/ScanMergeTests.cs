@@ -1,3 +1,4 @@
+using FileTracert.Contracts.Scanning;
 using FileTracert.Contracts.Enums;
 using FileTracert.Data.Entities;
 using FileTracert.Data.Indexing;
@@ -314,7 +315,7 @@ public sealed class ScanMergeTests
                 CancellationToken.None);
 
             var closure = await writer.ReconcileUnseenFilesAsync(
-                fx.VolumeId, scanStart, [new SkippedScanArea(fx.SubDirId, FileName: null)], CancellationToken.None);
+                fx.VolumeId, scanStart, [new SkippedScanArea(fx.SubDirId, FileName: null, ScanSkipCause.FilteredOut)], CancellationToken.None);
 
             closure.Should().Be(new ScanClosureResult(Excluded: 1, Absent: 1));
         }
@@ -358,7 +359,7 @@ public sealed class ScanMergeTests
             // Spelled in the other case on purpose: Windows does not distinguish it, and SQLite's
             // default BINARY collation does.
             var closure = await writer.ReconcileUnseenFilesAsync(
-                fx.VolumeId, scanStart, [new SkippedScanArea(fx.RootDirId, "hidden.JPG")], CancellationToken.None);
+                fx.VolumeId, scanStart, [new SkippedScanArea(fx.RootDirId, "hidden.JPG", ScanSkipCause.FilteredOut)], CancellationToken.None);
 
             closure.Should().Be(new ScanClosureResult(Excluded: 1, Absent: 0));
         }
@@ -427,10 +428,16 @@ public sealed class ScanMergeTests
         fewStatements.Should().Be(6,
             "one skipped area costs the staging table, its index, the DELETE that empties it, one " +
             "INSERT, the exclusion UPDATE and the absence UPDATE — and nothing per row");
+
+        // Step 11h: a second CAUSE among the areas costs one more UPDATE, and only one — the flag
+        // each cause writes is different, so they cannot share a statement, but the cost still
+        // follows the number of causes (two) and never the rows.
+        var (twoCauses, _) = await ClosureCostAsync(rowsInSkippedDirectory: 500, secondCause: true);
+        twoCauses.Should().Be(7);
     }
 
     private static async Task<(int Statements, int Excluded)> ClosureCostAsync(
-        int rowsInSkippedDirectory, bool skipTheDirectory = true)
+        int rowsInSkippedDirectory, bool skipTheDirectory = true, bool secondCause = false)
     {
         var connection = new CountingSqliteConnection("Data Source=:memory:");
         using var harness = new SqliteInMemoryContext(connection: connection);
@@ -449,12 +456,16 @@ public sealed class ScanMergeTests
         var writer = new BulkIndexWriter(run);
 
         // Counted from here: the closure pass only, not the arrange.
+        SkippedScanArea[] areas = skipTheDirectory
+            ? secondCause
+                ? [new SkippedScanArea(fx.SubDirId, null, ScanSkipCause.FilteredOut),
+                   new SkippedScanArea(fx.RootDirId, null, ScanSkipCause.InactiveRoot)]
+                : [new SkippedScanArea(fx.SubDirId, null, ScanSkipCause.FilteredOut)]
+            : [];
+
         connection.Reset();
         var closure = await writer.ReconcileUnseenFilesAsync(
-            fx.VolumeId,
-            T0.AddHours(1),
-            skipTheDirectory ? [new SkippedScanArea(fx.SubDirId, FileName: null)] : [],
-            CancellationToken.None);
+            fx.VolumeId, T0.AddHours(1), areas, CancellationToken.None);
 
         return (connection.Statements, closure.Excluded);
     }

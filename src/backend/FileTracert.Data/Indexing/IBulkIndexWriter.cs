@@ -1,3 +1,4 @@
+using FileTracert.Contracts.Scanning;
 using FileTracert.Data.Entities;
 
 namespace FileTracert.Data.Indexing;
@@ -42,10 +43,12 @@ public interface IBulkIndexWriter
     /// <summary>
     /// Closes a scan by telling the two reasons a row can be missing from it apart (§4/§6):
     /// a row inside one of the <paramref name="skipped"/> areas is one the scan deliberately
-    /// did not look at, so it is flagged <c>IsIncluded = false</c> and its
-    /// <see cref="FileEntry.IsPresent"/> is left exactly as it was; every other included row
-    /// not touched since <paramref name="scanStartedUtc"/> is one the scan looked for and did
-    /// not find, so it is flagged <c>IsPresent = false</c>. Soft both ways — never a delete.
+    /// did not look at, so it is flagged <c>IsIncluded = false</c> — with the area's own
+    /// <see cref="SkippedScanArea.Cause"/> recorded on the row, because the two causes are undone
+    /// by different people (step 11h) — and its <see cref="FileEntry.IsPresent"/> is left exactly
+    /// as it was; every other included row not touched since <paramref name="scanStartedUtc"/> is
+    /// one the scan looked for and did not find, so it is flagged <c>IsPresent = false</c>. Soft
+    /// both ways — never a delete.
     /// <para>Note what "left as it was" implies: while a row is excluded, nothing maintains its
     /// presence either, because no scan looks at it. A file deleted from disk while it sits
     /// outside the perimeter keeps <c>IsPresent = true</c> until a scan covers it again.</para>
@@ -72,7 +75,10 @@ public interface IBulkIndexWriter
 /// worst the subtree that just left — while the set of excluded PATHS is large by construction
 /// (on a system volume every folder under <c>Windows\</c> fails the filter on its own).
 /// </remarks>
-public readonly record struct SkippedScanArea(int DirectoryId, string? FileName);
+/// <param name="Cause">Which flag the rows behind this area must carry. It is not decoration: a
+/// row excluded because its root is off comes back the moment the root does, while one the filter
+/// stepped over stays out until a scan says otherwise.</param>
+public readonly record struct SkippedScanArea(int DirectoryId, string? FileName, ScanSkipCause Cause);
 
 /// <summary>What closing a scan changed.</summary>
 /// <param name="Excluded">Rows the scan skipped on purpose → <c>IsIncluded = false</c>.</param>
