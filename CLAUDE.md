@@ -603,6 +603,10 @@ step 11b), logging/shutdown (WP8, step 11c), frontend/UX (WP7, step 11d), effici
 §3 sono chiuse **con codice e brief concordi**: `ScanPath` è stato **spostato** in
 `Contracts/Scanning`; `IBulkIndexWriter` **resta** in `Data/Indexing` e il brief è stato
 corretto (parla in entità EF: portarlo in `Contracts` ci trascinerebbe il modello).
+~~**La suite perde 1–2 test a caso sotto carico concorrente**~~ *(aperta da 11e, incontrata di
+nuovo da 11f e 11g)* — **chiusa allo step 11i**: era `SqliteConnection.ClearAllPools()` nei
+teardown, che è **per processo**, più una seconda corsa in `CatalogApiTests`. Vedi il paragrafo
+«Fatto nello step 11i».
 ~~**Decisione di prodotto — `IsPresent=false` usato come «escluso dal filtro»**~~ *(posta
 allo step 11f, **decisa dall'utente il 2026-08-19**, implementata nello **step 11g**)*: vince
 l'opzione (b) — le esclusioni da filtro o da perimetro si marcano `IsIncluded=false`,
@@ -621,6 +625,115 @@ Prossimo, in ordine:
    `ExcludedPaths` non ha alcuna riconciliazione propria (11g gli ha dato solo un `NeedsScan`
    onesto).
 2. **Step 12 — Test UI end-to-end (Playwright).**
+
+### Fatto nello step 11i (2026-08-19, commit `7b3e938`…`776f4cf`)
+**La suite dice la verità anche sotto carico.** La flakiness che 11e, 11f e 11g avevano
+documentato senza poterla nominare — 1–2 test di integrazione `Host` persi a ogni run pieno, un
+test **diverso** ogni volta, sempre verdi in isolamento, firma
+`ObjectDisposedException: 'SQLitePCL.sqlite3'` — è chiusa **alla radice**, con la causa
+**misurata** e non ipotizzata. Il prodotto non è stato toccato di una riga: la diagnosi di 11e era
+giusta nel dire «il difetto è nei test», sbagliata nel dire *quale*.
+- **La causa, provata.** `Microsoft.Data.Sqlite` mette le connessioni in pool **per connection
+  string**, ma il registro dei pool appartiene al **processo**. `SqliteConnection.ClearAllPools()`
+  quindi dispone l'handle nativo `sqlite3` di connessioni che non ha mai aperto — e xUnit esegue
+  le classi in **parallelo**, per cui i cinque teardown che la chiamavano frugavano dentro
+  qualunque altra classe stesse interrogando in quell'istante. Spiega ogni pezzo del sintomo:
+  quale test cade è casuale, l'isolamento è sempre pulito, e l'eccezione nomina l'**handle nativo**
+  invece della connessione gestita.
+- **La prova sta in `tests/FileTracert.PoolProbe`, un eseguibile a parte**, e non in un `[Fact]`,
+  per lo stesso motivo per cui esiste il fix: chiamare `ClearAllPools()` dentro il test host
+  **sarebbe** il difetto. Dice due cose. Una **deterministica**, senza alcun timing: una
+  connessione in pool ma inattiva possiede ancora il file, quindi «riesco ad aprirlo in esclusiva?»
+  risponde a «il pool di questo database lo sta ancora tenendo?» — e la risposta è che il
+  `ClearPool` di un *altro* database lascia il lock dov'era, `ClearAllPools()` lo toglie. Una **di
+  corsa**: quattro thread che martellano ciascuno il proprio database mentre un quinto fa da
+  teardown → `ObjectDisposedException` su `SQLitePCL.sqlite3` in **33–192 ms** (10 misure su 10,
+  contro un budget di 30 s), con la variante mirata come **controllo**: stessi quattro thread,
+  ~58 000 iterazioni, nessuno disturbato. `SqliteConnectionPoolScopeTests` lancia il processo
+  figlio e asserisce su ciò che stampa.
+- **Il fix è che ogni teardown chiude il *proprio* pool.** Ognuno dei cinque conosce il proprio
+  database per path e `SqliteConnection.ClearPool` lavora su una sola connection string;
+  `SqliteTestDatabase` è quella chiamata più la pulizia dei sidecar, in un posto solo, con il
+  motivo scritto accanto. **Niente è stato serializzato e nessuna asserzione è stata tolta**: le
+  classi continuano a girare in parallelo, smettono solo di frugare l'una nell'altra. Il pooling
+  nei test **resta acceso**: spegnerlo cambierebbe ciò che si sta testando —
+  `DatabaseInitializerTests` misura il **checkpoint del WAL**, che col pooling ha proprietà diverse
+  — ed è proprio quel test a guadagnarci di più, perché il clear globale gli **checkpointava e
+  cancellava il WAL sotto i piedi**: di lì il suo `FileNotFoundException` sul file `-wal`, che non
+  somigliava affatto a un problema di connessioni.
+- **Una seconda causa, indipendente, trovata misurando la prima.**
+  `CatalogApiTests.GetChildren_excludes_absent_directories_but_keeps_the_ones_with_an_overlay`
+  semina di proposito un job `Pending` **vivo** (da 9b un overlay senza job vivo viene riconciliato
+  via) ma lasciava acceso il vero `QueueProcessorWorker`. Quel job è eseguibile: il worker lo
+  prende, lo esegue contro un volume che esiste solo nel database, lo fa fallire e **azzera proprio
+  l'overlay** che il test asserisce. È una corsa che la macchina vince quando è occupata, ed è per
+  questo che sembrava il bug del pool: `GoneButQueued` semplicemente assente dalla risposta,
+  nessuna eccezione da nessuna parte. Provata trattenendo l'asserzione di tre secondi — **rosso su
+  ogni run in isolamento**, verde su ogni run col worker spento, che è ciò che `ProjectionApiTests`
+  già fa per la stessa ragione.
+- **Due test tengono onesto il risultato.** `ProcessWideStateGuardTests` scansiona i sorgenti
+  cercando la **chiamata** (nomi e messaggi restano liberi di nominarla) e ammette esattamente due
+  file, entrambi padroni del proprio processo: l'harness, single-threaded, e il probe. È **rosso
+  sui teardown pre-fix** — verificato ripristinandoli. `SqliteTestDatabaseContractTests` copre il
+  modo di fallire che il fix introduce: `ClearPool` libera il file solo se nomina il pool che EF
+  Core e il log store hanno **davvero** aperto, e sbagliarlo è **silenzioso** — le delete
+  semplicemente iniziano a mancare. Apre quindi ciascun database **come lo apre il prodotto**
+  (`AddDataServices` per EF, `SqliteLogStore` per i log, entrambi costruiti da `DatabaseLocation`
+  come fa `Program.cs`), chiude, pulisce e asserisce che il file sia sparito — senza host e senza
+  scrittori di sfondo, quindi senza tempo di mezzo. Rosso dimostrato aggiungendo **un** parametro
+  alla connection string: una chiave di pool che non combacia non libera niente.
+- **La stringa di connessione è scritta a mano in un posto solo** (`SqliteTestDatabase`), che
+  delega a `DatabaseLocation.ConnectionString`, e `FileTracertAppFactory.LogDatabasePath` chiama
+  `DatabaseLocation.ResolveLogs` invece di riscriverla: un domani un parametro in più su quegli
+  helper rende **rossi i contract test** invece di trasformare in silenzio ogni teardown in un
+  no-op.
+- **Verifica sotto carico, l'unica che conta qui.** «L'ho eseguita ed era verde» è la frase che
+  questa flakiness ha già smentito tre volte, quindi il criterio è stato misurato con lo **stesso
+  carico prima e dopo**: due `ng build` in loop sul frontend (~3 min l'uno sotto contesa, contro
+  73 s da soli), 9–14 processi `node` vivi a ogni passata. **Prima del fix: 3 run falliti su 5**,
+  tre firme diverse — `ProjectionApiTests` con `ObjectDisposedException` dentro
+  `RelationalConnection.OpenAsync`, `DatabaseInitializerTests` con il `-wal` sparito,
+  `CatalogApiTests` con la riga mancante (la seconda causa). **Dopo il fix: 24 passate consecutive,
+  24 verdi, zero fallimenti** — 12 sul codice pre-review (769/769 ciascuna, 37–56 s di test) e 12
+  sul codice finale (771/771 ciascuna, 46 s–1 m 44 s, contesa più pesante). Il paragone vale
+  perché **il carico è lo stesso** che prima del fix faceva cadere 3 run su 5.
+- **Verifica finale**: xUnit **771 verdi** (+6), build backend pulita (warnings-as-errors). Il
+  frontend non è stato toccato. Harness sul ferro **non eseguito e non richiesto**:
+  `ScenarioEnvironment` è rimasto identico — è un processo suo, single-threaded, e nessun test
+  xUnit lo istanzia, quindi il suo `ClearAllPools()` non ha nessuno da disturbare. È la sola
+  eccezione ammessa dal guard, che la nomina con il motivo.
+La **code review finale** (indipendente, sulle sole modifiche di questo giro) non ha trovato
+BLOCKER né MAJOR e ha trovato **cinque MINOR, tutti presi**. Il primo valeva il giro: il test di
+teardown asseriva che dopo `FileTracertAppFactory.Dispose` **entrambi** i file fossero spariti,
+mentre `SqliteTestDatabase.Delete` documenta la delete come *best effort* — e `%TEMP%` dà ragione
+alla documentazione (1256 `ft-test-*-logs.db` residui contro 7 principali, 295 dei quali a **zero
+byte**, cioè cancellati e poi **ricreati**). Sarebbe stato un rosso a caso ogni ~N passate,
+proprio nel task che serve a farli finire; la verifica si è spostata dove è **deterministica**
+(vedi sopra). Gli altri quattro: la stringa di connessione scritta a mano in cinque posti,
+il guard che camminava `src/frontend` (`node_modules` e `dist`, proprio gli alberi che l'`ng build`
+concorrente riscrive) invece del solo `src/backend`, lo strip dei commenti che passava `//` anche
+dentro i literal — cioè l'unica cosa che il suo commento dice di non dover mai fare, ora ancorato
+a inizio riga — e il BOM perso da `FileTracert.Tests.csproj`.
+**Limiti noti e accettati:**
+- **`%TEMP%` accumula `ft-test-*-logs.db`, ed è un difetto pre-esistente non chiuso qui.**
+  `WebApplicationFactory.Dispose` **dispone** l'host senza **fermarlo**, quindi `LogFlushService`
+  non drena mai e `SqliteLogProcessor` non viene disposto (il container non l'ha creato — lo dice
+  già il suo commento): una scrittura di log ancora in volo riapre il file un istante dopo la
+  delete. Misurato: 1256 residui accumulati da sessioni precedenti, **1 solo** prodotto dalle 12
+  passate della campagna. Costa una `StopAsync` sul factory ed è materiale da giro proprio, non da
+  un task sulle corse del pool.
+- **`ScenarioEnvironment` continua a pulire tutti i pool.** Uniformarlo costerebbe una passata
+  completa dell'harness sul ferro (è la regola del brief per chi lo tocca) a fronte di zero rischio
+  reale. Il giorno in cui lo si tocca per altro, si cambi anche quello e si tolga dalla allowlist
+  del guard.
+- **La riproduzione della corsa è un test *temporale*.** Il margine è enorme (33–192 ms misurati
+  contro 30 s di budget, più le 12 passate della campagna che l'hanno eseguita sotto carico), ma
+  resta l'unico test della suite che potrebbe fallire per lentezza invece che per un difetto. Se
+  un giorno lo facesse, il messaggio riporta l'intera trascrizione del probe.
+- **Il guard è un'analisi testuale, non semantica**: intercetta `ClearAllPools(` fuori dai commenti
+  e non intercetterebbe una chiamata costruita per riflessione o rinominata con un alias. È la
+  forma di errore che si commette davvero — copiare un teardown esistente — non un aggiramento
+  deliberato.
 
 ### Fatto nello step 11g (2026-08-19, commit `c8b0fff`…`ae8c679`)
 **Esclusione e assenza sono due fatti diversi, e ora il database lo dice.** Implementa la
@@ -848,10 +961,11 @@ sopravvive invece di prendere la prima.
   controller**, come chiedeva il task, quindi copre anche `List`, che prima non aveva try/catch:
   oggi è inerte (`ListAsync` non lancia nulla di quell'insieme), ma se un domani `List` acquisisce
   validazione, un guasto del server vi si presenterebbe come 400.
-- **La flakiness della suite sotto carico concorrente documentata da 11e è stata incontrata**
+- ~~**La flakiness della suite sotto carico concorrente documentata da 11e è stata incontrata**
   (un test diverso a ogni giro — `DomainApiTests`, `SetupApiTests`, `RootsBySpecificityTests`,
   `Win32FileMoverTests` — sempre verde in isolamento e su una passata pulita, 750/750). Non è di
-  questo giro: le passate incriminate non toccano i file modificati qui. Resta aperta.
+  questo giro: le passate incriminate non toccano i file modificati qui. Resta aperta.~~
+  **Chiusa allo step 11i** (2026-08-19), con la causa misurata e non ipotizzata.
 - ~~**La domanda di prodotto su `IsPresent=false` come «escluso dal filtro» è stata posta e NON
   decisa** (è §«Cosa resta all'umano»): vedi il punto 1 della roadmap. Nulla è stato mosso, e il
   test che fissa il comportamento attuale è ancora lì.~~ **Decisa dall'utente e implementata allo
@@ -1003,7 +1117,7 @@ senza asserzioni sulle righe risultanti, ed è quello in cui la sync si è spost
 `SaveChanges`), e il piano del covering index è asserito su 20 000 righe invece di 4. I rilievi
 lasciati consapevolmente sono in fondo.
 **Limiti noti e accettati:**
-- **La suite è instabile sotto carico**, e questo giro allarga la finestra invece di crearla: 735
+- ~~**La suite è instabile sotto carico**, e questo giro allarga la finestra invece di crearla: 735
   verdi su una macchina tranquilla, ma in un run pieno **sotto build concorrente** 1–2 test di
   integrazione *Host* possono fallire con corse sulla **vita delle connessioni SQLite**
   (`ObjectDisposedException` su `sqlite3_create_collation`, oppure una scrittura all'Event Log
@@ -1013,7 +1127,12 @@ lasciati consapevolmente sono in fondo.
   La causa è pre-esistente (TestServer paralleli che condividono connessioni in pool); i 72 test
   aggiunti qui, alcuni dei quali seminano 12–25 000 righe, aggiungono il carico che la rende
   visibile. Da chiudere tenendo esplicitamente aperta la `SqliteConnection` nei test Host, non
-  ignorando un rosso.
+  ignorando un rosso.~~ **Chiusa allo step 11i** (2026-08-19): l'ipotesi «connessioni condivise»
+  era vicina ma non esatta — le connessioni non erano condivise, il **pool** sì, ed era
+  `SqliteConnection.ClearAllPools()` nei teardown a disporre l'handle nativo di chiunque altro.
+  Vedi il paragrafo «Fatto nello step 11i». *(Della scrittura all'Event Log non si è più vista
+  traccia: `AddWindowsService` registra quel provider solo quando il processo è davvero un
+  servizio, e sotto `dotnet test` non lo è.)*
 - **Il paging delle sottocartelle del Catalogo resta aperto** (§7 dice paging *ovunque*). Con
   l'indice covering il listato non paginato è una scansione di range sola, ma resta senza limite
   superiore: una cartella con 100 000 sottocartelle le restituisce tutte, e i due contatori
