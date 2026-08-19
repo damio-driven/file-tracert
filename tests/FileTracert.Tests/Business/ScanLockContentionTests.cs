@@ -47,7 +47,15 @@ public sealed class ScanLockContentionTests
         }
 
         using var scanning = new CancellationTokenSource();
-        var writer = Task.Run(() => HammerWritesAsync(harness, scanning.Token));
+
+        // Wait for the hammer to reach its loop before the scan starts. Without this the test
+        // measured the thread pool as much as the lock: under a loaded full-suite run the Task.Run
+        // body could first be scheduled AFTER the scan had finished, so the loop saw cancellation
+        // on its very first check and returned (0 succeeded, 0 blocked) — a red that says nothing
+        // about SQLite. Observed once in five full runs, always green in isolation.
+        var writerRunning = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var writer = Task.Run(() => HammerWritesAsync(harness, writerRunning, scanning.Token));
+        await writerRunning.Task;
 
         try
         {
@@ -101,10 +109,14 @@ public sealed class ScanLockContentionTests
     /// transaction produced.
     /// </summary>
     private static async Task<(int Succeeded, int Blocked)> HammerWritesAsync(
-        SqliteFileContext harness, CancellationToken ct)
+        SqliteFileContext harness, TaskCompletionSource running, CancellationToken ct)
     {
         var succeeded = 0;
         var blocked = 0;
+
+        // Signalled before the first attempt, so the caller knows the loop exists rather than
+        // hoping the thread pool got to it in time.
+        running.SetResult();
 
         while (!ct.IsCancellationRequested)
         {
