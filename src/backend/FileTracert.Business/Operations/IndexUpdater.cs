@@ -227,7 +227,7 @@ public sealed class IndexUpdater
         // Resolve each distinct target directory once (a big folder move lands thousands of files
         // into a handful of directories).
         var dirCache = new Dictionary<string, DirectoryNode>(StringComparer.OrdinalIgnoreCase);
-        var ftsUpserts = new List<(int Id, string Name, string Path)>(fileItems.Count);
+        var movedFileIds = new List<int>(fileItems.Count);
 
         foreach (var item in fileItems)
         {
@@ -242,7 +242,7 @@ public sealed class IndexUpdater
 
             RepointToVolume(file, targetVolumeId);
             file.DirectoryId = targetDir.Id;
-            ftsUpserts.Add((file.Id, file.Name, item.TargetRelativePath));
+            movedFileIds.Add(file.Id);
         }
 
         // #15: de-materialize exactly the source directories the engine physically removed.
@@ -266,8 +266,10 @@ public sealed class IndexUpdater
         // C5: one round-trip for the whole batch of file re-points, not one SaveChanges per file.
         await _db.SaveChangesAsync(ct);
 
-        foreach (var (id, name, path) in ftsUpserts)
-            await _fts.UpsertAsync(id, name, path, ct);
+        // E4 — set-based, and AFTER the save: the index entry is rebuilt from the rows as they now
+        // stand, so the directory each file was just re-pointed to is the one the path is built
+        // from. A folder move of 50 000 files was 100 000 statements here; it is now 2 per 500.
+        await _fts.SyncFilesAsync(movedFileIds, ct);
     }
 
     /// <summary>
@@ -291,6 +293,7 @@ public sealed class IndexUpdater
         if (landed.Count == 0) return;
 
         var dirCache = new Dictionary<string, DirectoryNode>(StringComparer.OrdinalIgnoreCase);
+        var landedFileIds = new List<int>(landed.Count);
         foreach (var item in landed)
         {
             if (item.FileId is null)
@@ -315,10 +318,17 @@ public sealed class IndexUpdater
 
             RepointToVolume(file, targetVolumeId);
             file.DirectoryId = targetDir.Id;
-            await _fts.UpsertAsync(file.Id, file.Name, item.TargetRelativePath, ct);
+            landedFileIds.Add(file.Id);
         }
 
         await _db.SaveChangesAsync(ct);
+
+        // E4 — one set-based sync instead of a DELETE + INSERT per landed item, and now AFTER the
+        // save rather than before it: the old order rebuilt each entry from rows whose new
+        // DirectoryId had not been written yet, so the index was correct only because the path was
+        // also passed in by hand. Reading it from the saved rows removes that coincidence.
+        await _fts.SyncFilesAsync(landedFileIds, ct);
+
         _logger.LogInformation(
             "Job {Id}: reconciled {Count} landed item(s) to the target index after cancel.",
             job.Id, landed.Count);
@@ -374,21 +384,37 @@ public sealed class IndexUpdater
         await UpdateFtsForDirsAsync(dirs, ct);
     }
 
-    /// <summary>Updates FTS path entries for all files in the given directories (already updated in memory).</summary>
+    /// <summary>
+    /// Re-syncs the search index for every file of the given directories, whose new
+    /// <c>MaterializedPath</c> the caller has already saved.
+    ///
+    /// <para>E4 — set-based. This used to load the full <c>FileEntry</c> of every file in the
+    /// subtree and then call <c>UpsertAsync</c> per file, which is a DELETE and an INSERT each: a
+    /// folder rename over 50 000 files meant 50 000 entities on the heap and 100 000 statements.
+    /// <see cref="IFileSearchIndex.SyncFilesAsync"/> does the same job in chunks of 500 with an
+    /// <c>INSERT … SELECT</c>, so the count drops to 2 statements per 500 files (200 instead of
+    /// 100 000 here) and only the ids ever cross the boundary.</para>
+    ///
+    /// <para>It also stops re-deriving the indexed name and path in C#. The rebuilt entry is
+    /// computed by the SQL that owns that rule (§3, §5: the <c>name</c> column is the PROJECTED
+    /// name, <c>COALESCE(NULLIF(PendingName, ''), Name)</c>), which is the same expression the
+    /// scan and the full rebuild use — one definition instead of a fourth hand-written copy that
+    /// could drift. The path it builds is the directory's saved <c>MaterializedPath</c> joined
+    /// with that name, i.e. exactly what this method used to assemble by hand.</para>
+    /// </summary>
     private async Task UpdateFtsForDirsAsync(List<DirectoryNode> dirs, CancellationToken ct)
     {
         var dirIds = dirs.Select(d => d.Id).ToHashSet();
-        var files = await _db.Files.AsNoTracking()
-            .Where(f => f.IsPresent && f.IsIncluded && dirIds.Contains(f.DirectoryId))
+
+        // Ids only — the whole point is that no file row is materialised. The inclusion filter is
+        // left to SyncFilesAsync, which removes the entry of anything not indexable instead of
+        // silently leaving a stale one behind.
+        var fileIds = await _db.Files.AsNoTracking()
+            .Where(f => dirIds.Contains(f.DirectoryId))
+            .Select(f => f.Id)
             .ToListAsync(ct);
 
-        var pathById = dirs.ToDictionary(d => d.Id, d => d.MaterializedPath);
-
-        foreach (var f in files)
-        {
-            if (!pathById.TryGetValue(f.DirectoryId, out var dirPath)) continue;
-            await _fts.UpsertAsync(f.Id, f.Name, ScanPath.Join(dirPath, f.Name), ct);
-        }
+        await _fts.SyncFilesAsync(fileIds, ct);
     }
 
 }

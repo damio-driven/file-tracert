@@ -3,8 +3,10 @@ using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Paging;
 using FileTracert.Contracts.Search;
 using FileTracert.Data.Entities;
+using FileTracert.Data.Search;
 using FileTracert.Tests.Data;
 using FluentAssertions;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -27,6 +29,36 @@ public sealed class IndexUpdaterTests : IDisposable
         _harness = new SqliteInMemoryContext();
         using var setup = _harness.CreateContext();
         setup.Database.ExecuteSqlRaw("PRAGMA foreign_keys = OFF");
+
+        // EnsureCreated builds the EF tables but not the virtual one — the search index tests
+        // create it the same way. It is here so the FTS assertions below can run against the REAL
+        // FileSearchIndex rather than a fake of the component whose behaviour is in question.
+        setup.Database.ExecuteSqlRaw("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS FileSearchIndex USING fts5(
+                name,
+                path,
+                tokenize="unicode61 remove_diacritics 2 separators '\._-'"
+            );
+            """);
+    }
+
+    /// <summary>Every row of the real FTS table, as (rowid, name, path).</summary>
+    private List<(int Rowid, string Name, string Path)> FtsRows()
+    {
+        using var db = _harness.CreateContext();
+        var conn = (SqliteConnection)db.Database.GetDbConnection();
+        db.Database.OpenConnection();
+        try
+        {
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SELECT rowid, name, path FROM FileSearchIndex ORDER BY rowid";
+            using var reader = cmd.ExecuteReader();
+            var rows = new List<(int, string, string)>();
+            while (reader.Read())
+                rows.Add((reader.GetInt32(0), reader.GetString(1), reader.GetString(2)));
+            return rows;
+        }
+        finally { db.Database.CloseConnection(); }
     }
 
     public void Dispose() => _harness.Dispose();
@@ -85,11 +117,13 @@ public sealed class IndexUpdaterTests : IDisposable
             db.SaveChanges();
         }
 
-        var fts = new RecordingFts();
         await using (var db = _harness.CreateContext())
         {
             var job = await db.OperationJobs.Include(j => j.Items).SingleAsync();
-            var updater = TestProjection.Index(db, fts);
+            // The REAL search index over the real FTS5 table: E4 moved the name/path rule out of
+            // this class and into the SQL that owns it, so a fake here would assert nothing about
+            // the outcome any more.
+            var updater = TestProjection.Index(db, new FileSearchIndex(db));
             await updater.UpdateAfterCompletionAsync(job, CancellationToken.None);
         }
 
@@ -106,9 +140,12 @@ public sealed class IndexUpdaterTests : IDisposable
             files.Single(f => f.Id == 3).Directory.MaterializedPath.Should().Be(@"Archive\Media\B");
         }
 
-        // Every file's FTS entry was re-pointed to its projected path.
-        fts.Upserts.Should().HaveCount(3);
-        fts.Upserts.Should().ContainSingle(u => u.Id == 3 && u.Path == @"Archive\Media\B\f3.bin");
+        // Every file's FTS entry was re-pointed to its new path — asserted on the index itself,
+        // one row per moved file, name and path both, and nothing left over.
+        FtsRows().Should().Equal(
+            (1, "f1.bin", @"Archive\Media\A\f1.bin"),
+            (2, "f2.bin", @"Archive\Media\A\f2.bin"),
+            (3, "f3.bin", @"Archive\Media\B\f3.bin"));
     }
 
     /// <summary>
