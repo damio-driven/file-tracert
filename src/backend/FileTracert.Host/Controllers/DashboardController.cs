@@ -21,20 +21,19 @@ public sealed class DashboardController : ControllerBase
     [HttpGet]
     public async Task<ActionResult<DashboardStatsDto>> Get(CancellationToken ct)
     {
+        // One aggregate per table, never two (E6/C30). Files is the biggest table in the database
+        // and the one the scan is writing to; counting it and summing it separately walked it
+        // twice for one card. Same rule for the volumes and for the queue.
+        //
         // Only catalogued, still-present files count toward the totals.
-        var included = _db.Files.Where(f => f.IsIncluded && f.IsPresent);
+        var catalog = await CatalogTotals.ComputeAsync(
+            _db.Files.AsNoTracking().Where(f => f.IsIncluded && f.IsPresent), ct);
 
-        var totalFiles = await included.LongCountAsync(ct);
-        var totalBytes = totalFiles == 0 ? 0L : await included.SumAsync(f => f.SizeBytes, ct);
+        var volumes = await VolumeTotals.ComputeAsync(_db.Volumes.AsNoTracking(), ct);
 
-        var volumesTotal = await _db.Volumes.CountAsync(ct);
-        var volumesOnline = await _db.Volumes.CountAsync(v => v.IsOnline, ct);
-
-        // One aggregate for all four queue figures (C30) — four counts of the same table would
-        // be four scans for one card strip.
         var queue = await QueueTotals.ComputeAsync(_db.OperationJobs.AsNoTracking(), ct);
 
         return Ok(DashboardStatsAssembler.From(
-            totalFiles, totalBytes, volumesOnline, volumesTotal, queue));
+            catalog.TotalFiles, catalog.TotalBytes, volumes.Online, volumes.Total, queue));
     }
 }
