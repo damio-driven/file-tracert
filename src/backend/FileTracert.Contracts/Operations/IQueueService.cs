@@ -17,6 +17,21 @@ public interface IQueueService
     Task<OperationJobDto> EnqueueAsync(CreateJobRequest request, CancellationToken ct);
 
     /// <summary>
+    /// Enqueues a whole selection as ONE unit of work: either every request becomes a job or
+    /// none does (C25). A single invalid request aborts the batch and nothing is persisted, so
+    /// the caller can fix it and repeat the same gesture without duplicating anything.
+    /// Every element still goes through the same per-job path as
+    /// <see cref="EnqueueAsync"/> — conflict guard, sequence number, projection overlay, ledger
+    /// reservation — and the returned jobs are in request order, each carrying the state it was
+    /// born in (a job parked <see cref="Enums.JobBlockReason.DependencyPending"/> included, so
+    /// the UI can say how many of them are waiting).
+    /// Throws only for requests that are invalid in themselves; the message names the position
+    /// of the offending element.
+    /// </summary>
+    Task<IReadOnlyList<OperationJobDto>> EnqueueBatchAsync(
+        IReadOnlyList<CreateJobRequest> requests, CancellationToken ct);
+
+    /// <summary>
     /// Computes feasibility for the requested operation without creating any job or DB record.
     /// Safe to call from the UI "confirm before enqueue" flow.
     /// </summary>

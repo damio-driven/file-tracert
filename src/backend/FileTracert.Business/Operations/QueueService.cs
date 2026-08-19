@@ -63,71 +63,152 @@ public sealed class QueueService : IQueueService
 
     // ── IQueueService ─────────────────────────────────────────────────────────
 
-    public async Task<OperationJobDto> EnqueueAsync(CreateJobRequest request, CancellationToken ct)
+    public async Task<OperationJobDto> EnqueueAsync(CreateJobRequest request, CancellationToken ct) =>
+        (await EnqueueBatchAsync([request], ct))[0];
+
+    /// <summary>
+    /// C25 — one user gesture, one request, ONE transaction.
+    ///
+    /// All-or-nothing on purpose. The client used to loop a POST per selected file, so a failure
+    /// at item N left 1..N−1 in the queue with nothing on screen saying so, and the obvious
+    /// reaction — click again — re-enqueued the first N−1 as dependents of themselves. Either the
+    /// whole selection is in the queue or none of it is: then the error is readable, the retry is
+    /// the same gesture, and there is no half state to explain.
+    /// The price is that one bad item stops the other forty-nine; it is paid knowingly, because
+    /// the alternative (partial success) is only honest if the response enumerates exactly which
+    /// items landed — and a queue the user has to reconcile item by item is the thing this fixes.
+    ///
+    /// Everything the single enqueue does per job still happens per job: the guard is asked for
+    /// every element (a batch is not a free pass), <see cref="OperationJob.SequenceOrder"/> is
+    /// still assigned inside the transaction against the unique index (C26/9c), and each job's
+    /// overlay and ledger rows are staged in the same unit of work.
+    /// </summary>
+    public async Task<IReadOnlyList<OperationJobDto>> EnqueueBatchAsync(
+        IReadOnlyList<CreateJobRequest> requests, CancellationToken ct)
     {
-        var (job, items, shouldReserve) = await BuildJobAsync(request, ct);
+        if (requests.Count == 0)
+            throw new ArgumentException("Nessuna operazione da accodare: la richiesta è vuota.");
+
+        var created = new List<(OperationJob Job, List<OperationJobItem> Items, bool Reserved)>(requests.Count);
+        // What this batch has already promised to each target volume. The in-memory ledger only
+        // learns about these jobs after the commit (see below), so without carrying the demand
+        // forward by hand fifty 1 GB moves onto a 10 GB drive would every one of them be weighed
+        // against the same untouched free space, and all fifty would be born Pending.
+        var batchDemandByVolume = new Dictionary<int, long>();
 
         await using var tx = await _db.Database.BeginTransactionAsync(ct);
-        _db.OperationJobs.Add(job);
-        foreach (var item in items)
-            _db.OperationJobItems.Add(item);
-        // Assigns job.Id and job.SequenceOrder, still inside the open transaction (C26).
-        await AssignSequenceOrderAndSaveAsync(job, ct);
 
-        // Finding 8 — the guard runs AFTER the insert, deliberately. SQLite grants the write
-        // lock at the first write, not at BEGIN: asking before it would read a snapshot another
-        // enqueue can still change underneath, and two requests racing on the same entity would
-        // both read "clear" and both land Pending on it (§5 allows one). From here on this
-        // connection holds the lock, so a competitor has either already committed — and is
-        // therefore visible to this read — or is queued behind us.
-        await ApplyPendingWorkGuardAsync(job, ct);
-
-        // §5 — queuing an operation mutates the PROJECTION immediately: the entity is shown at
-        // once under its new name / in its new folder / on its new volume. Written here, inside
-        // the job's own transaction, so job and overlay commit together or not at all — an
-        // overlay without a job would point at a job that never existed.
-        // Applied AFTER the offline gate and regardless of its verdict: a job parked
-        // Blocked(volume offline) is still in the queue, therefore still in the projection.
-        // The ONE exception is a job born Blocked(DependencyPending): the entity is already
-        // another job's, and the projection must keep showing THAT job's promise. This dependent
-        // writes its own overlay when the revaluation releases it (JobUnblocker).
-        if (JobDependencies.OwnsItsEntity(job))
-            await _overlay.ApplyAsync(job, items, ct);
-
-        // C3: stage the ledger reservation in the SAME transaction as the job, so the two commit
-        // atomically. The old code reserved AFTER the commit — a throw or aborted request between
-        // the two left the job Pending with no ledger entry, making every other job's feasibility
-        // under-count this demand and overcommit the target.
-        if (shouldReserve)
+        for (int i = 0; i < requests.Count; i++)
         {
-            _db.SpaceLedgerEntries.AddRange(SpaceLedger.BuildReservationEntries(
-                job.Id, job.TargetVolumeId!.Value, job.RequiredBytesTarget,
-                job.SourceVolumeId, job.FreedBytesSource));
-            await _db.SaveChangesAsync(ct);
+            var request = requests[i];
+            OperationJob job;
+            List<OperationJobItem> items;
+            bool shouldReserve;
+            try
+            {
+                (job, items, shouldReserve) = await BuildJobAsync(
+                    request,
+                    request.TargetVolumeId is { } tv ? batchDemandByVolume.GetValueOrDefault(tv) : 0,
+                    ct);
+            }
+            catch (Exception ex) when (requests.Count > 1 && ex is ArgumentException or InvalidOperationException)
+            {
+                // Says WHICH element of the selection is the problem and that nothing was queued —
+                // without the position the user cannot tell what to fix, and without the second
+                // half they cannot tell whether clicking again would duplicate anything.
+                throw DescribeBatchFailure(ex, i, requests.Count);
+            }
+
+            _db.OperationJobs.Add(job);
+            foreach (var item in items)
+                _db.OperationJobItems.Add(item);
+            // Assigns job.Id and job.SequenceOrder, still inside the open transaction (C26).
+            await AssignSequenceOrderAndSaveAsync(job, ct);
+
+            // Finding 8 — the guard runs AFTER the insert, deliberately. SQLite grants the write
+            // lock at the first write, not at BEGIN: asking before it would read a snapshot another
+            // enqueue can still change underneath, and two requests racing on the same entity would
+            // both read "clear" and both land Pending on it (§5 allows one). From here on this
+            // connection holds the lock, so a competitor has either already committed — and is
+            // therefore visible to this read — or is queued behind us. Within a batch the same
+            // property makes each element see the elements before it: they are already inserted on
+            // this connection, so two requests for the same entity in one batch serialize exactly
+            // as two separate calls would.
+            await ApplyPendingWorkGuardAsync(job, ct);
+
+            // §5 — queuing an operation mutates the PROJECTION immediately: the entity is shown at
+            // once under its new name / in its new folder / on its new volume. Written here, inside
+            // the job's own transaction, so job and overlay commit together or not at all — an
+            // overlay without a job would point at a job that never existed.
+            // Applied AFTER the offline gate and regardless of its verdict: a job parked
+            // Blocked(volume offline) is still in the queue, therefore still in the projection.
+            // The ONE exception is a job born Blocked(DependencyPending): the entity is already
+            // another job's, and the projection must keep showing THAT job's promise. This dependent
+            // writes its own overlay when the revaluation releases it (JobUnblocker).
+            if (JobDependencies.OwnsItsEntity(job))
+                await _overlay.ApplyAsync(job, items, ct);
+
+            // C3: stage the ledger reservation in the SAME transaction as the job, so the two commit
+            // atomically. The old code reserved AFTER the commit — a throw or aborted request between
+            // the two left the job Pending with no ledger entry, making every other job's feasibility
+            // under-count this demand and overcommit the target.
+            if (shouldReserve)
+            {
+                _db.SpaceLedgerEntries.AddRange(SpaceLedger.BuildReservationEntries(
+                    job.Id, job.TargetVolumeId!.Value, job.RequiredBytesTarget,
+                    job.SourceVolumeId, job.FreedBytesSource));
+                await _db.SaveChangesAsync(ct);
+
+                batchDemandByVolume[job.TargetVolumeId!.Value] =
+                    batchDemandByVolume.GetValueOrDefault(job.TargetVolumeId!.Value)
+                    + job.RequiredBytesTarget;
+            }
+
+            created.Add((job, items, shouldReserve));
         }
 
         await tx.CommitAsync(ct);
 
         // Update the in-memory mirror ONLY after the DB commit succeeds: the durable entries and
         // the job now exist together, and the mirror can never claim a reservation the DB lacks.
-        if (shouldReserve)
+        foreach (var (job, _, reserved) in created)
         {
+            if (!reserved) continue;
             await _ledger.RegisterReservationInMemoryAsync(
                 job.Id, job.SequenceOrder, job.TargetVolumeId!.Value,
                 job.RequiredBytesTarget, job.SourceVolumeId, job.FreedBytesSource, ct);
         }
 
-        // Wake the processor now instead of letting it discover the job on its next safety poll.
+        // Wake the processor now instead of letting it discover the jobs on its next safety poll.
+        // Once for the batch: the signal means "there is work", not "there are N pieces of work".
         _signal.Signal();
 
-        _logger.LogInformation("Enqueued job {Id} type={Type} state={State}.", job.Id, job.Type, job.State);
+        foreach (var (job, _, _) in created)
+            _logger.LogInformation("Enqueued job {Id} type={Type} state={State}.", job.Id, job.Type, job.State);
 
-        // Published after the commit (never inside the transaction): the queue row and the overlay
+        // Published after the commit (never inside the transaction): the queue rows and the overlays
         // both exist by now, so a client that reacts by re-reading sees what the push announced.
-        await _realtime.JobStateChangedAsync(job);
-        await _realtime.ProjectionChangedAsync(job);
+        foreach (var (job, _, _) in created)
+        {
+            await _realtime.JobStateChangedAsync(job);
+            await _realtime.ProjectionChangedAsync(job);
+        }
 
-        return MapToDto(job, items, null);
+        return [.. created.Select(c => MapToDto(c.Job, c.Items, null))];
+    }
+
+    /// <summary>
+    /// Re-raises a per-item build failure as the same kind of error (the controller maps both to
+    /// 400) with the position of the offending element and the fate of the rest spelled out.
+    /// </summary>
+    private static Exception DescribeBatchFailure(Exception inner, int index, int total)
+    {
+        var message =
+            $"Elemento {index + 1} di {total}: {inner.Message} " +
+            "Nessuna operazione è stata accodata.";
+        return inner is ArgumentException
+            ? new ArgumentException(message, inner)
+            : new InvalidOperationException(message, inner);
     }
 
     public async Task<FeasibilityResult> PreviewAsync(CreateJobRequest request, CancellationToken ct)
@@ -559,8 +640,13 @@ public sealed class QueueService : IQueueService
         }
     }
 
+    /// <param name="committedDemandOnTarget">
+    /// Bytes the jobs built earlier in the SAME batch have already committed to this request's
+    /// target volume. Zero for a lone enqueue. Only the space verdict uses it — the job's own
+    /// <see cref="OperationJob.RequiredBytesTarget"/> stays the honest size of this operation.
+    /// </param>
     private async Task<(OperationJob job, List<OperationJobItem> items, bool shouldReserve)>
-        BuildJobAsync(CreateJobRequest request, CancellationToken ct)
+        BuildJobAsync(CreateJobRequest request, long committedDemandOnTarget, CancellationToken ct)
     {
         var job = new OperationJob
         {
@@ -585,10 +671,10 @@ public sealed class QueueService : IQueueService
                 await BuildRenameFolderAsync(request, job, items, ct);
                 break;
             case JobType.MoveFile:
-                shouldReserve = await BuildMoveFileAsync(request, job, items, ct);
+                shouldReserve = await BuildMoveFileAsync(request, job, items, committedDemandOnTarget, ct);
                 break;
             case JobType.MoveFolder:
-                shouldReserve = await BuildMoveFolderAsync(request, job, items, ct);
+                shouldReserve = await BuildMoveFolderAsync(request, job, items, committedDemandOnTarget, ct);
                 break;
             default:
                 throw new InvalidOperationException($"Unsupported job type: {request.Type}");
@@ -755,7 +841,7 @@ public sealed class QueueService : IQueueService
     }
 
     private async Task<bool> BuildMoveFileAsync(CreateJobRequest req, OperationJob job,
-        List<OperationJobItem> items, CancellationToken ct)
+        List<OperationJobItem> items, long committedDemandOnTarget, CancellationToken ct)
     {
         if (req.SourceFileId is null || req.TargetVolumeId is null || req.TargetRelativePath is null)
             throw new ArgumentException("MoveFile requires SourceFileId, TargetVolumeId and TargetRelativePath.");
@@ -788,8 +874,13 @@ public sealed class QueueService : IQueueService
             job.RequiredBytesTarget = file.SizeBytes;
             job.FreedBytesSource = file.SizeBytes;
 
+            // Weighed together with everything this batch has already promised to the same
+            // volume (0 for a lone enqueue): the batch is one demand, and judging its last file
+            // against free space that ignores its first forty-nine would declare a selection
+            // feasible that plainly is not.
             var f = await _spaceCheck.PlanAsync(
-                targetVol, file.SizeBytes, excludeJobId: null, sequenceOrder: null, ct);
+                targetVol, committedDemandOnTarget + file.SizeBytes,
+                excludeJobId: null, sequenceOrder: null, ct);
 
             job.EstimateIsLive = f.EstimateIsLive;
             if (!f.Feasible)
@@ -812,7 +903,7 @@ public sealed class QueueService : IQueueService
     }
 
     private async Task<bool> BuildMoveFolderAsync(CreateJobRequest req, OperationJob job,
-        List<OperationJobItem> items, CancellationToken ct)
+        List<OperationJobItem> items, long committedDemandOnTarget, CancellationToken ct)
     {
         if (req.SourceDirectoryId is null || req.TargetVolumeId is null || req.TargetRelativePath is null)
             throw new ArgumentException("MoveFolder requires SourceDirectoryId, TargetVolumeId and TargetRelativePath.");
@@ -885,8 +976,9 @@ public sealed class QueueService : IQueueService
 
         if (total > 0)
         {
+            // Same rule as MoveFile: the verdict is taken on the batch's cumulative demand.
             var f = await _spaceCheck.PlanAsync(
-                targetVol, total, excludeJobId: null, sequenceOrder: null, ct);
+                targetVol, committedDemandOnTarget + total, excludeJobId: null, sequenceOrder: null, ct);
 
             job.EstimateIsLive = f.EstimateIsLive;
             if (!f.Feasible)

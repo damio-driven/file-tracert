@@ -55,6 +55,31 @@ public sealed class OperationsController : ControllerBase
     }
 
     /// <summary>
+    /// Enqueues a whole selection in one call and one transaction (C25): all the jobs or none.
+    /// A request that is invalid in itself aborts the batch with a 400 naming its position —
+    /// nothing is persisted, so repeating the corrected gesture cannot duplicate anything.
+    /// Returns the created jobs in request order, each with the state it was born in.
+    /// </summary>
+    [HttpPost("enqueue-batch")]
+    public async Task<ActionResult<IReadOnlyList<OperationJobDto>>> EnqueueBatch(
+        [FromBody] List<CreateJobRequest> reqs,
+        CancellationToken ct)
+    {
+        try
+        {
+            var dtos = await _queue.EnqueueBatchAsync(reqs, ct);
+            return CreatedAtAction(nameof(List), new { }, dtos);
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+        {
+            // §9: surfaced to the user AND logged in full. The message alone reaches the client;
+            // the stack (and the inner exception naming the real cause) only exists here.
+            _logger.LogWarning(ex, "Batch enqueue of {Count} operations rejected as invalid.", reqs.Count);
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
     /// Computes feasibility for an operation without creating any DB record.
     /// Safe to call from the UI "confirm" dialog.
     /// </summary>
