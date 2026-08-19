@@ -976,35 +976,10 @@ public sealed class JobExecutionEngine
     }
 
     /// <summary>
-    /// Deletes every item's <c>.fadit-partial</c> from the target and clears its
-    /// <c>TempPath</c> pointer (persisted with <see cref="CancellationToken.None"/> —
-    /// cleanup runs on failure/cancel paths where the job token may already be tripped).
-    /// A partial that cannot be removed keeps its TempPath so a later pass can retry.
+    /// Removes this job's leftover partials. The rule itself lives in <see cref="PartialCleanup"/>
+    /// (K2), which is also what the API's cancel and retry call — it used to be copied there, with
+    /// a different persistence token.
     /// </summary>
-    private async Task CleanupPartialsAsync(OperationJob job)
-    {
-        var tgtGuid = job.TargetVolume?.VolumeGuid;
-        if (tgtGuid is null) return;
-
-        bool anyCleared = false;
-        foreach (var item in job.Items.Where(i => !string.IsNullOrEmpty(i.TempPath)))
-        {
-            try
-            {
-                // A partial that never hit the disk (copy aborted before creating it) is
-                // already clean — recycling a missing path would throw and leave the pointer.
-                if (_mover.Exists(tgtGuid, item.TempPath!))
-                    _mover.DeleteToRecycleBin(tgtGuid, item.TempPath!);
-                item.TempPath = null;
-                anyCleared = true;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Job {Id}: could not remove orphan partial '{Path}'.", job.Id, item.TempPath);
-            }
-        }
-
-        if (anyCleared)
-            await _db.SaveChangesAsync(CancellationToken.None);
-    }
+    private Task CleanupPartialsAsync(OperationJob job) =>
+        PartialCleanup.RemoveAsync(_db, _mover, _logger, job);
 }

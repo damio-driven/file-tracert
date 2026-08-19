@@ -367,8 +367,7 @@ public sealed class QueueService : IQueueService
         // after a shutdown, or Blocked with copied items) has orphan .fadit-partial files no
         // engine pass will ever sweep. A running job's engine does its own cleanup; here a
         // locked partial just logs and stays for the engine to remove.
-        CleanupPartials(job);
-        await _db.SaveChangesAsync(ct);
+        await CleanupPartialsAsync(job);
 
         // FIX #14: items already finalized on the target (or whose source is recycled)
         // must be re-pointed in the index, or the Catalog shows ghosts and the target
@@ -406,7 +405,7 @@ public sealed class QueueService : IQueueService
                 $"Job {jobId} is not retryable in state {job.State} (only Blocked or Failed).");
 
         // Leftover partials are garbage: the retry re-copies from scratch (fix #10).
-        CleanupPartials(job);
+        await CleanupPartialsAsync(job);
 
         // Reset every item whose copy did not reach finalization. Verified items keep their
         // finalized target file; Done items already lost their source — both must NOT re-copy.
@@ -558,28 +557,15 @@ public sealed class QueueService : IQueueService
         }
     }
 
-    private void CleanupPartials(OperationJob job)
-    {
-        var tgtGuid = job.TargetVolume?.VolumeGuid;
-        if (tgtGuid is null) return;
-
-        foreach (var item in job.Items.Where(i => !string.IsNullOrEmpty(i.TempPath)))
-        {
-            try
-            {
-                if (_mover.Exists(tgtGuid, item.TempPath!))
-                    _mover.DeleteToRecycleBin(tgtGuid, item.TempPath!);
-                item.TempPath = null;
-            }
-            catch (Exception ex)
-            {
-                // Not silent: logged in full; the partial is garbage on a terminal job, the
-                // user's action (cancel) still succeeded — no need to fail the request.
-                _logger.LogWarning(ex, "Job {Id}: could not remove orphan partial '{Path}'.",
-                    job.Id, item.TempPath);
-            }
-        }
-    }
+    /// <summary>
+    /// Removes this job's leftover partials — the same rule the engine applies, now written once
+    /// in <see cref="PartialCleanup"/> (K2). It persists the cleared pointers itself, with an
+    /// uncancellable token: the local copy left that to the caller, so a request whose token
+    /// tripped (or a retry transaction that rolled back) recycled the file and kept a
+    /// <c>TempPath</c> naming it.
+    /// </summary>
+    private Task CleanupPartialsAsync(OperationJob job) =>
+        PartialCleanup.RemoveAsync(_db, _mover, _logger, job);
 
     public async Task<PagedResult<OperationJobDto>> ListAsync(int skip, int take, CancellationToken ct)
     {

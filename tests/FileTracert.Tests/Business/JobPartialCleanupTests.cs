@@ -7,6 +7,7 @@ using FileTracert.Platform;
 using FileTracert.Tests.Data;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 
@@ -78,11 +79,11 @@ public sealed class JobPartialCleanupTests : IDisposable
             TimeProvider.System, TestProjection.Realtime(), NullLogger<JobExecutionEngine>.Instance);
     }
 
-    private QueueService MakeQueue()
+    private QueueService MakeQueue(params IInterceptor[] interceptors)
     {
         var ledger = Substitute.For<ISpaceLedger>();
         ledger.ReleaseAsync(default, default).ReturnsForAnyArgs(Task.CompletedTask);
-        var db = _harness.CreateContext();
+        var db = _harness.CreateContext(interceptors);
         return new QueueService(db, ledger, TestProjection.Space(db, ledger), new JobCancellationRegistry(),
             _mover, new QueueSignal(),
             TestProjection.Index(db), TestProjection.Overlay(db),
@@ -199,5 +200,84 @@ public sealed class JobPartialCleanupTests : IDisposable
 
         // Cancel never touches the source.
         File.Exists(Abs(srcRel)).Should().BeTrue();
+    }
+
+    /// <summary>
+    /// K2 — the divergence between the two copies of this cleanup, made visible.
+    ///
+    /// <para>The engine's copy persisted the cleared <c>TempPath</c> itself, with
+    /// <c>CancellationToken.None</c>; the queue service's copy left the save to the caller. So a
+    /// retry that lost the state race deleted the partial and then threw — and
+    /// <c>ChangeTracker.Clear()</c> on the way out took the cleared pointer with it. The row was
+    /// left naming a file that is in the recycle bin: the queue's own record of what it owns on
+    /// the target volume, wrong, and wrong until someone retried successfully.</para>
+    ///
+    /// <para>The delete is not undoable, so the engine's semantics is the one that survives: the
+    /// pointer dies with the file, whatever happens to the request afterwards.</para>
+    /// </summary>
+    [Fact]
+    public async Task A_retry_that_loses_the_state_race_still_forgets_the_partial_it_deleted()
+    {
+        const string content = "half-written data";
+        var srcRel = R("src", "doc.txt");
+        var dstRel = R("dst", "doc.txt");
+        var partialRel = dstRel + ".fadit-partial";
+
+        Directory.CreateDirectory(Abs(R("src")));
+        File.WriteAllText(Abs(srcRel), content);
+        Directory.CreateDirectory(Abs(R("dst")));
+        File.WriteAllText(Abs(partialRel), "half");
+
+        SeedVolume();
+        int jobId = SeedJob(JobState.Failed,
+            Item(srcRel, dstRel, content.Length, JobItemState.Failed, partialRel));
+
+        // A rival cancels the job at the exact instant the retry writes its own state, so the
+        // State concurrency token trips and RetryAsync bails out.
+        var rival = new CancelDuringJobSaveInterceptor(_harness, jobId);
+
+        var act = async () => await MakeQueue(rival).RetryAsync(jobId, CancellationToken.None);
+        await act.Should().ThrowAsync<InvalidOperationException>();
+
+        rival.Fired.Should().BeTrue("the test is worthless if the race never happened");
+        PartialsOnDisk().Should().BeEmpty("the cleanup runs before the state write and is not undone");
+
+        await using var db = _harness.CreateContext();
+        var item = await db.OperationJobItems.AsNoTracking().SingleAsync(i => i.JobId == jobId);
+        item.TempPath.Should().BeNull("the file is in the recycle bin; a row still naming it is a lie");
+    }
+
+    /// <summary>Cancels the job from another context the first time the retry saves the JOB row.</summary>
+    private sealed class CancelDuringJobSaveInterceptor : SaveChangesInterceptor
+    {
+        private readonly SqliteInMemoryContext _harness;
+        private readonly int _jobId;
+
+        public CancelDuringJobSaveInterceptor(SqliteInMemoryContext harness, int jobId)
+        {
+            _harness = harness;
+            _jobId = jobId;
+        }
+
+        public bool Fired { get; private set; }
+
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData, InterceptionResult<int> result, CancellationToken ct)
+        {
+            // Only the save that carries the JOB row — the cleanup's own save touches items only.
+            if (!Fired && eventData.Context is { } ctx &&
+                ctx.ChangeTracker.Entries<OperationJob>()
+                   .Any(e => e.State == Microsoft.EntityFrameworkCore.EntityState.Modified))
+            {
+                Fired = true;
+                using var other = _harness.CreateContext();
+                var job = other.OperationJobs.Single(j => j.Id == _jobId);
+                job.State = JobState.Cancelled;
+                job.CompletedUtc = DateTime.UtcNow;
+                other.SaveChanges();
+            }
+
+            return base.SavingChangesAsync(eventData, result, ct);
+        }
     }
 }
