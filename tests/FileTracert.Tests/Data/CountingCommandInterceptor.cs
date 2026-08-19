@@ -12,19 +12,46 @@ namespace FileTracert.Tests.Data;
 /// a test are the machine's mood. A test that asserts a statement count fails the moment someone
 /// puts a query back into a loop, on any hardware.
 /// </summary>
-public sealed class CountingCommandInterceptor : DbCommandInterceptor
+public sealed class CountingCommandInterceptor : DbCommandInterceptor, IDbTransactionInterceptor
 {
     private readonly ConcurrentQueue<string> _commands = new();
+    private int _transactions;
 
     public IReadOnlyCollection<string> Commands => [.. _commands];
 
     public int Count => _commands.Count;
 
+    /// <summary>
+    /// Explicit transactions opened since the last <see cref="Reset"/>. On SQLite this is the
+    /// count that matters: one writer, so every transaction is a turn at the only write lock in
+    /// the process.
+    /// </summary>
+    public int Transactions => Volatile.Read(ref _transactions);
+
+    public DbTransaction TransactionStarted(
+        DbConnection connection, TransactionEndEventData eventData, DbTransaction result)
+    {
+        Interlocked.Increment(ref _transactions);
+        return result;
+    }
+
+    public ValueTask<DbTransaction> TransactionStartedAsync(
+        DbConnection connection, TransactionEndEventData eventData, DbTransaction result,
+        CancellationToken cancellationToken = default)
+    {
+        Interlocked.Increment(ref _transactions);
+        return ValueTask.FromResult(result);
+    }
+
     /// <summary>Statements whose text contains <paramref name="fragment"/> (case-insensitive).</summary>
     public int CountContaining(string fragment) =>
         _commands.Count(c => c.Contains(fragment, StringComparison.OrdinalIgnoreCase));
 
-    public void Reset() => _commands.Clear();
+    public void Reset()
+    {
+        _commands.Clear();
+        Volatile.Write(ref _transactions, 0);
+    }
 
     public override InterceptionResult<DbDataReader> ReaderExecuting(
         DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result)

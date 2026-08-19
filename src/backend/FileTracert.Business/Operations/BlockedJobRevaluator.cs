@@ -199,16 +199,46 @@ public sealed class BlockedJobRevaluator
         }
 
         await _unblocker.TakeOverlayAsync(job, ct);
-        await tx.CommitAsync(ct);
 
         // Guarantee exactly one active reservation: a job blocked at enqueue for lack of space
         // never reserved (shouldReserve was false), one blocked by the engine — or parked by the
         // offline gate — kept its reservation. Release-then-reserve normalizes both cases.
-        if (!job.IsIntraVolume && job.RequiredBytesTarget > 0 && job.TargetVolumeId.HasValue)
+        //
+        // E8 — INSIDE this transaction, on this connection, instead of two more write transactions
+        // on scopes of their own after the commit. Three writes per released job became one, and
+        // the durable half of the ledger now moves with the state change it belongs to, which is
+        // the crash-safety rule WP1 established for the terminal transitions (finding #5): the
+        // window in which a crash left a Pending job with its reservation released and not yet
+        // re-taken — i.e. under-reserved against everybody else — no longer exists.
+        //
+        // Nothing here waits on another connection, so this does NOT re-create the deadlock the
+        // retry path avoids by committing first: ISpaceLedger.ReserveAsync/ReleaseAsync open their
+        // OWN scope and connection, and calling them while holding SQLite's single write lock is
+        // what would be a self-inflicted SQLITE_BUSY. The static halves take the caller's context
+        // precisely so a unit of work can own them.
+        bool normalizeReservation =
+            !job.IsIntraVolume && job.RequiredBytesTarget > 0 && job.TargetVolumeId.HasValue;
+
+        if (normalizeReservation)
         {
-            await _ledger.ReleaseAsync(job.Id, ct);
-            await _ledger.ReserveAsync(
-                job.Id, job.SequenceOrder, job.TargetVolumeId.Value,
+            await SpaceLedger.DeactivateEntriesAsync(_db, job.Id, ct);
+            _db.SpaceLedgerEntries.AddRange(SpaceLedger.BuildReservationEntries(
+                job.Id, job.TargetVolumeId!.Value, job.RequiredBytesTarget,
+                job.SourceVolumeId, job.FreedBytesSource));
+            await _db.SaveChangesAsync(ct);
+        }
+
+        await tx.CommitAsync(ct);
+
+        // The in-memory mirror follows the commit, never precedes it — same order as the enqueue
+        // and the completion. Until this runs the ledger under-counts this job's demand; a
+        // revaluation pass is single-threaded and the next candidate is judged after it, so no
+        // decision is taken on the gap.
+        if (normalizeReservation)
+        {
+            await _ledger.ReleaseInMemoryAsync(job.Id, ct);
+            await _ledger.RegisterReservationInMemoryAsync(
+                job.Id, job.SequenceOrder, job.TargetVolumeId!.Value,
                 job.RequiredBytesTarget, job.SourceVolumeId, job.FreedBytesSource, ct);
         }
 
