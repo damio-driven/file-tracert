@@ -153,6 +153,10 @@ export const jobRow = (page: Page, jobId: number): Locator => page.locator(`tr#j
 export const jobState = (page: Page, jobId: number): Locator =>
   jobRow(page, jobId).locator('ft-pill');
 
+/** The explanation the Coda prints under a blocked job. */
+export const jobBlockDetail = (page: Page, jobId: number): Locator =>
+  jobRow(page, jobId).locator('.block-detail');
+
 /** A locator that matches the whole text and nothing more of it. */
 function exact(text: string): RegExp {
   return new RegExp(`^\\s*${text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`);

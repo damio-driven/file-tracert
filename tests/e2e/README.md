@@ -140,3 +140,4 @@ scritte accanto al codice:
 | `specs/catalog.spec.ts` | l'albero lazy si naviga livello per livello e conta ciò che il test ha messo su disco; una cartella esclusa dal filtro **resta** nell'albero (11h) |
 | `specs/search.spec.ts` | l'FTS trova per nome, «solo nome» e «percorso completo» danno risposte diverse, il filtro categoria stringe, e il filtro data ragiona in **giorni locali** |
 | `specs/projection.spec.ts` | accodare uno spostamento dal picker muove **subito** il file nel Catalogo e nella Ricerca, col badge che linka la riga della Coda; a operazione eseguita il badge sparisce e il **disco** è dove la proiezione diceva |
+| `specs/queue.spec.ts` | un job fermo su un **nome già preso** offre «Riprova»; un secondo job sulla stessa entità è `Blocked(DependencyPending)` col rimando linkato; annullare il prerequisito **parcheggia** il dipendente invece di cancellarlo |
