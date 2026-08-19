@@ -156,7 +156,7 @@ public sealed class IndexUpdater
             .InSubtree(job.SourceVolumeId.Value, oldPath)
             .ToListAsync(ct);
 
-        var topDir = dirs.FirstOrDefault(d => d.MaterializedPath == oldPath);
+        var topDir = dirs.FirstOrDefault(d => ScanPath.SamePath(d.MaterializedPath, oldPath));
         if (topDir is null) return;
 
         // Re-parent the top directory.
@@ -354,7 +354,7 @@ public sealed class IndexUpdater
             .InSubtree(volumeId, oldPath)
             .ToListAsync(ct);
 
-        var topDir = dirs.FirstOrDefault(d => d.MaterializedPath == oldPath);
+        var topDir = dirs.FirstOrDefault(d => ScanPath.SamePath(d.MaterializedPath, oldPath));
         if (topDir is not null)
             topDir.Name = ScanPath.Name(newPath);
 

@@ -79,6 +79,57 @@ public sealed class DirectoryCollationTests : IDisposable
     }
 
     /// <summary>
+    /// Same rule one layer up. The subtree query is case-insensitive in SQL, but the row it
+    /// picks as the SUBTREE ROOT was chosen in memory with an ordinal <c>==</c> — so a job whose
+    /// snapshot spelled the folder in another case found no root, returned early and cascaded
+    /// nothing: the rename happened on disk while the catalog kept every old path. Reachable
+    /// because a refreshed snapshot is rewritten from another job's target path, whose case is
+    /// whatever the user typed, not what the scan recorded.
+    /// </summary>
+    [Fact]
+    public async Task A_folder_rename_cascades_even_when_the_snapshot_spells_the_path_in_another_case()
+    {
+        using (var db = _harness.CreateContext())
+        {
+            db.Directories.Add(new DirectoryNode
+            {
+                Id = 11, VolumeId = VolumeId, ParentId = 10, Name = "Raw",
+                MaterializedPath = @"Photos\Raw", IsMaterialized = true, IsPresent = true,
+            });
+
+            var job = new OperationJob
+            {
+                Type = JobType.RenameFolder, State = JobState.Completed, IsIntraVolume = true,
+                SourceVolumeId = VolumeId, TargetVolumeId = VolumeId, TargetRelativePath = "Foto",
+                SequenceOrder = 1, CreatedUtc = DateTime.UtcNow, UpdatedUtc = DateTime.UtcNow,
+            };
+            job.Items.Add(new OperationJobItem
+            {
+                // The snapshot spells it "photos"; the catalog row says "Photos".
+                SourceRelativePath = "photos",
+                TargetRelativePath = "Foto",
+                State = JobItemState.Done,
+                CreatedUtc = DateTime.UtcNow, UpdatedUtc = DateTime.UtcNow,
+            });
+            db.OperationJobs.Add(job);
+            db.SaveChanges();
+        }
+
+        await using (var db = _harness.CreateContext())
+        {
+            var job = await db.OperationJobs.Include(j => j.Items).SingleAsync();
+            await TestProjection.Index(db).UpdateAfterCompletionAsync(job, CancellationToken.None);
+        }
+
+        await using var probe = _harness.CreateContext();
+        var dirs = await probe.Directories.OrderBy(d => d.Id).ToListAsync();
+        dirs.Select(d => d.MaterializedPath).Should().BeEquivalentTo(["Foto", @"Foto\Raw"],
+            "the whole subtree follows the rename");
+        dirs.Single(d => d.Id == 10).Name.Should().Be("Foto",
+            "the renamed folder's own Name is set from the row picked as the subtree root");
+    }
+
+    /// <summary>
     /// The guard against over-correcting: NOCASE must not make two genuinely different folders
     /// look like one. <c>Photos2</c> is not <c>Photos</c>.
     /// </summary>
