@@ -123,7 +123,13 @@ public sealed class JobExecutionEngineTests : IDisposable
         return job.Id;
     }
 
-    private JobExecutionEngine MakeEngine(IFileMover mover, TimeProvider? timeProvider = null)
+    /// <param name="probe">
+    /// The platform's free-space probe. Null keeps the default fake, which echoes the volume
+    /// row's FreeBytesLastKnown — so the tests that are not about the live probe keep arranging
+    /// space by seeding that column.
+    /// </param>
+    private JobExecutionEngine MakeEngine(
+        IFileMover mover, TimeProvider? timeProvider = null, IVolumeProbe? probe = null)
     {
         var db = _harness.CreateContext();
         var fts = new FakeFileSearchIndex();
@@ -131,7 +137,7 @@ public sealed class JobExecutionEngineTests : IDisposable
         var notifications = new FileTracert.Business.Notifications.NotificationService(db, TestProjection.Realtime());
 
         return new JobExecutionEngine(
-            db, mover, _ledger, indexUpdater, TestProjection.Overlay(db), notifications,
+            db, mover, _ledger, TestProjection.Space(db, _ledger, probe), indexUpdater, TestProjection.Overlay(db), notifications,
             timeProvider ?? TimeProvider.System, TestProjection.Realtime(), NullLogger<JobExecutionEngine>.Instance);
     }
 

@@ -98,12 +98,12 @@ public sealed class QueueFifoRecoveryTests : IDisposable
     {
         var indexUpdater = TestProjection.Index(db);
         var notifications = new FileTracert.Business.Notifications.NotificationService(db, TestProjection.Realtime());
-        return new JobExecutionEngine(db, mover, _ledger, indexUpdater, TestProjection.Overlay(db), notifications,
+        return new JobExecutionEngine(db, mover, _ledger, TestProjection.Space(db, _ledger), indexUpdater, TestProjection.Overlay(db), notifications,
             TimeProvider.System, TestProjection.Realtime(), NullLogger<JobExecutionEngine>.Instance);
     }
 
     private BlockedJobRevaluator MakeRevaluator(FileTracertDbContext db) =>
-        new(db, _ledger, TestProjection.Unblocker(db), TestProjection.Realtime(), NullLogger<BlockedJobRevaluator>.Instance);
+        new(db, _ledger, TestProjection.Space(db, _ledger), TestProjection.Unblocker(db), TestProjection.Realtime(), NullLogger<BlockedJobRevaluator>.Instance);
 
     private static IFileMover HappyMover()
     {

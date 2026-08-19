@@ -18,11 +18,12 @@ namespace FileTracert.Business.Operations;
 /// Two gates, in this order:
 ///  1. <see cref="VolumeOfflineGate"/> — a job whose volumes are not all connected stays blocked,
 ///     with the reason retargeted to whichever volume is missing NOW.
-///  2. HARD feasibility (no credit for promised liberations of jobs that have not completed) —
-///     so an unblocked job is guaranteed to pass the engine's execution-time re-check instead of
-///     ping-ponging Blocked → Pending → Blocked. At a remount this is the "never copy on an
-///     estimate" re-check of §4: the volume sync refreshes FreeBytesLastKnown from the live probe
-///     before this runs, so the figure evaluated here is the drive's real free space.
+///  2. HARD feasibility (<see cref="SpaceCheck"/>: no credit for promised liberations of jobs
+///     that have not completed, free bytes read from the device) — so an unblocked job is
+///     guaranteed to pass the engine's execution-time re-check instead of ping-ponging
+///     Blocked → Pending → Blocked. It is the same object the engine consults, over the same
+///     live figure: §4's "never copy on an estimate" has to hold on the release side too, or the
+///     release is just a promise the engine breaks a second later.
 /// </summary>
 public sealed class BlockedJobRevaluator
 {
@@ -44,6 +45,7 @@ public sealed class BlockedJobRevaluator
 
     private readonly FileTracertDbContext _db;
     private readonly ISpaceLedger _ledger;
+    private readonly SpaceCheck _spaceCheck;
     private readonly JobUnblocker _unblocker;
     private readonly RealtimeEvents _realtime;
     private readonly ILogger<BlockedJobRevaluator> _logger;
@@ -51,12 +53,14 @@ public sealed class BlockedJobRevaluator
     public BlockedJobRevaluator(
         FileTracertDbContext db,
         ISpaceLedger ledger,
+        SpaceCheck spaceCheck,
         JobUnblocker unblocker,
         RealtimeEvents realtime,
         ILogger<BlockedJobRevaluator> logger)
     {
         _db = db;
         _ledger = ledger;
+        _spaceCheck = spaceCheck;
         _unblocker = unblocker;
         _realtime = realtime;
         _logger = logger;
@@ -98,12 +102,13 @@ public sealed class BlockedJobRevaluator
                 continue;
             }
 
-            var deficit = await HardSpaceDeficitAsync(job, ct);
-            if (deficit > 0)
+            // Same hard check the engine runs, over the same live figure: releasing a job on a
+            // number the engine would then contradict is how a job ping-pongs Blocked → Pending
+            // → Blocked without ever moving a byte.
+            var space = await _spaceCheck.EvaluateHardAsync(job, ct);
+            if (!space.Ok)
             {
-                await KeepBlockedAsync(job, JobBlockReason.InsufficientSpace,
-                    $"Insufficient space: {deficit} bytes short on volume {job.TargetVolumeId}.",
-                    job.DependsOnJobId, ct);
+                await KeepBlockedAsync(job, space.Reason, space.Message, job.DependsOnJobId, ct);
                 continue;
             }
 
@@ -112,24 +117,6 @@ public sealed class BlockedJobRevaluator
         }
 
         return unblockedCount;
-    }
-
-    /// <summary>
-    /// Missing bytes on the target under the HARD view, or 0 when the job needs no space
-    /// (intra-volume ops, and any job with nothing to reserve).
-    /// </summary>
-    private async Task<long> HardSpaceDeficitAsync(OperationJob job, CancellationToken ct)
-    {
-        if (job.IsIntraVolume || job.RequiredBytesTarget <= 0 || job.TargetVolume is null)
-            return 0;
-
-        var tgtVol = job.TargetVolume;
-        var feasibility = await _ledger.ComputeFeasibilityAsync(
-            tgtVol.Id, tgtVol.FreeBytesLastKnown, tgtVol.IsOnline, job.RequiredBytesTarget,
-            excludeJobId: job.Id, sequenceOrder: job.SequenceOrder,
-            includeQueuedLiberations: false, ct);
-
-        return feasibility.DeficitBytes;
     }
 
     /// <summary>

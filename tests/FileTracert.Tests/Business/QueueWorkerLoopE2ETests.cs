@@ -21,8 +21,12 @@ namespace FileTracert.Tests.Business;
 ///
 /// Cross-volume is simulated with two Volume rows that share the same physical volume GUID
 /// (so the mover reads/writes real temp files) but distinct Ids (so the ledger tracks them as
-/// independent volumes). "Free space" is the per-volume <c>FreeBytesLastKnown</c> estimate the
-/// tests seed; the fold-at-completion + revaluation is what these tests exercise.
+/// independent volumes). Space, on the other hand, is REAL here: the hard re-check probes the
+/// drive under the fixture, so the two rows cannot be given different amounts of room — one
+/// physical drive has one free-space figure. Scarcity is therefore expressed the only way it
+/// still exists on a roomy drive: as room the queue has already promised to a job ahead.
+/// Per-volume scarcity itself is covered where volumes are really distinct
+/// (<c>QueueFifoRecoveryTests</c>, <c>LiveSpaceCheckTests</c>).
 ///
 /// SAFETY: every path lives under <see cref="Path.GetTempPath"/> + a fresh GUID, created and
 /// deleted by the test. No user paths, no production WatchedRoots — safe for unattended CI.
@@ -37,6 +41,7 @@ public sealed class QueueWorkerLoopE2ETests : IDisposable
     private readonly SqliteInMemoryContext _harness;
     private readonly SpaceLedger _ledger;
     private readonly Win32FileMover _mover;
+    private readonly Win32VolumeProbe _probe;
     private readonly JobCancellationRegistry _cancellation = new();
     private readonly string _volumeGuid;
     private readonly string _mountPoint;
@@ -63,12 +68,12 @@ public sealed class QueueWorkerLoopE2ETests : IDisposable
 
         _mover = new Win32FileMover(NullLogger<Win32FileMover>.Instance);
 
-        var probe = new Win32VolumeProbe(
+        _probe = new Win32VolumeProbe(
             new WmiPhysicalDiskResolver(NullLogger<WmiPhysicalDiskResolver>.Instance),
             NullLogger<Win32VolumeProbe>.Instance);
 
         var tempPath = Path.GetTempPath();
-        var vol = probe.EnumerateVolumes()
+        var vol = _probe.EnumerateVolumes()
             .Where(v => v.MountPoints.Count > 0)
             .OrderByDescending(v => v.MountPoints[0].Length)
             .First(v => tempPath.StartsWith(v.MountPoints[0], StringComparison.OrdinalIgnoreCase));
@@ -113,12 +118,12 @@ public sealed class QueueWorkerLoopE2ETests : IDisposable
     {
         var indexUpdater = TestProjection.Index(db);
         var notifications = new FileTracert.Business.Notifications.NotificationService(db, TestProjection.Realtime());
-        return new JobExecutionEngine(db, _mover, _ledger, indexUpdater, TestProjection.Overlay(db), notifications,
+        return new JobExecutionEngine(db, _mover, _ledger, TestProjection.Space(db, _ledger, _probe), indexUpdater, TestProjection.Overlay(db), notifications,
             TimeProvider.System, TestProjection.Realtime(), NullLogger<JobExecutionEngine>.Instance);
     }
 
     private BlockedJobRevaluator MakeRevaluator(FileTracertDbContext db) =>
-        new(db, _ledger, TestProjection.Unblocker(db), TestProjection.Realtime(), NullLogger<BlockedJobRevaluator>.Instance);
+        new(db, _ledger, TestProjection.Space(db, _ledger, _probe), TestProjection.Unblocker(db), TestProjection.Realtime(), NullLogger<BlockedJobRevaluator>.Instance);
 
     /// <summary>Directly seed a cross-volume MoveFile job over one real source file.</summary>
     private async Task<int> EnqueueMoveAsync(int fileId, int srcVol, int tgtVol, string tgtDirRel)
@@ -197,6 +202,12 @@ public sealed class QueueWorkerLoopE2ETests : IDisposable
         return completedOrder;
     }
 
+    private async Task<int> ReadSequenceOrder(int jobId)
+    {
+        await using var db = _harness.CreateContext();
+        return await db.OperationJobs.Where(j => j.Id == jobId).Select(j => j.SequenceOrder).SingleAsync();
+    }
+
     private async Task<JobState> ReadState(int jobId)
     {
         await using var db = _harness.CreateContext();
@@ -216,7 +227,6 @@ public sealed class QueueWorkerLoopE2ETests : IDisposable
         int jobA = await EnqueueMoveAsync(1, Vol2Id, Vol1Id, R("v1dst"));
         int jobB = await EnqueueMoveAsync(2, Vol1Id, Vol2Id, R("v2dst"));
 
-        // B is only feasible thanks to A's promised liberation (planning view at enqueue).
         (await ReadState(jobB)).Should().Be(JobState.Pending);
 
         var order = await RunWorkerLoopAsync();
@@ -245,7 +255,16 @@ public sealed class QueueWorkerLoopE2ETests : IDisposable
         int jobA = await EnqueueMoveAsync(1, Vol2Id, Vol1Id, R("v1dst"));
         int jobB = await EnqueueMoveAsync(2, Vol1Id, Vol2Id, R("v2dst"));
 
-        // Anticipate B out of order: the hard re-check refuses the unmaterialized promise.
+        // The drive under the fixture is roomy and both ledger volumes sit on it, so the only
+        // scarcity that can exist here is what the queue has already promised away: job A holds
+        // a reservation on Vol2 that B, running out of order, would have to spend before A ever
+        // did. Deliberately absurd in size so the assertion cannot depend on how full the
+        // tester's disk happens to be; released, like every entry of A, when A completes.
+        await _ledger.ReserveAsync(
+            jobA, await ReadSequenceOrder(jobA), Vol2Id, long.MaxValue / 4,
+            sourceVolumeId: null, freedBytes: 0, CancellationToken.None);
+
+        // Anticipate B out of order: the hard re-check refuses to spend room that is not free yet.
         await using (var db = _harness.CreateContext())
             await MakeEngine(db).ExecuteJobAsync(jobB, CancellationToken.None);
 
@@ -253,7 +272,7 @@ public sealed class QueueWorkerLoopE2ETests : IDisposable
         File.Exists(Abs(R("v2dst", "onto.bin"))).Should().BeFalse("nothing must be copied on a promise");
         Directory.EnumerateFiles(_absRoot, "*.fadit-partial", SearchOption.AllDirectories).Should().BeEmpty();
 
-        // Now the real loop runs A, folds the liberation, revalues B → B completes on its own.
+        // Now the real loop runs A, releases what A held, revalues B → B completes on its own.
         var order = await RunWorkerLoopAsync();
 
         order.Should().Equal(jobA, jobB);

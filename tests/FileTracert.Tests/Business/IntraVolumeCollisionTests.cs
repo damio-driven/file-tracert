@@ -71,7 +71,7 @@ public sealed class IntraVolumeCollisionTests : IDisposable
         var db = _harness.CreateContext();
         var indexUpdater = TestProjection.Index(db);
         var notifications = new FileTracert.Business.Notifications.NotificationService(db, TestProjection.Realtime());
-        return new JobExecutionEngine(db, _mover, ledger, indexUpdater, TestProjection.Overlay(db), notifications,
+        return new JobExecutionEngine(db, _mover, ledger, TestProjection.Space(db, ledger), indexUpdater, TestProjection.Overlay(db), notifications,
             TimeProvider.System, TestProjection.Realtime(), NullLogger<JobExecutionEngine>.Instance);
     }
 

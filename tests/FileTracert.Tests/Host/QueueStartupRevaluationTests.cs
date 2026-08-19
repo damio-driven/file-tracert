@@ -1,4 +1,6 @@
 using FileTracert.Contracts.Enums;
+using FileTracert.Contracts.Platform;
+using FileTracert.Tests.Business;
 using FileTracert.Data;
 using FileTracert.Data.Entities;
 using FluentAssertions;
@@ -24,9 +26,15 @@ public sealed class QueueStartupRevaluationTests
         using var factory = new FileTracertAppFactory
         {
             DisableScan = true,
-            // No probe, no volume sync: nothing can produce the offline→online event. The only
-            // thing that can move this job is the queue worker's own startup pass.
+            // No volume sync: nothing can produce the offline→online event. The only thing that
+            // can move this job is the queue worker's own startup pass. The probe still answers
+            // for the drive — the hard re-check asks the DEVICE how much room there is, and a
+            // volume that does not answer at all would be parked as missing, not as full.
             DisableVolumeSync = true,
+            Probe = new FakeVolumesProbe(
+            [
+                new ProbedVolume(VolumeGuid, null, "Archivio", "NTFS", false, [], 1024 * 1024, 0, null),
+            ]),
             Seed = async (db, ct) =>
             {
                 // The drive is back (online) but the catalog still holds a job parked on it, and
@@ -37,7 +45,7 @@ public sealed class QueueStartupRevaluationTests
                     FileSystem = "NTFS",
                     ScanEngine = VolumeScanEngine.UsnJournal,
                     IsOnline = true,
-                    FreeBytesLastKnown = 0,
+                    FreeBytesLastKnown = 1024 * 1024 * 1024,   // the catalog is out of date; the drive is full
                 };
                 db.Volumes.Add(volume);
                 await db.SaveChangesAsync(ct);

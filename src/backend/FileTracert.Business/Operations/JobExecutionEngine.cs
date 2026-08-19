@@ -33,6 +33,7 @@ public sealed class JobExecutionEngine
     private readonly FileTracertDbContext _db;
     private readonly IFileMover _mover;
     private readonly ISpaceLedger _ledger;
+    private readonly SpaceCheck _spaceCheck;
     private readonly IndexUpdater _indexUpdater;
     private readonly OverlayWriter _overlay;
     private readonly INotificationPublisher _notifications;
@@ -44,6 +45,7 @@ public sealed class JobExecutionEngine
         FileTracertDbContext db,
         IFileMover mover,
         ISpaceLedger ledger,
+        SpaceCheck spaceCheck,
         IndexUpdater indexUpdater,
         OverlayWriter overlay,
         INotificationPublisher notifications,
@@ -54,6 +56,7 @@ public sealed class JobExecutionEngine
         _db = db;
         _mover = mover;
         _ledger = ledger;
+        _spaceCheck = spaceCheck;
         _indexUpdater = indexUpdater;
         _overlay = overlay;
         _notifications = notifications;
@@ -215,22 +218,28 @@ public sealed class JobExecutionEngine
 
         if (job.State == JobState.Pending)
         {
-            // Hard space check before we commit to copying.
+            // Hard space check before we commit to copying: the free bytes come from the DEVICE,
+            // not from the row the last volume sync wrote (finding 10 / §4 "mai copiare sulla
+            // fiducia di una stima"). The check excludes this job's own enqueue reservation and
+            // anything enqueued after it — it answers "does it fit NOW, given what still precedes
+            // me in FIFO" — and credits no promised liberation of a job that has not completed.
             var tgtVol = job.TargetVolume!;
-            // Exclude this job's own enqueue reservation and anything enqueued after it:
-            // the re-check answers "does it fit NOW, given what still precedes me in FIFO".
-            // HARD view (includeQueuedLiberations: false): a liberation promised by a preceding
-            // job that has not completed yet is not physical space — never copy on its strength.
-            var feasibility = await _ledger.ComputeFeasibilityAsync(
-                tgtVol.Id, tgtVol.FreeBytesLastKnown, tgtVol.IsOnline, job.RequiredBytesTarget,
-                excludeJobId: job.Id, sequenceOrder: job.SequenceOrder,
-                includeQueuedLiberations: false, ct);
+            var verdict = await _spaceCheck.EvaluateHardAsync(job, ct);
 
-            if (!feasibility.Feasible)
+            // The probed figure is fresher than the stored one, so it replaces it (an absolute
+            // overwrite, never a delta — see CompleteJobAsync, whose estimate fold this
+            // supersedes as soon as the next probe lands). Persisted by the transition below,
+            // or by SetBlockedAsync on the other branch.
+            var space = _spaceCheck.ReadFreeSpace(tgtVol);
+            if (space.IsLive)
+                tgtVol.FreeBytesLastKnown = space.FreeBytes;
+
+            if (!verdict.Ok)
             {
-                _logger.LogWarning("Job {Id}: insufficient space at execution time. Deficit={D}.", job.Id, feasibility.DeficitBytes);
-                await SetBlockedAsync(job, JobBlockReason.InsufficientSpace,
-                    $"Insufficient space: {feasibility.DeficitBytes} bytes short on volume {tgtVol.Id}.", ct);
+                _logger.LogWarning(
+                    "Job {Id}: hard space re-check refused it ({Reason}). Deficit={D}, free={Free} (live={Live}).",
+                    job.Id, verdict.Reason, verdict.Feasibility.DeficitBytes, space.FreeBytes, space.IsLive);
+                await SetBlockedAsync(job, verdict.Reason, verdict.Message, ct);
                 return;
             }
 

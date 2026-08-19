@@ -40,6 +40,10 @@ public static class BusinessServiceCollectionExtensions
         // Space ledger is a singleton: preview (API threads) and processor both read/write it.
         services.AddSingleton<ISpaceLedger, SpaceLedger>();
 
+        // The one place that answers "does it fit?", scoped so its live probe of a volume is read
+        // once per unit of work (a revaluation pass, an API request, one job execution).
+        services.AddScoped<SpaceCheck>();
+
         // Cancellation registry is a singleton: the API (Cancel) signals the token the worker
         // is running the job under, across two different DbContexts.
         services.AddSingleton<IJobCancellationRegistry, JobCancellationRegistry>();

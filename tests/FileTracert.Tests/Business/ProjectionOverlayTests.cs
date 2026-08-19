@@ -92,7 +92,7 @@ public sealed class ProjectionOverlayTests : IDisposable
     private JobExecutionEngine Engine(IFileMover mover)
     {
         var db = _harness.CreateContext();
-        return new JobExecutionEngine(db, mover, _ledger,
+        return new JobExecutionEngine(db, mover, _ledger, TestProjection.Space(db, _ledger),
             TestProjection.Index(db, new FileSearchIndex(db)),
             TestProjection.Overlay(db, new FileSearchIndex(db)),
             new FakeNotificationPublisher(),

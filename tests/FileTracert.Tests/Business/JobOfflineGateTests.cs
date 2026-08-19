@@ -123,7 +123,7 @@ public sealed class JobOfflineGateTests : IDisposable
     {
         var db = _harness.CreateContext();
         return new JobExecutionEngine(
-            db, mover, _ledger,
+            db, mover, _ledger, TestProjection.Space(db, _ledger),
             TestProjection.Index(db), TestProjection.Overlay(db),
             new FileTracert.Business.Notifications.NotificationService(db, TestProjection.Realtime()),
             TimeProvider.System, TestProjection.Realtime(), NullLogger<JobExecutionEngine>.Instance);
@@ -144,7 +144,7 @@ public sealed class JobOfflineGateTests : IDisposable
         MakeRevaluator(_harness.CreateContext());
 
     private BlockedJobRevaluator MakeRevaluator(FileTracertDbContext db) =>
-        new(db, _ledger, TestProjection.Unblocker(db), TestProjection.Realtime(), NullLogger<BlockedJobRevaluator>.Instance);
+        new(db, _ledger, TestProjection.Space(db, _ledger), TestProjection.Unblocker(db), TestProjection.Realtime(), NullLogger<BlockedJobRevaluator>.Instance);
 
     /// <summary>Cross-volume MoveFile job, one item, sized <see cref="FileSize"/>.</summary>
     private int SeedCrossVolumeJob(

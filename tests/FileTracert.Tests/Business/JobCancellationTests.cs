@@ -77,7 +77,8 @@ public sealed class JobCancellationTests : IDisposable
         var db = _harness.CreateContext();
         var indexUpdater = TestProjection.Index(db);
         var notifications = new FileTracert.Business.Notifications.NotificationService(db, TestProjection.Realtime());
-        return new JobExecutionEngine(db, mover, NoopLedger(), indexUpdater, TestProjection.Overlay(db), notifications,
+        var ledger = NoopLedger();
+        return new JobExecutionEngine(db, mover, ledger, TestProjection.Space(db, ledger), indexUpdater, TestProjection.Overlay(db), notifications,
             TimeProvider.System, TestProjection.Realtime(), NullLogger<JobExecutionEngine>.Instance);
     }
 

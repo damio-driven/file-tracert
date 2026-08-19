@@ -3,6 +3,7 @@ using FileTracert.Business.Operations;
 using FileTracert.Business.Projection;
 using FileTracert.Business.Realtime;
 using FileTracert.Contracts.Operations;
+using FileTracert.Contracts.Platform;
 using FileTracert.Contracts.Realtime;
 using FileTracert.Contracts.Search;
 using FileTracert.Data;
@@ -28,8 +29,20 @@ internal static class TestProjection
 
     /// <summary>The real Blocked-job revaluation, over the real ledger.</summary>
     public static BlockedJobRevaluator Revaluator(
-        FileTracertDbContext db, ISpaceLedger ledger, IFileSearchIndex? fts = null) =>
-        new(db, ledger, Unblocker(db, fts), TestProjection.Realtime(), NullLogger<BlockedJobRevaluator>.Instance);
+        FileTracertDbContext db, ISpaceLedger ledger, IFileSearchIndex? fts = null,
+        IVolumeProbe? probe = null) =>
+        new(db, ledger, Space(db, ledger, probe), Unblocker(db, fts), TestProjection.Realtime(),
+            NullLogger<BlockedJobRevaluator>.Instance);
+
+    /// <summary>
+    /// The real "does it fit?" service. The default platform probe echoes the volume row's
+    /// <c>FreeBytesLastKnown</c>, so a test that is not about the live probe keeps arranging space
+    /// the way it always has; a test that IS about it passes a <see cref="StubFreeSpaceProbe"/>
+    /// reporting whatever the disk really holds.
+    /// </summary>
+    public static SpaceCheck Space(
+        FileTracertDbContext db, ISpaceLedger ledger, IVolumeProbe? probe = null) =>
+        new(ledger, probe ?? new LastKnownFreeSpaceProbe(db), NullLogger<SpaceCheck>.Instance);
 
     /// <summary>The real release path: guard re-ask + snapshot refresh + overlay.</summary>
     public static JobUnblocker Unblocker(FileTracertDbContext db, IFileSearchIndex? fts = null) =>

@@ -171,7 +171,7 @@ public sealed class MoveFolderSafetyTests : IDisposable
     {
         var db = _harness.CreateContext();
         return new JobExecutionEngine(
-            db, _mover, _ledger,
+            db, _mover, _ledger, TestProjection.Space(db, _ledger),
             TestProjection.Index(db), TestProjection.Overlay(db),
             new NotificationService(db, TestProjection.Realtime()),
             TimeProvider.System, TestProjection.Realtime(), NullLogger<JobExecutionEngine>.Instance);

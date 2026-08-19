@@ -227,7 +227,7 @@ public sealed class RealtimeEmissionTests : IDisposable
     {
         var db = _harness.CreateContext();
         return new JobExecutionEngine(
-            db, mover, _ledger, TestProjection.Index(db), TestProjection.Overlay(db),
+            db, mover, _ledger, TestProjection.Space(db, _ledger), TestProjection.Index(db), TestProjection.Overlay(db),
             new NotificationService(db, Events(publisher)), TimeProvider.System,
             Events(publisher), NullLogger<JobExecutionEngine>.Instance);
     }

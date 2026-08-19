@@ -65,7 +65,7 @@ public sealed class JobDependencyTests : IDisposable
     private JobExecutionEngine EngineWith(IFileMover mover)
     {
         var db = _harness.CreateContext();
-        return new JobExecutionEngine(db, mover, _ledger,
+        return new JobExecutionEngine(db, mover, _ledger, TestProjection.Space(db, _ledger),
             TestProjection.Index(db), TestProjection.Overlay(db), new FakeNotificationPublisher(),
             TimeProvider.System, TestProjection.Realtime(), NullLogger<JobExecutionEngine>.Instance);
     }
@@ -73,7 +73,7 @@ public sealed class JobDependencyTests : IDisposable
     private BlockedJobRevaluator Revaluator()
     {
         var db = _harness.CreateContext();
-        return new BlockedJobRevaluator(db, _ledger, TestProjection.Unblocker(db),
+        return new BlockedJobRevaluator(db, _ledger, TestProjection.Space(db, _ledger), TestProjection.Unblocker(db),
             TestProjection.Realtime(), NullLogger<BlockedJobRevaluator>.Instance);
     }
 
