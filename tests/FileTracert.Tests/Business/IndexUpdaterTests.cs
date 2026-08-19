@@ -111,6 +111,163 @@ public sealed class IndexUpdaterTests : IDisposable
         fts.Upserts.Should().ContainSingle(u => u.Id == 3 && u.Path == @"Archive\Media\B\f3.bin");
     }
 
+    /// <summary>
+    /// Finding 6. The FRN is an identity INSIDE one volume — low MFT indices repeat on every
+    /// NTFS volume — so carrying the source FRN over to the target can collide with a file
+    /// already indexed there. The unique <c>(VolumeId, UsnFileRef)</c> index then throws AFTER
+    /// the bytes have already been moved, which flips a successful job to Failed.
+    /// </summary>
+    [Fact]
+    public async Task MoveFile_cross_volume_drops_the_source_FRN()
+    {
+        const long SharedFrn = 42;
+
+        using (var db = _harness.CreateContext())
+        {
+            SeedVolumes(db);
+            db.Directories.AddRange(
+                Dir(50, SrcVol, "Docs", "Docs"),
+                Dir(60, TgtVol, "Archive", "Archive"));
+
+            // The moving file, and a file ALREADY on the target that happens to own the same FRN.
+            db.Files.Add(File(1, SrcVol, 50, "report.txt", SharedFrn));
+            db.Files.Add(File(9, TgtVol, 60, "unrelated.txt", SharedFrn));
+
+            var job = Job(JobType.MoveFile, @"Archive\report.txt");
+            job.Items.Add(Item(1, @"Docs\report.txt", @"Archive\report.txt"));
+            db.OperationJobs.Add(job);
+            db.SaveChanges();
+        }
+
+        await using (var db = _harness.CreateContext())
+        {
+            var job = await db.OperationJobs.Include(j => j.Items).SingleAsync();
+            await TestProjection.Index(db, new RecordingFts()).UpdateAfterCompletionAsync(job, CancellationToken.None);
+        }
+
+        await using (var probe = _harness.CreateContext())
+        {
+            var moved = await probe.Files.SingleAsync(f => f.Id == 1);
+            moved.VolumeId.Should().Be(TgtVol);
+            moved.UsnFileRef.Should().BeNull("an FRN from another volume means nothing here");
+
+            // The file that was already on the target keeps its own identity untouched.
+            (await probe.Files.SingleAsync(f => f.Id == 9)).UsnFileRef.Should().Be(SharedFrn);
+        }
+    }
+
+    /// <summary>Same rule on the folder path: every file the cross-volume move re-points.</summary>
+    [Fact]
+    public async Task MoveFolder_cross_volume_drops_the_source_FRN_of_every_file()
+    {
+        using (var db = _harness.CreateContext())
+        {
+            SeedVolumes(db);
+            db.Directories.AddRange(
+                Dir(50, SrcVol, "Media", "Media"),
+                Dir(60, TgtVol, "Keep", "Keep"));
+
+            db.Files.Add(File(1, SrcVol, 50, "a.bin", 7));
+            db.Files.Add(File(2, SrcVol, 50, "b.bin", 8));
+            // Already on the target with an FRN that collides with the second moving file.
+            db.Files.Add(File(9, TgtVol, 60, "old.bin", 8));
+
+            var job = Job(JobType.MoveFolder, @"Keep\Media");
+            job.Items.Add(FolderMarker("Media", @"Keep\Media"));
+            job.Items.Add(Item(1, @"Media\a.bin", @"Keep\Media\a.bin"));
+            job.Items.Add(Item(2, @"Media\b.bin", @"Keep\Media\b.bin"));
+            db.OperationJobs.Add(job);
+            db.SaveChanges();
+        }
+
+        await using (var db = _harness.CreateContext())
+        {
+            var job = await db.OperationJobs.Include(j => j.Items).SingleAsync();
+            await TestProjection.Index(db, new RecordingFts()).UpdateAfterCompletionAsync(job, CancellationToken.None);
+        }
+
+        await using (var probe = _harness.CreateContext())
+        {
+            var moved = await probe.Files.Where(f => f.Id == 1 || f.Id == 2).ToListAsync();
+            moved.Should().OnlyContain(f => f.VolumeId == TgtVol && f.UsnFileRef == null);
+            (await probe.Files.SingleAsync(f => f.Id == 9)).UsnFileRef.Should().Be(8);
+        }
+    }
+
+    /// <summary>
+    /// The cancel reconciliation re-points landed items to the target volume too, so it carries
+    /// the same rule — otherwise a cancelled cross-volume job leaves the very violation the
+    /// completion path now avoids.
+    /// </summary>
+    [Fact]
+    public async Task Cancel_reconciliation_drops_the_source_FRN_of_landed_items()
+    {
+        using (var db = _harness.CreateContext())
+        {
+            SeedVolumes(db);
+            db.Directories.AddRange(
+                Dir(50, SrcVol, "Docs", "Docs"),
+                Dir(60, TgtVol, "Archive", "Archive"));
+
+            db.Files.Add(File(1, SrcVol, 50, "report.txt", 42));
+            db.Files.Add(File(9, TgtVol, 60, "unrelated.txt", 42));
+
+            var job = Job(JobType.MoveFile, @"Archive\report.txt");
+            job.State = JobState.Cancelled;
+            job.Items.Add(Item(1, @"Docs\report.txt", @"Archive\report.txt"));
+            db.OperationJobs.Add(job);
+            db.SaveChanges();
+        }
+
+        await using (var db = _harness.CreateContext())
+        {
+            var job = await db.OperationJobs.Include(j => j.Items).SingleAsync();
+            await TestProjection.Index(db, new RecordingFts()).ReconcileCancelledJobAsync(job, CancellationToken.None);
+        }
+
+        await using (var probe = _harness.CreateContext())
+        {
+            var moved = await probe.Files.SingleAsync(f => f.Id == 1);
+            moved.VolumeId.Should().Be(TgtVol);
+            moved.UsnFileRef.Should().BeNull();
+        }
+    }
+
+    // ── seed helpers ──────────────────────────────────────────────────────────
+
+    private static void SeedVolumes(FileTracert.Data.FileTracertDbContext db) =>
+        db.Volumes.AddRange(
+            new Volume { Id = SrcVol, VolumeGuid = @"\\?\Volume{s}\", FileSystem = "NTFS", IsOnline = true },
+            new Volume { Id = TgtVol, VolumeGuid = @"\\?\Volume{t}\", FileSystem = "NTFS", IsOnline = true });
+
+    private static DirectoryNode Dir(int id, int volumeId, string name, string path) => new()
+    {
+        Id = id, VolumeId = volumeId, Name = name, MaterializedPath = path, IsMaterialized = true,
+    };
+
+    private static FileEntry File(int id, int volumeId, int dirId, string name, long? frn) => new()
+    {
+        Id = id, VolumeId = volumeId, DirectoryId = dirId, Name = name,
+        Extension = FileTracert.Business.Filtering.FileFilter.GetExtension(name),
+        Category = FileCategory.Other, SizeBytes = 10, IsPresent = true, IsIncluded = true,
+        UsnFileRef = frn,
+        FileCreatedUtc = DateTime.UtcNow, FileModifiedUtc = DateTime.UtcNow, LastIndexedUtc = DateTime.UtcNow,
+    };
+
+    private static OperationJob Job(JobType type, string targetPath) => new()
+    {
+        Type = type, State = JobState.Completed, IsIntraVolume = false,
+        SourceVolumeId = SrcVol, TargetVolumeId = TgtVol, TargetRelativePath = targetPath,
+        SequenceOrder = 1, CreatedUtc = DateTime.UtcNow, UpdatedUtc = DateTime.UtcNow,
+    };
+
+    private static OperationJobItem FolderMarker(string src, string dst) => new()
+    {
+        FileId = null, SourceRelativePath = src, TargetRelativePath = dst,
+        SizeBytes = 0, State = JobItemState.Done,
+        CreatedUtc = DateTime.UtcNow, UpdatedUtc = DateTime.UtcNow,
+    };
+
     private static OperationJobItem Item(int fileId, string src, string dst) => new()
     {
         FileId = fileId, SourceRelativePath = src, TargetRelativePath = dst,

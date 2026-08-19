@@ -97,7 +97,7 @@ public sealed class IndexUpdater
 
         file.DirectoryId = targetDir.Id;
         if (!job.IsIntraVolume)
-            file.VolumeId = targetVolumeId;
+            RepointToVolume(file, targetVolumeId);
 
         await _db.SaveChangesAsync(ct);
         await _fts.UpsertAsync(file.Id, file.Name, item.TargetRelativePath, ct);
@@ -200,7 +200,7 @@ public sealed class IndexUpdater
                 dirCache[targetDirPath] = targetDir;
             }
 
-            file.VolumeId = targetVolumeId;
+            RepointToVolume(file, targetVolumeId);
             file.DirectoryId = targetDir.Id;
             ftsUpserts.Add((file.Id, file.Name, item.TargetRelativePath));
         }
@@ -273,7 +273,7 @@ public sealed class IndexUpdater
                 dirCache[targetDirPath] = targetDir;
             }
 
-            file.VolumeId = targetVolumeId;
+            RepointToVolume(file, targetVolumeId);
             file.DirectoryId = targetDir.Id;
             await _fts.UpsertAsync(file.Id, file.Name, item.TargetRelativePath, ct);
         }
@@ -285,6 +285,26 @@ public sealed class IndexUpdater
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Moves a file row to another volume (finding 6). The USN file reference is the file's
+    /// identity <em>inside one volume</em> — a low MFT index repeats on every NTFS volume — so
+    /// carrying the source FRN across would (a) risk the unique <c>(VolumeId, UsnFileRef)</c>
+    /// index firing AFTER the bytes were already moved, flipping a successful job to Failed, and
+    /// (b) leave a stale FRN that poisons the very matching the scan merge tries first (step 9a)
+    /// and the incremental USN delta. Cleared here, in the SAME SaveChanges that re-points the
+    /// row: a separate transaction would leave a window in which the violation can still fire.
+    /// The next scan of the target re-assigns it (match by FRN, then by path COLLATE NOCASE).
+    ///
+    /// <para><c>QuickHash</c>/<c>Hash</c> deliberately survive: they are a function of the file's
+    /// CONTENT, not of where it lives, and the only place that reads them
+    /// (<c>BulkIndexWriter.ScanMerge</c>) treats them as facts a scan never re-derives.</para>
+    /// </summary>
+    private static void RepointToVolume(FileEntry file, int targetVolumeId)
+    {
+        file.VolumeId = targetVolumeId;
+        file.UsnFileRef = null;
+    }
 
     /// <summary>
     /// Finds or recursively creates all directories in <paramref name="path"/> on the given volume,

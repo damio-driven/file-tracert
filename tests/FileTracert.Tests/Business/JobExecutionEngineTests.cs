@@ -308,6 +308,64 @@ public sealed class JobExecutionEngineTests : IDisposable
         mover.Received(1).DeleteToRecycleBin(Vol1Guid, @"Docs\report.txt");
     }
 
+    /// <summary>
+    /// Finding 6, end to end: the bytes moved fine, but carrying the source FRN onto the target
+    /// volume tripped the unique <c>(VolumeId, UsnFileRef)</c> index during the post-completion
+    /// index update — which the engine turns into <c>Failed</c> for a job that physically
+    /// succeeded, and every retry re-ran into the same violation.
+    /// </summary>
+    [Fact]
+    public async Task MoveFile_cross_volume_completes_when_the_target_already_holds_that_FRN()
+    {
+        const long SharedFrn = 11;
+
+        using (var seed = _harness.CreateContext())
+        {
+            seed.Files.Single(f => f.Id == File1Id).UsnFileRef = SharedFrn;
+            seed.Directories.Add(new DirectoryNode
+            {
+                Id = 2, VolumeId = Vol2Id, Name = "Backup",
+                MaterializedPath = "Backup", IsMaterialized = true,
+            });
+            seed.Files.Add(new FileEntry
+            {
+                Id = 2, VolumeId = Vol2Id, DirectoryId = 2,
+                Name = "other.txt", Extension = "txt", Category = FileCategory.Document,
+                SizeBytes = 10, IsPresent = true, IsIncluded = true, UsnFileRef = SharedFrn,
+                FileCreatedUtc = DateTime.UtcNow, FileModifiedUtc = DateTime.UtcNow,
+                LastIndexedUtc = DateTime.UtcNow,
+            });
+            seed.SaveChanges();
+        }
+
+        var mover = DefaultMover();
+        int jobId = SeedJob(
+            JobType.MoveFile, JobState.Pending, intraVolume: false,
+            srcVol: Vol1Id, tgtVol: Vol2Id, tgtPath: @"Backup\report.txt", totalBytes: 1_000,
+            items:
+            [
+                new OperationJobItem
+                {
+                    FileId = File1Id,
+                    SourceRelativePath = @"Docs\report.txt",
+                    TargetRelativePath = @"Backup\report.txt",
+                    State = JobItemState.Pending,
+                    SizeBytes = 1_000,
+                    CreatedUtc = DateTime.UtcNow,
+                    UpdatedUtc = DateTime.UtcNow,
+                },
+            ]);
+
+        await MakeEngine(mover).ExecuteJobAsync(jobId, None);
+
+        (await ReadState(jobId)).Should().Be(JobState.Completed);
+
+        await using var db = _harness.CreateContext();
+        var moved = await db.Files.SingleAsync(f => f.Id == File1Id);
+        moved.VolumeId.Should().Be(Vol2Id);
+        moved.UsnFileRef.Should().BeNull();
+    }
+
     // ── MoveFile cross-volume — progress persists mid-copy, not only at completion ────
 
     [Fact]
