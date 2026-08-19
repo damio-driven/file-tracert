@@ -35,6 +35,26 @@ public sealed class FileEntryConfiguration : IEntityTypeConfiguration<FileEntry>
             .HasForeignKey(x => x.PendingDirectoryId)
             .OnDelete(DeleteBehavior.Restrict);
 
+        // E5 — the catalog's per-directory counters, made COVERING.
+        //
+        // These two replace the FK indexes EF would create on its own (`DirectoryId` and
+        // `PendingDirectoryId`): each starts with the foreign key, so EF's convention leaves the
+        // narrow one out and the table keeps exactly as many indexes as before. What changes is
+        // that the flags the counters filter on now travel WITH the key.
+        //
+        // Why it matters: the Catalog counts files per sub-directory with the projected predicate
+        // `(DirectoryId = d AND PendingDirectoryId IS NULL) OR PendingDirectoryId = d`, and then
+        // `IsIncluded AND IsPresent`. SQLite already answered the first half from the index — but
+        // had to fetch the table row of EVERY counted file just to read two booleans. Listing a
+        // folder of 500 sub-directories holding 600 files each meant ~300 000 row lookups for a
+        // pair of numbers on a badge. With the flags in the index the count never leaves it
+        // (`SEARCH … USING COVERING INDEX`), and the lookups drop to zero.
+        //
+        // Column order is the predicate's order, not a guess: the equality key first, then the
+        // discriminator the first branch tests for NULL, then the two flags.
+        builder.HasIndex(x => new { x.DirectoryId, x.PendingDirectoryId, x.IsIncluded, x.IsPresent });
+        builder.HasIndex(x => new { x.PendingDirectoryId, x.IsIncluded, x.IsPresent });
+
         builder.HasIndex(x => new { x.VolumeId, x.DirectoryId });
         builder.HasIndex(x => x.Extension);
         builder.HasIndex(x => x.Category);
