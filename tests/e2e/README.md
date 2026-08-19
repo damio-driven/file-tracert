@@ -57,13 +57,38 @@ Le garanzie, in ordine di importanza:
   errore con un nome invece di una migrazione silenziosa del catalogo dell'utente.
 - **Mai la porta 5005.** Gli Host dei test prendono la prima porta libera nell'intervallo
   5180–5279, così una sessione end-to-end non parla con l'istanza che stai usando.
-- **Mai un file fuori dalla sandbox.** I flussi coperti da questo checkpoint *leggono* il disco
-  (una scansione) e scrivono solo dentro `.artifacts`; `Sandbox.dispose()` si rifiuta di cancellare
-  qualcosa che non stia lì sotto. Nessun file dell'utente, e nessun passaggio dal cestino.
+- **Mai un file fuori dalla sandbox.** `Sandbox.dispose()` si rifiuta di cancellare qualcosa che
+  non stia sotto `.artifacts`, e dallo step 12b — quando i test hanno cominciato ad **accodare
+  operazioni vere** — il recinto qui sotto decide cosa il prodotto ha il permesso di toccare.
 - **Il perimetro del catalogo è la sandbox.** Il volume su cui sta viene reso catalogabile e la
   cartella-sandbox diventa la sua unica cartella monitorata. Gli altri volumi della macchina
   restano come li ha classificati il prodotto: senza cartelle monitorate non vengono mai
   scansionati.
+
+### Il recinto (`src/fence.ts`)
+
+Dallo step 12b i test **accodano operazioni** che il vero `JobExecutionEngine` esegue su un volume
+che la suite rende catalogabile — su una macchina di sviluppo, il **disco di sistema**. Una
+destinazione sbagliata non è più un'asserzione rossa: è un file dell'utente che si sposta. Quindi il
+contenimento si **verifica**, non si organizza. Tre strati, uno per ogni modo di uscire:
+
+1. **Perimetro** (`assertPerimeter`, chiamato da `watchSandbox`) — l'indice è confinato alla
+   sandbox: è l'unica cartella monitorata della macchina, quindi **nessun id sorgente può nominare
+   un file fuori**. Verificato sulla risposta del servizio, non dedotto dal fatto che il test ne ha
+   registrata una sola.
+2. **Destinazione** (`violationOf`, prima di ogni enqueue) — volume e path di destinazione devono
+   stare dentro la sandbox. Vale per le richieste che parte dal test (`Api.enqueue` **pretende** il
+   fence come parametro) e per quelle che parte dalla **SPA** quando uno spec guida il picker: il
+   contesto del browser le intercetta e le rifiuta prima che raggiungano il Host, cioè prima che
+   l'engine possa agire. Una richiesta pulita passa **intatta**: non si finge nulla.
+3. **Audit** (`auditRecordedJobs`, in teardown mentre il Host risponde ancora) — ogni job che il
+   servizio ha **registrato** viene riletto e controllato: dentro la sandbox, sul volume della
+   sandbox, intra-volume. Cross-volume è una violazione di per sé: è l'unico percorso che manda un
+   file nel **cestino**, e questa suite non deve metterci mai niente.
+
+I primi due strati sono la promessa («prima dell'esecuzione»), il terzo è la prova. Ognuno fallisce
+**rumorosamente**, col path incriminato, e nessuno corregge niente in silenzio.
+`specs/sandbox-fence.spec.ts` prova a uscire da tutti e tre.
 
 ## Come è montato
 

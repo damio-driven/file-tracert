@@ -1,8 +1,31 @@
 import { test as base } from '@playwright/test';
 
 import { Api } from './api.js';
+import type { JobRequestLike, SandboxFence } from './fence.js';
 import { HostProcess } from './host.js';
 import { Sandbox } from './sandbox.js';
+
+/** The two routes that create work. Everything else the SPA posts only reads or annotates. */
+const ENQUEUE_PATHS = new Set(['/api/operations/enqueue', '/api/operations/enqueue-batch']);
+
+/**
+ * The fence's verdict on what the SPA is about to post. A batch is a JSON array, a single enqueue
+ * is one object; a body that is neither is refused rather than waved through, because a request
+ * this cannot read is a request whose destination it cannot check.
+ */
+function enqueueViolation(fence: SandboxFence, body: unknown): string | null {
+  const requests: unknown[] = Array.isArray(body) ? body : [body];
+  if (requests.length === 0 || requests.some((r) => typeof r !== 'object' || r === null)) {
+    return `unreadable enqueue body: ${JSON.stringify(body)}`;
+  }
+  for (const request of requests as JobRequestLike[]) {
+    const violation = fence.violationOf(request);
+    if (violation !== null) {
+      return `${violation} (${JSON.stringify(request)})`;
+    }
+  }
+  return null;
+}
 
 /**
  * Every Host this process started, so a run that is interrupted (Ctrl+C, a crashing reporter)
@@ -69,25 +92,62 @@ export const test = base.extend<HostFixtures>({
     }
   },
 
-  api: async ({ host }, use) => {
+  api: async ({ host, sandbox }, use) => {
     const api = await Api.create(host);
     await use(api);
-    await api.dispose();
+
+    // Layer 3 of the fence, and the last thing that happens while the Host is still answering:
+    // every job the service recorded is read back and checked for containment. Layers 1 and 2
+    // promise that nothing can leave the sandbox; this is the only one that reads what the engine
+    // was actually told to do, so it runs whatever the test did or did not assert.
+    try {
+      sandbox.fence.auditRecordedJobs(await api.jobs());
+    } finally {
+      await api.dispose();
+    }
   },
 
   /**
-   * The product is a loopback service and its end-to-end proof must not depend on the internet.
-   * index.html links a font stylesheet on fonts.googleapis.com; left alone it makes every page
-   * load as slow (or as failed) as the network happens to be. Anything not addressed to this
-   * test's own Host is refused.
+   * Two rules over every request the browser makes.
+   *
+   * The first is step 12a's: the product is a loopback service and its end-to-end proof must not
+   * depend on the internet (index.html links a font stylesheet on fonts.googleapis.com), so
+   * anything not addressed to this test's own Host is refused.
+   *
+   * The second is the fence. A spec that drives the move picker enqueues through the SPA, not
+   * through `Api`, so the containment check has to sit where both paths meet: here, before the
+   * request reaches the Host and therefore before the engine can act on it. A clean request is
+   * passed through untouched — nothing is faked, and a refusal fails the test with the path that
+   * caused it instead of quietly correcting the destination.
    */
-  context: async ({ context, host }, use) => {
+  context: async ({ context, host, sandbox }, use) => {
     await context.route('**/*', (route) => {
-      const url = new URL(route.request().url());
+      const request = route.request();
+      const url = new URL(request.url());
       const ownHost = new URL(host.baseURL);
-      return url.host === ownHost.host ? route.continue() : route.abort();
+      if (url.host !== ownHost.host) {
+        return route.abort();
+      }
+
+      if (request.method() === 'POST' && ENQUEUE_PATHS.has(url.pathname)) {
+        const violation = enqueueViolation(sandbox.fence, request.postDataJSON());
+        if (violation !== null) {
+          sandbox.fence.recordBrowserViolation(violation);
+          return route.abort('blockedbyclient');
+        }
+      }
+
+      return route.continue();
     });
+
     await use(context);
+
+    const violations = sandbox.fence.takeBrowserViolations();
+    if (violations.length > 0) {
+      throw new Error(
+        `[SANDBOX FENCE] the screen tried to enqueue work outside the sandbox:\n  ${violations.join('\n  ')}`,
+      );
+    }
   },
 
   baseURL: async ({ host }, use) => {

@@ -1,5 +1,6 @@
 import { APIRequestContext, expect, request } from '@playwright/test';
 
+import type { JobRequestLike, RecordedJob, SandboxFence } from './fence.js';
 import { HostProcess } from './host.js';
 
 /** The slice of `VolumeDto` these tests reason about. */
@@ -37,6 +38,45 @@ export interface DashboardStats {
   readonly blockedJobs: number;
   readonly runningJobs: number;
   readonly pendingBytes: number;
+}
+
+export interface CatalogDir {
+  readonly id: number;
+  readonly name: string;
+  readonly materializedPath: string;
+  readonly childDirectoryCount: number;
+  readonly fileCount: number;
+  readonly projectedState: string;
+  readonly pendingJobId: number | null;
+}
+
+export interface CatalogFile {
+  readonly id: number;
+  readonly name: string;
+  readonly sizeBytes: number;
+  readonly projectedState: string;
+  readonly pendingJobId: number | null;
+}
+
+export interface CatalogChildren {
+  readonly directories: readonly CatalogDir[];
+  readonly files: { readonly items: readonly CatalogFile[]; readonly totalCount: number };
+}
+
+export interface Job extends RecordedJob {
+  readonly state: string;
+  readonly blockReason: string;
+  readonly dependsOnJobId: number | null;
+  readonly errorMessage: string | null;
+  readonly sequenceOrder: number;
+}
+
+/** What a spec knows about one catalogued entry, keyed by the id the API uses for operations. */
+export interface CataloguedEntry {
+  readonly id: number;
+  readonly name: string;
+  /** Physical path relative to the volume root. */
+  readonly relativePath: string;
 }
 
 /**
@@ -127,6 +167,87 @@ export class Api {
     expect(response.status(), 'POST rescan').toBe(202);
   }
 
+  async catalogChildren(volumeId: number, directoryId: number | null): Promise<CatalogChildren> {
+    const query = directoryId === null ? '' : `?directoryId=${directoryId}`;
+    const response = await this.ctx.get(`/api/catalog/${volumeId}/children${query}`);
+    expect(response.ok(), `GET catalog children → ${response.status()}`).toBeTruthy();
+    return response.json();
+  }
+
+  /**
+   * Every catalogued file and directory of a volume, with the path the index gives it.
+   *
+   * Walking the whole tree is affordable because the sandbox is tiny, and it is the honest way to
+   * answer "where does id N live?": the answer comes from the catalog the operation will be
+   * resolved against, not from the folder a test happens to have clicked on.
+   */
+  async walkCatalog(volumeId: number): Promise<{
+    files: CataloguedEntry[];
+    directories: CataloguedEntry[];
+  }> {
+    const files: CataloguedEntry[] = [];
+    const directories: CataloguedEntry[] = [];
+
+    const visit = async (directoryId: number | null, prefix: string): Promise<void> => {
+      const children = await this.catalogChildren(volumeId, directoryId);
+      for (const file of children.files.items) {
+        files.push({ id: file.id, name: file.name, relativePath: join(prefix, file.name) });
+      }
+      for (const dir of children.directories) {
+        directories.push({ id: dir.id, name: dir.name, relativePath: dir.materializedPath });
+        await visit(dir.id, dir.materializedPath);
+      }
+    };
+
+    await visit(null, '');
+    return { files, directories };
+  }
+
+  /**
+   * The only way a test can enqueue anything: the fence has to clear the request first, and the
+   * fence can only come from the sandbox fixture. A spec that wants to reach `/api/operations`
+   * without one has to add its own HTTP client, which is exactly the sort of thing a review reads.
+   */
+  async enqueue(request: JobRequestLike, fence: SandboxFence): Promise<Job> {
+    fence.assertRequestStaysInside(request);
+    const response = await this.ctx.post('/api/operations/enqueue', { data: request });
+    expect(response.status(), `POST enqueue → ${await response.text()}`).toBe(201);
+    return response.json();
+  }
+
+  async jobs(): Promise<Job[]> {
+    const response = await this.ctx.get('/api/operations?take=200');
+    expect(response.ok(), `GET /api/operations → ${response.status()}`).toBeTruthy();
+    return (await response.json()).items;
+  }
+
+  async job(id: number): Promise<Job> {
+    const found = (await this.jobs()).find((j) => j.id === id);
+    expect(found, `no job #${id} in the queue`).toBeDefined();
+    return found!;
+  }
+
+  /** Waits until a job reaches one of the given states, and returns it. */
+  async waitForJobState(id: number, ...states: string[]): Promise<Job> {
+    let last = '';
+    await expect
+      .poll(
+        async () => {
+          last = (await this.job(id)).state;
+          return states.includes(last);
+        },
+        { message: `job #${id} never reached ${states.join('/')} (last state: ${last})`, timeout: 60_000 },
+      )
+      .toBe(true);
+    return this.job(id);
+  }
+
+  async unreadNotifications(): Promise<number> {
+    const response = await this.ctx.get('/api/notifications/unread-count');
+    expect(response.ok(), `GET unread-count → ${response.status()}`).toBeTruthy();
+    return (await response.json()).unread;
+  }
+
   /**
    * Waits for a full scan of the volume to have finished and indexed exactly `expectedFiles`.
    * Polling a condition, not sleeping on a guess: the moment the catalog says what it should say,
@@ -143,4 +264,9 @@ export class Api {
       })
       .toBe(expectedFiles);
   }
+}
+
+/** Volume-relative path join, in the catalog's spelling. */
+function join(prefix: string, name: string): string {
+  return prefix.length === 0 ? name : `${prefix}\\${name}`;
 }

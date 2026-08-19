@@ -1,6 +1,7 @@
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
+import { SandboxFence } from './fence.js';
 import { artifactsRoot } from './paths.js';
 
 /** One folder of the seeded tree: a name, how many files, and their extension. */
@@ -43,9 +44,9 @@ const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.web
  * A disposable folder tree on a real volume, plus the identity the API needs to watch it.
  *
  * Everything it creates lives under `tests/e2e/.artifacts`, and `dispose` refuses to delete
- * anything that does not. No test writes, moves or recycles a file anywhere else: the flows this
- * checkpoint covers only ever *read* the disk (a scan), and the sandbox is the only thing that is
- * ever written to.
+ * anything that does not. From step 12b on, tests also queue operations the product carries out
+ * for real on this tree — so the sandbox carries the {@link SandboxFence} that decides whether an
+ * operation is allowed to be sent at all.
  */
 export class Sandbox {
   private constructor(
@@ -58,11 +59,58 @@ export class Sandbox {
     /** Root of the volume the sandbox sits on, e.g. `C:\`. */
     readonly driveRoot: string,
     private readonly caseDir: string,
+    /** The containment rule for every operation this test queues. */
+    readonly fence: SandboxFence,
   ) {}
 
   /** The path segments from the volume root down to (and including) the watched folder. */
   get pathSegments(): string[] {
     return this.volumeRelativePath.split('\\');
+  }
+
+  /** An absolute path inside the watched tree, for assertions that look at the real filesystem. */
+  absolute(...segments: string[]): string {
+    const resolved = path.resolve(this.filesDir, ...segments);
+    const root = path.resolve(this.filesDir);
+    if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+      throw new Error(`Refusing to name ${resolved}: it is not inside ${root}.`);
+    }
+    return resolved;
+  }
+
+  /** The same path as the catalog spells it: relative to the volume root. */
+  relative(...segments: string[]): string {
+    return path.relative(this.driveRoot, this.absolute(...segments)).replace(/\//g, '\\');
+  }
+
+  /** True when the path exists on disk. The end-state proof of a move is the filesystem. */
+  async exists(...segments: string[]): Promise<boolean> {
+    try {
+      await access(this.absolute(...segments));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Creates a folder inside the watched tree. */
+  async makeDir(...segments: string[]): Promise<string> {
+    const dir = this.absolute(...segments);
+    await mkdir(dir, { recursive: true });
+    return dir;
+  }
+
+  /** Writes one file inside the watched tree, with content of a known length. */
+  async writeFileOfSize(sizeBytes: number, ...segments: string[]): Promise<string> {
+    const file = this.absolute(...segments);
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, 'x'.repeat(sizeBytes));
+    return file;
+  }
+
+  /** Removes something from inside the watched tree — never from anywhere else. */
+  async remove(...segments: string[]): Promise<void> {
+    await rm(this.absolute(...segments), { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 
   static async create(slug: string): Promise<Sandbox> {
@@ -78,7 +126,14 @@ export class Sandbox {
     const driveRoot = parsed.root;
     const relative = path.relative(driveRoot, filesDir).replace(/\//g, '\\');
 
-    return new Sandbox(workDir, filesDir, relative, driveRoot, caseDir);
+    return new Sandbox(
+      workDir,
+      filesDir,
+      relative,
+      driveRoot,
+      caseDir,
+      new SandboxFence(relative, filesDir),
+    );
   }
 
   /** Writes the tree and returns what a screen should end up saying about it. */
