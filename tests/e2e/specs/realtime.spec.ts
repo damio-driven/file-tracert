@@ -100,11 +100,17 @@ test.describe('Realtime', () => {
     const volume = await watchAndScanSandbox(api, sandbox, seeded.fileCount);
 
     // A scan on an NTFS volume without elevation already raises one notice (the USN journal it
-    // cannot open), so what matters is the increment, not the number.
+    // cannot open), so what matters is the increment, not the number. The badge is absent rather
+    // than zero when there is nothing to read, which is the right design and has to be read as
+    // such here.
     const before = await api.unreadNotifications();
 
     await page.goto('/dashboard');
-    await expect(bellBadge(page)).toHaveText(String(before));
+    if (before === 0) {
+      await expect(bellBadge(page)).toHaveCount(0);
+    } else {
+      await expect(bellBadge(page)).toHaveText(String(before));
+    }
 
     const { files } = await api.walkCatalog(volume.id);
     await api.enqueue(

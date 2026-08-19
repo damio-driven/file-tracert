@@ -82,6 +82,11 @@ test.describe('Catalogo', () => {
     await selectVolume(page, letter);
     const structureBefore = await detailValue(page, 'Struttura').innerText();
     expect(structureBefore).toContain("cartelle nell'albero");
+    // A floor before the comparison: "unchanged" is also true of a counter stuck at zero, and this
+    // is the only test that speaks for 11h. The tree holds at least the sandbox folder and the
+    // three the seed put in it.
+    const foldersBefore = Number(/^\s*([\d.]+)/.exec(structureBefore)![1]!.replace(/\./g, ''));
+    expect(foldersBefore).toBeGreaterThanOrEqual(4);
 
     // Narrow the filter to images through the product, from the screen that offers it.
     await page.goto(`/setup?volume=${volume.id}`);

@@ -76,10 +76,12 @@ test.describe('Ricerca', () => {
     await page.getByRole('button', { name: 'Cerca', exact: true }).click();
     await expect(page.locator('tr.result-row')).toHaveCount(seeded.imageCount);
 
-    // The files were written a moment ago, so "modified today" must include them: the local day
-    // the user picked becomes an instant in UTC, and the upper bound runs to the last tick of it.
+    // The day is taken from the file's own timestamp, not from the clock: a run that crossed local
+    // midnight between the write and the assertion would otherwise ask for a day the file is not
+    // in and blame the product for it.
+    const written = await sandbox.modifiedAt('foto', 'foto-0001.jpg');
     const day = (offsetDays: number): string => {
-      const date = new Date();
+      const date = new Date(written);
       date.setDate(date.getDate() + offsetDays);
       return [
         date.getFullYear(),
