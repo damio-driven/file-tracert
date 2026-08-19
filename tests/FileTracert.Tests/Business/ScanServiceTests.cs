@@ -448,6 +448,7 @@ public sealed class ScanServiceTests
         await using var read = harness.CreateContext();
         var gone = await read.Files.SingleAsync(f => f.Id == goneId);
         gone.IsPresent.Should().BeFalse();
+        gone.IsIncluded.Should().BeTrue("absence is not exclusion: the filter never changed its mind");
         gone.PendingState.Should().Be(EntityPendingState.PendingMove);   // the job still references it
         gone.PendingJobId.Should().Be(11);
         (await read.Files.SingleAsync(f => f.Name == "f1.dat")).IsPresent.Should().BeTrue();
@@ -693,21 +694,18 @@ public sealed class ScanServiceTests
             .Should().BeEquivalentTo("", "Photos");
     }
 
+    // ── step 11g: exclusion is IsIncluded, absence is IsPresent ───────────────
+
     /// <summary>
-    /// What happens to a row that was ALREADY indexed when the folder becomes hidden. Pinned
-    /// rather than asserted as desirable: the file is dropped from the scan lists, so the absent
-    /// pass stamps it <c>IsPresent = false</c> — which §6 defines as "no longer on disk", while
-    /// this file is very much still there. The honest flag for a FILTER decision is
-    /// <c>IsIncluded = false</c> (§4, reconciliation, never a delete).
-    ///
-    /// Not fixed here: routing filter-driven drops through the inclusion flag means carrying the
-    /// excluded set into the merge and the absent pass, which is <c>IBulkIndexWriter</c> surface.
-    /// It is the same lie already recorded in the roadmap for files outside the watched roots.
-    /// The row is never deleted either way, and re-widening the filter plus one scan restores it —
-    /// so this test exists to make the behaviour deliberate and visible, not to bless it.
+    /// What happens to a row that was ALREADY indexed when its folder becomes hidden. Until step
+    /// 11g the file was dropped from the scan lists and the absent pass stamped it
+    /// <c>IsPresent = false</c> — which §6 defines as "no longer on disk", while this file is very
+    /// much still there. The honest flag for a perimeter decision is <c>IsIncluded = false</c>
+    /// (§4: reconcilable, never a delete), and <c>IsPresent</c> must not move at all: the scan did
+    /// not look, so it has nothing to say about the disk.
     /// </summary>
     [Fact]
-    public async Task A_row_indexed_before_the_folder_became_hidden_is_flagged_absent_not_excluded()
+    public async Task A_row_indexed_before_the_folder_became_hidden_is_excluded_not_flagged_absent()
     {
         using var harness = new SqliteInMemoryContext();
         var volumeId = Seed(harness, VolumeScanEngine.Enumeration, "exFAT", ["jpg"]);
@@ -716,30 +714,203 @@ public sealed class ScanServiceTests
             new(@"Secret", "Secret", true, 0, T, T, dirAttributes);
         var file = new ScanEntry(@"Secret\a.jpg", "a.jpg", false, 20, T, T, FileAttributes.Normal);
 
-        async Task ScanWith(params ScanEntry[] entries)
-        {
-            await using var ctx = harness.CreateContext();
-            var sut = Build(harness, ctx,
-                new FakeVolumeProbe(ProbedFor("exFAT")),
-                new FakeUsnReader([], 0),
-                new FakeDirectoryEnumerator(entries),
-                new FakeFileMetadataReader(new Dictionary<string, FileMetadata>()));
-            await sut.ScanVolumeAsync(volumeId, CancellationToken.None);
-        }
-
         // First scan: the folder is ordinary, the file is indexed.
-        await ScanWith(Secret(FileAttributes.Directory), file);
+        await ScanWithAsync(harness, volumeId, Secret(FileAttributes.Directory), file);
         await using (var read = harness.CreateContext())
             (await read.Files.SingleAsync()).IsIncluded.Should().BeTrue("arrange");
 
         // Someone hides the folder; nothing else changes.
-        await ScanWith(Secret(FileAttributes.Directory | FileAttributes.Hidden), file);
+        await ScanWithAsync(harness, volumeId, Secret(FileAttributes.Directory | FileAttributes.Hidden), file);
 
-        await using var probe = harness.CreateContext();
-        var row = await probe.Files.SingleAsync();
-        row.Should().NotBeNull("no hard-delete, whatever the flag says (§6)");
-        row.IsPresent.Should().BeFalse("today's behaviour — see the known limit");
-        row.IsIncluded.Should().BeTrue("today's behaviour: the filter decision is NOT recorded here");
+        await using (var probe = harness.CreateContext())
+        {
+            var row = await probe.Files.SingleAsync();
+            row.Should().NotBeNull("no hard-delete, whatever the flag says (§6)");
+            row.IsIncluded.Should().BeFalse("the perimeter decided, and that is what IsIncluded records");
+            row.IsPresent.Should().BeTrue("the file never left the disk — the scan simply did not look");
+
+            // No column of its own on Directories: a folder that exists on disk exists, whether or
+            // not its content is indexed. What it must NOT be is "no longer on disk".
+            (await probe.Directories.SingleAsync(d => d.MaterializedPath == "Secret"))
+                .IsPresent.Should().BeTrue();
+        }
+
+        // …and un-hiding it costs one scan, not a rebuild: the merge sees the file again and the
+        // scan IS the filter's decision, so inclusion comes back with it.
+        await ScanWithAsync(harness, volumeId, Secret(FileAttributes.Directory), file);
+
+        await using var after = harness.CreateContext();
+        var back = await after.Files.SingleAsync();
+        back.IsIncluded.Should().BeTrue();
+        back.IsPresent.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// The same rule on the USN engine. It matters separately because the MFT dump arrives in no
+    /// particular order — the hidden folder's record can come after its content — and because a
+    /// USN scan enumerates the WHOLE volume, so the "which root governs this item" boundary is
+    /// crossed by every record instead of by none.
+    /// </summary>
+    [Fact]
+    public async Task Usn_scan_excludes_the_content_of_a_folder_that_became_hidden_instead_of_flagging_it_absent()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, VolumeScanEngine.UsnJournal, "NTFS", ["pdf"]);
+
+        List<UsnEntry> Snapshot(FileAttributes secretAttributes) =>
+        [
+            // Children first on purpose: the pipeline may not assume it saw the ancestor.
+            new(11, 10, "a.pdf", @"Secret\a.pdf", false, null, FileAttributes.Normal, 11),
+            new(10, 5, "Secret", @"Secret", true, null, secretAttributes, 10),
+        ];
+        var meta = new Dictionary<string, FileMetadata> { [@"Secret\a.pdf"] = new FileMetadata(1, T, T) };
+
+        async Task ScanAsync(FileAttributes secretAttributes)
+        {
+            await using var ctx = harness.CreateContext();
+            var sut = Build(harness, ctx,
+                new FakeVolumeProbe(ProbedFor("NTFS")),
+                new FakeUsnReader(Snapshot(secretAttributes), nextUsn: 999),
+                new FakeDirectoryEnumerator([]),
+                new FakeFileMetadataReader(meta));
+            await sut.ScanVolumeAsync(volumeId, CancellationToken.None);
+        }
+
+        await ScanAsync(FileAttributes.Directory);
+        await ScanAsync(FileAttributes.Directory | FileAttributes.Hidden);
+
+        await using var read = harness.CreateContext();
+        var row = await read.Files.SingleAsync();
+        row.IsIncluded.Should().BeFalse();
+        row.IsPresent.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// A file that becomes hidden on its own, inside a folder the scan still walks. Same rule, but
+    /// a different mechanism: no subtree covers it, so the pipeline has to record the single file
+    /// it stepped over.
+    /// </summary>
+    [Fact]
+    public async Task A_file_hidden_on_its_own_is_excluded_not_flagged_absent()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, VolumeScanEngine.Enumeration, "exFAT", ["jpg"]);
+
+        var dir = new ScanEntry(@"Photos", "Photos", true, 0, T, T, FileAttributes.Directory);
+        ScanEntry Shot(FileAttributes attributes) =>
+            new(@"Photos\a.jpg", "a.jpg", false, 20, T, T, attributes);
+        var other = new ScanEntry(@"Photos\b.jpg", "b.jpg", false, 20, T, T, FileAttributes.Normal);
+
+        await ScanWithAsync(harness, volumeId, dir, Shot(FileAttributes.Normal), other);
+        await ScanWithAsync(harness, volumeId, dir, Shot(FileAttributes.Hidden), other);
+
+        await using var read = harness.CreateContext();
+        var hidden = await read.Files.SingleAsync(f => f.Name == "a.jpg");
+        hidden.IsIncluded.Should().BeFalse();
+        hidden.IsPresent.Should().BeTrue();
+
+        var untouched = await read.Files.SingleAsync(f => f.Name == "b.jpg");
+        untouched.IsIncluded.Should().BeTrue();
+        untouched.IsPresent.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// A watched root switched off: the scan of the volume no longer walks into it, and the rows
+    /// underneath are outside the perimeter — not missing. (Switching off the LAST active root is
+    /// a different path entirely: the scan has nothing to do and returns early, so the exclusion
+    /// is written by <c>WatchedRootsService</c> at the moment of the change, with no scan at all.)
+    /// </summary>
+    [Fact]
+    public async Task A_file_under_a_root_switched_off_is_excluded_not_flagged_absent()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, VolumeScanEngine.Enumeration, "exFAT", ["jpg"]);
+
+        // Two explicit roots instead of the whole volume, so switching one off still leaves a scan
+        // to run.
+        await using (var ctx = harness.CreateContext())
+        {
+            ctx.WatchedRoots.RemoveRange(ctx.WatchedRoots);
+            ctx.WatchedRoots.Add(new WatchedRoot { VolumeId = volumeId, RelativePath = "Keep", IsActive = true });
+            ctx.WatchedRoots.Add(new WatchedRoot { VolumeId = volumeId, RelativePath = "Drop", IsActive = true });
+            await ctx.SaveChangesAsync();
+        }
+
+        ScanEntry[] entries =
+        [
+            new(@"Keep", "Keep", true, 0, T, T, FileAttributes.Directory),
+            new(@"Keep\k.jpg", "k.jpg", false, 1, T, T, FileAttributes.Normal),
+            new(@"Drop", "Drop", true, 0, T, T, FileAttributes.Directory),
+            new(@"Drop\d.jpg", "d.jpg", false, 2, T, T, FileAttributes.Normal),
+        ];
+
+        await ScanWithAsync(harness, volumeId, entries);
+
+        await using (var ctx = harness.CreateContext())
+        {
+            (await ctx.WatchedRoots.SingleAsync(r => r.RelativePath == "Drop")).IsActive = false;
+            await ctx.SaveChangesAsync();
+        }
+
+        await ScanWithAsync(harness, volumeId, entries);
+
+        await using var read = harness.CreateContext();
+        var dropped = await read.Files.SingleAsync(f => f.Name == "d.jpg");
+        dropped.IsIncluded.Should().BeFalse("it is outside the perimeter the user chose");
+        dropped.IsPresent.Should().BeTrue("it is still on disk; the scan just did not go there");
+
+        var kept = await read.Files.SingleAsync(f => f.Name == "k.jpg");
+        kept.IsIncluded.Should().BeTrue();
+        kept.IsPresent.Should().BeTrue();
+
+        // Same for its folder: no longer scanned is not the same as no longer there.
+        (await read.Directories.SingleAsync(d => d.MaterializedPath == "Drop")).IsPresent.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// A database written by the OLD behaviour holds rows stamped <c>IsPresent = false</c> for a
+    /// perimeter decision. Nothing can tell those apart from files that really vanished, so no
+    /// migration guesses: the row is repaired by the first scan that looks at it again, which is
+    /// exactly when the truth becomes knowable.
+    /// </summary>
+    [Fact]
+    public async Task A_row_wrongly_flagged_absent_by_the_old_behaviour_is_repaired_by_the_next_scan()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, VolumeScanEngine.Enumeration, "exFAT", ["jpg"]);
+
+        var dir = new ScanEntry(@"Photos", "Photos", true, 0, T, T, FileAttributes.Directory);
+        var file = new ScanEntry(@"Photos\a.jpg", "a.jpg", false, 20, T, T, FileAttributes.Normal);
+
+        await ScanWithAsync(harness, volumeId, dir, file);
+
+        // What the old absent pass left behind: on disk, inside the perimeter, marked gone.
+        await using (var ctx = harness.CreateContext())
+        {
+            var row = await ctx.Files.SingleAsync();
+            row.IsPresent = false;
+            await ctx.SaveChangesAsync();
+        }
+
+        await ScanWithAsync(harness, volumeId, dir, file);
+
+        await using var read = harness.CreateContext();
+        var repaired = await read.Files.SingleAsync();
+        repaired.IsPresent.Should().BeTrue();
+        repaired.IsIncluded.Should().BeTrue();
+    }
+
+    /// <summary>Runs one scan over exactly these entries, on the enumeration engine.</summary>
+    private static async Task ScanWithAsync(
+        SqliteInMemoryContext harness, int volumeId, params ScanEntry[] entries)
+    {
+        await using var ctx = harness.CreateContext();
+        var sut = Build(harness, ctx,
+            new FakeVolumeProbe(ProbedFor("exFAT")),
+            new FakeUsnReader([], 0),
+            new FakeDirectoryEnumerator([.. entries]),
+            new FakeFileMetadataReader(new Dictionary<string, FileMetadata>()));
+        await sut.ScanVolumeAsync(volumeId, CancellationToken.None);
     }
 
     /// <summary>

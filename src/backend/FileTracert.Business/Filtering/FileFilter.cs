@@ -50,20 +50,30 @@ public static class FileFilter
     }
 
     /// <summary>
-    /// Directories are not filtered by extension (the tree needs them), but they
-    /// still honor path and attribute exclusions.
+    /// The PERIMETER half of the filter: the rules that have nothing to do with the file's type —
+    /// excluded attributes and excluded path segments. Spelled once because the two halves are
+    /// undone differently (§4): re-widening the type allow-list is <c>FilterReconciler</c>'s job
+    /// on the rows already indexed, while an attribute or a path segment only changes what a scan
+    /// walks into, so a row that fails THIS is one the scan deliberately skipped.
     /// </summary>
-    public static bool ShouldIncludeDirectory(string relativePath, FileAttributes attributes, EffectiveFilter filter) =>
+    public static bool IsInsidePerimeter(string relativePath, FileAttributes attributes, EffectiveFilter filter) =>
         !IsExcludedByAttributes(attributes, filter) && !IsPathExcluded(relativePath, filter);
 
-    /// <summary>Files honor path/attribute exclusions plus the extension allow-list.</summary>
+    /// <summary>
+    /// Directories are not filtered by extension (the tree needs them), so the perimeter rules
+    /// are all there is to ask.
+    /// </summary>
+    public static bool ShouldIncludeDirectory(string relativePath, FileAttributes attributes, EffectiveFilter filter) =>
+        IsInsidePerimeter(relativePath, attributes, filter);
+
+    /// <summary>Files honor the perimeter rules plus the extension allow-list.</summary>
     public static bool ShouldIncludeFile(
         string relativePath,
         string extension,
         FileAttributes attributes,
         EffectiveFilter filter)
     {
-        if (IsExcludedByAttributes(attributes, filter) || IsPathExcluded(relativePath, filter))
+        if (!IsInsidePerimeter(relativePath, attributes, filter))
         {
             return false;
         }

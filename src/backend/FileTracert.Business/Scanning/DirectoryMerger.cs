@@ -1,3 +1,4 @@
+using FileTracert.Business.Filtering;
 using FileTracert.Contracts.Scanning;
 using FileTracert.Data.Entities;
 using FileTracert.Data.Indexing;
@@ -40,8 +41,14 @@ public sealed class DirectoryMerger
         _logger = logger;
     }
 
+    /// <param name="perimeter">Where the scan looked. A directory it never walked into cannot be
+    /// reported as gone from the disk: <c>Directories</c> is the navigable structure and a folder
+    /// that exists on disk exists, whether or not its content is indexed. It carries no inclusion
+    /// flag of its own — its files carry theirs — so the only thing the perimeter changes here is
+    /// that the absent pass leaves those rows alone (§6).</param>
     public async Task<DirectoryMergeResult> MergeAsync(
-        int volumeId, IReadOnlyCollection<ScannedDirectory> scanned, int batchSize, CancellationToken ct)
+        int volumeId, IReadOnlyCollection<ScannedDirectory> scanned, ScanPerimeter perimeter,
+        int batchSize, CancellationToken ct)
     {
         var existing = await LoadExistingAsync(volumeId, ct);
 
@@ -77,7 +84,9 @@ public sealed class DirectoryMerger
 
         var inserted = await InsertMissingAsync(volumeId, toInsert, idByPath, batchSize, ct);
         var revived = await ReviveAsync(toRevive, batchSize, ct);
-        var absent = await MarkAbsentAsync(existing.Values.Where(r => r.IsPresent && !seen.Contains(r.Path)), batchSize, ct);
+        var absent = await MarkAbsentAsync(
+            existing.Values.Where(r => r.IsPresent && !seen.Contains(r.Path) && perimeter.Covers(r.Path)),
+            batchSize, ct);
 
         if (inserted > 0 || revived > 0 || absent > 0)
         {

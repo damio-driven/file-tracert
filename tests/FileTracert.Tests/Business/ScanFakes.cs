@@ -67,7 +67,14 @@ internal sealed class FakeVolumesProbe(IReadOnlyList<ProbedVolume> volumes) : IV
 
 internal sealed class FakeDirectoryEnumerator(IReadOnlyList<ScanEntry> entries) : IDirectoryEnumerator
 {
-    public IEnumerable<ScanEntry> Enumerate(string mountRoot, string relativeRoot, CancellationToken ct) => entries;
+    /// <summary>
+    /// Honours <paramref name="relativeRoot"/> the way the real enumerator does — it walks that
+    /// subtree and nothing else. With a single root over the whole volume ("") this is the same
+    /// list as before; with two roots it is the difference between a fixture and a fiction,
+    /// because the scan calls this once PER root and would otherwise index every entry twice.
+    /// </summary>
+    public IEnumerable<ScanEntry> Enumerate(string mountRoot, string relativeRoot, CancellationToken ct) =>
+        entries.Where(e => ScanPath.IsWithin(e.RelativePath, ScanPath.Normalize(relativeRoot)));
 }
 
 /// <summary>Enumerator that blows up, to exercise the scan failure path.</summary>

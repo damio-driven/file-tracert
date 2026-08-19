@@ -167,13 +167,13 @@ public sealed class ScanService
         }
 
         var filters = await ResolveRootFiltersAsync(volume, roots, settings, ct);
-        var (dirItems, fileItems) = GatherAndFilter(volume, mountRoot, roots, filters, ct);
+        var (dirItems, fileItems, perimeter) = GatherAndFilter(volume, mountRoot, roots, filters, ct);
 
         _statusTracker.SetPhase(volumeId, ScanPhase.ReadingMetadata);
         var resolvedFiles = await ResolveFilesAsync(volume, mountRoot, fileItems, categoryMap, ct);
 
         _statusTracker.SetPhase(volumeId, ScanPhase.Writing);
-        await PersistAsync(volume, dirItems, resolvedFiles, checkpointUsn, scanStartedUtc, ct);
+        await PersistAsync(volume, dirItems, resolvedFiles, perimeter, checkpointUsn, scanStartedUtc, ct);
 
         _logger.LogInformation(
             "Scanned volume {VolumeId}: {Dirs} directories, {Files} files.",
@@ -223,21 +223,19 @@ public sealed class ScanService
         return filters;
     }
 
-    private (List<ScanItem> Dirs, List<ScanItem> Files) GatherAndFilter(
+    private (List<ScanItem> Dirs, List<ScanItem> Files, ScanPerimeter Perimeter) GatherAndFilter(
         Volume volume,
         string mountRoot,
         List<WatchedRoot> roots,
         IReadOnlyDictionary<string, EffectiveFilter> filters,
         CancellationToken ct)
     {
-        // E7: ordered ONCE, outside the loop. Which root governs an item is asked for every single
-        // enumerated entry — millions on a real volume — but the ordering that makes "most
-        // specific" mean anything belongs to the root set, not to the item.
-        var rootsBySpecificity = RootsBySpecificity.Of(filters.Keys);
-
-        var dirs = new List<ScanItem>();
-        var files = new List<ScanItem>();
-
+        // Where this scan looks, built as it goes and handed to the write side: what falls outside
+        // it is excluded (§4), not absent (§6). The roots are ordered ONCE, inside the perimeter —
+        // which root governs an item is asked for every single enumerated entry (millions on a
+        // real volume), but the ordering that makes "most specific" mean anything belongs to the
+        // root set, not to the item (E7).
+        //
         // C16: every directory the filter rejects takes its whole subtree with it. Collected
         // while streaming and applied at the end rather than as we go, because only ONE of the
         // two engines walks a tree: the USN snapshot is an MFT dump whose records arrive in no
@@ -249,7 +247,10 @@ public sealed class ScanService
         // hidden folder that CONTAINS a watched root therefore does not hide it: the user pointed
         // at that subtree explicitly, and an attribute on an ancestor they never named should not
         // silently overrule them.
-        var excluded = new ExcludedSubtrees();
+        var perimeter = new ScanPerimeter(filters.Keys);
+
+        var dirs = new List<ScanItem>();
+        var files = new List<ScanItem>();
 
         // Enumeration is the long "blind" phase: report a running count periodically so
         // the UI doesn't look frozen while the FRN map / directory walk is built.
@@ -271,7 +272,7 @@ public sealed class ScanService
 
             // Find the most specific active root that contains this item — the same rule the
             // single-path resolution uses, spelled once (C19).
-            var rootKey = rootsBySpecificity.Governing(item.RelativePath);
+            var rootKey = perimeter.GoverningRoot(item.RelativePath);
             if (rootKey is null)
             {
                 continue;
@@ -287,7 +288,7 @@ public sealed class ScanService
                 }
                 else
                 {
-                    excluded.Add(item.RelativePath);
+                    perimeter.ExcludeSubtree(item.RelativePath);
                 }
             }
             else
@@ -297,12 +298,19 @@ public sealed class ScanService
                 {
                     files.Add(item);
                 }
+                else if (!FileFilter.IsInsidePerimeter(item.RelativePath, item.Attributes, filter))
+                {
+                    // On disk, outside the perimeter: the closing pass must call it excluded, not
+                    // absent. A file rejected only by the TYPE allow-list is not recorded — see
+                    // ScanPerimeter.SkipFile.
+                    perimeter.SkipFile(item.RelativePath);
+                }
             }
         }
 
         _statusTracker.ReportSeen(volume.Id, seen);
-        DropExcludedSubtrees(volume, dirs, files, excluded);
-        return (dirs, files);
+        DropExcludedSubtrees(volume, dirs, files, perimeter);
+        return (dirs, files, perimeter);
     }
 
     /// <summary>
@@ -312,15 +320,16 @@ public sealed class ScanService
     /// materialized row — a file the scan never keeps cannot create its own ancestors.
     /// </summary>
     private void DropExcludedSubtrees(
-        Volume volume, List<ScanItem> dirs, List<ScanItem> files, ExcludedSubtrees excluded)
+        Volume volume, List<ScanItem> dirs, List<ScanItem> files, ScanPerimeter perimeter)
     {
-        if (excluded.Count == 0)
+        if (perimeter.ExcludedSubtreeCount == 0)
         {
             return;
         }
 
-        var droppedDirs = dirs.RemoveAll(d => excluded.Covers(d.RelativePath));
-        var droppedFiles = files.RemoveAll(f => excluded.Covers(f.RelativePath));
+        var droppedDirs = dirs.RemoveAll(d => perimeter.IsExcluded(d.RelativePath));
+        var droppedFiles = files.RemoveAll(f => perimeter.IsExcluded(f.RelativePath));
+        perimeter.PruneSkippedFilesUnderExcludedSubtrees();
 
         if (droppedDirs + droppedFiles > 0)
         {
@@ -444,12 +453,13 @@ public sealed class ScanService
         Volume volume,
         List<ScanItem> dirItems,
         List<ResolvedFile> files,
+        ScanPerimeter perimeter,
         long? checkpointUsn,
         DateTime scanStartedUtc,
         CancellationToken ct)
     {
         var scannedDirs = BuildDirectoryTree(dirItems, files);
-        var merge = await _directoryMerger.MergeAsync(volume.Id, scannedDirs, FileBatchSize, ct);
+        var merge = await _directoryMerger.MergeAsync(volume.Id, scannedDirs, perimeter, FileBatchSize, ct);
 
         // First scan of a volume = empty table: there is nothing to reconcile against, so the
         // batches go straight through the bulk insert (§3, "prima scansione = BulkInsert puro
@@ -500,24 +510,31 @@ public sealed class ScanService
             await tx.CommitAsync(CancellationToken.None);
         }
 
-        // Everything the scan did not touch this run is gone from disk — flagged, never
-        // deleted (§6), so a queued operation still finds the row it references.
+        // What the scan did not touch this run splits in two (§4/§6): what it never looked at is
+        // excluded, what it looked for and did not find is gone from disk. Flagged either way,
+        // never deleted, so a queued operation still finds the row it references.
         await using (var tx = await _db.Database.BeginTransactionAsync(ct))
         {
-            // The skipped areas arrive in the next commit; today the scan still tells the writer
-            // nothing about where it did not look, so every unseen row is read as absent.
-            var absent = (await _bulkWriter.ReconcileUnseenFilesAsync(
-                volume.Id, scanStartedUtc, [], ct)).Absent;
+            var closure = await _bulkWriter.ReconcileUnseenFilesAsync(
+                volume.Id, scanStartedUtc, SkippedAreas(perimeter, merge.IdByPath), ct);
 
-            // …and out of the search index with them, in the same transaction: a file that is
-            // no longer on disk must stop being a search hit.
+            // …and out of the search index with them, in the same transaction: a file that is no
+            // longer on disk — or no longer inside the perimeter — must stop being a search hit.
             await _ftsIndex.PruneVolumeAsync(volume.Id, ct);
             await tx.CommitAsync(ct);
 
-            if (absent > 0)
+            if (closure.Absent > 0)
             {
                 _logger.LogInformation(
-                    "Volume {VolumeId}: {Count} file(s) no longer on disk, marked absent.", volume.Id, absent);
+                    "Volume {VolumeId}: {Count} file(s) no longer on disk, marked absent.", volume.Id, closure.Absent);
+            }
+
+            if (closure.Excluded > 0)
+            {
+                _logger.LogInformation(
+                    "Volume {VolumeId}: {Count} file(s) outside the scanned perimeter, marked excluded " +
+                    "(still on disk; widening the perimeter brings them back without a re-scan).",
+                    volume.Id, closure.Excluded);
             }
         }
 
@@ -532,6 +549,44 @@ public sealed class ScanService
             await _db.SaveChangesAsync(ct);
             await tx.CommitAsync(ct);
         }
+    }
+
+    /// <summary>
+    /// Translates the perimeter into the terms the file rows are addressed by: directory ids.
+    ///
+    /// <para>Every catalog directory of the volume is asked once whether the scan covered it —
+    /// <paramref name="idByPath"/> is the map the directory merge has already built, so this costs
+    /// no query — and the ones it did not cover become one skipped area each. Normally that set is
+    /// EMPTY: the catalog only holds what was inside the perimeter when it was written, so a
+    /// directory falls out of it only when the user narrows the perimeter (a root switched off, a
+    /// folder made hidden), and only until they widen it again.</para>
+    ///
+    /// <para>The individually skipped files come last and only when their directory IS covered:
+    /// one whose directory is outside the perimeter is already accounted for by the directory's
+    /// own area, and a file row can only exist under a directory row.</para>
+    /// </summary>
+    private static List<SkippedScanArea> SkippedAreas(
+        ScanPerimeter perimeter, IReadOnlyDictionary<string, int> idByPath)
+    {
+        var areas = new List<SkippedScanArea>();
+
+        foreach (var (path, id) in idByPath)
+        {
+            if (!perimeter.Covers(path))
+            {
+                areas.Add(new SkippedScanArea(id, FileName: null));
+            }
+        }
+
+        foreach (var file in perimeter.SkippedFiles)
+        {
+            if (idByPath.TryGetValue(ScanPath.Parent(file), out var directoryId))
+            {
+                areas.Add(new SkippedScanArea(directoryId, ScanPath.Name(file)));
+            }
+        }
+
+        return areas;
     }
 
     private static FileEntry ToEntity(
