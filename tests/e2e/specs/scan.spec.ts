@@ -7,7 +7,7 @@ import {
   detailValue,
   latchAppearances,
   scanFlag,
-  volumeListRow,
+  selectVolume,
 } from '../src/screens.js';
 
 /**
@@ -35,16 +35,16 @@ test.describe('Scansione', () => {
     const letter = sandbox.driveRoot.slice(0, 2);
 
     await page.goto('/volumes');
-    const row = volumeListRow(page, letter);
-    await row.click();
+    await selectVolume(page, letter);
     await expect(detailValue(page, 'Ultima scansione')).toContainText('mai');
 
     // Armed before the click: progress is a state the product leaves on its own, and polling for
     // it would be a race against the scan finishing rather than a test of it starting.
-    // The selected row swaps its metadata line for a progress bar, which is why it is watched
-    // through the selection and not through that line any more.
+    // The row of a scanning volume swaps its metadata line for a progress bar, which is why it is
+    // watched by that bar and not by that line — and by no row in particular: only one volume is
+    // scanning, so a bar anywhere in the list is this one's.
     const FLAG = '.titlebar .scan-flag';
-    const ROW_PROGRESS = 'li.vrow.sel ft-scan-progress';
+    const ROW_PROGRESS = 'li.vrow ft-scan-progress';
     const DETAIL_PROGRESS = '.detail ft-scan-progress';
     await latchAppearances(page, [FLAG, ROW_PROGRESS, DETAIL_PROGRESS]);
 
@@ -62,7 +62,7 @@ test.describe('Scansione', () => {
     await api.waitForScan((await api.volumeForDrive(sandbox.driveRoot)).id, seeded.fileCount);
 
     await page.goto('/volumes');
-    await volumeListRow(page, letter).click();
+    await selectVolume(page, letter);
     await expect(detailValue(page, 'Indice')).toContainText(
       `${seeded.fileCount.toLocaleString('it-IT')} file inclusi`,
     );

@@ -3,6 +3,7 @@ import { watchAndScanSandbox, watchSandbox } from '../src/scenario.js';
 import {
   detailValue,
   expandFolder,
+  selectVolume,
   volumeListRow,
   watchFolder,
   watchedRootRows,
@@ -24,10 +25,10 @@ test.describe('Volumi', () => {
 
     await page.goto('/volumes');
 
-    const row = volumeListRow(page, letter);
-    await expect(row).toHaveCount(1);
-    await row.click();
-    await expect(row).toHaveClass(/sel/);
+    await expect(volumeListRow(page, letter)).toHaveCount(1);
+    // Selecting waits for the detail panel to name this volume: everything below is about it.
+    await selectVolume(page, letter);
+    await expect(volumeListRow(page, letter)).toHaveClass(/sel/);
 
     // Identity is the Volume GUID, not the letter — the letter is only in the caption.
     await expect(detailValue(page, 'Volume GUID')).toHaveText(
@@ -39,10 +40,6 @@ test.describe('Volumi', () => {
     await expect(detailValue(page, 'Serial / Filesystem')).toHaveText(
       /·\s(NTFS|ReFS|exFAT|FAT32|FAT)\s·/,
     );
-    await expect(page.locator('.detail ft-panel .head .caption')).toContainText(
-      `montato su ${letter}`,
-    );
-
     // The root registered a moment ago is the one the panel lists.
     await expect(detailValue(page, 'Cartelle monitorate')).toHaveText(sandbox.volumeRelativePath);
     await expect(detailValue(page, 'Filtro tipi file')).toContainText('Tutti i tipi');
@@ -76,7 +73,7 @@ test.describe('Volumi', () => {
 
     // And the Volumi screen, which reads it back from the service, agrees.
     await page.goto('/volumes');
-    await volumeListRow(page, sandbox.driveRoot.slice(0, 2)).click();
+    await selectVolume(page, sandbox.driveRoot.slice(0, 2));
     await expect(detailValue(page, 'Cartelle monitorate')).toHaveText(sandbox.volumeRelativePath);
   });
 
@@ -102,7 +99,7 @@ test.describe('Volumi', () => {
     await expect(note).not.toHaveClass(/warn/);
 
     await page.goto('/volumes');
-    await volumeListRow(page, sandbox.driveRoot.slice(0, 2)).click();
+    await selectVolume(page, sandbox.driveRoot.slice(0, 2));
     await expect(detailValue(page, 'Filtro tipi file')).toContainText('Immagini');
     await expect(detailValue(page, 'Indice')).toContainText(`${seeded.imageCount} file inclusi`);
   });

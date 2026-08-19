@@ -27,6 +27,26 @@ export const dashboardVolumeRow = (page: Page, letter: string): Locator =>
 export const volumeListRow = (page: Page, letter: string): Locator =>
   page.locator('li.vrow').filter({ hasText: `${letter} ·` });
 
+/** The caption of the Volumi detail panel: it names the mount point of the selected volume. */
+export const detailCaption = (page: Page): Locator =>
+  page.locator('.detail ft-panel .head .caption');
+
+/**
+ * Selects a volume on Volumi and does not return until the detail panel is showing *that* volume.
+ *
+ * The wait before the click is not decoration. The screen auto-selects the first catalogable
+ * volume as soon as the list arrives, and that selection is applied when its own request comes
+ * back — which, on a busy machine, can be after the one the click sent. The later response wins,
+ * the selection silently moves to another volume, and every assertion that follows is about the
+ * wrong row. Letting the automatic selection land first removes the race from the test; the
+ * product keeps it (see the notes for step 12a).
+ */
+export async function selectVolume(page: Page, letter: string): Promise<void> {
+  await expect(detailCaption(page)).toBeVisible();
+  await volumeListRow(page, letter).click();
+  await expect(detailCaption(page)).toContainText(`montato su ${letter}`);
+}
+
 /** The value cell of one key/value row of the Volumi detail panel. */
 export const detailValue = (page: Page, label: string): Locator =>
   page
