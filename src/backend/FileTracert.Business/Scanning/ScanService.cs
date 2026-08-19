@@ -167,7 +167,7 @@ public sealed class ScanService
         }
 
         var filters = await ResolveRootFiltersAsync(volume, roots, settings, ct);
-        var (dirItems, fileItems) = GatherAndFilter(volume, mountRoot, roots, filters);
+        var (dirItems, fileItems) = GatherAndFilter(volume, mountRoot, roots, filters, ct);
 
         _statusTracker.SetPhase(volumeId, ScanPhase.ReadingMetadata);
         var resolvedFiles = await ResolveFilesAsync(volume, mountRoot, fileItems, categoryMap, ct);
@@ -227,7 +227,8 @@ public sealed class ScanService
         Volume volume,
         string mountRoot,
         List<WatchedRoot> roots,
-        IReadOnlyDictionary<string, EffectiveFilter> filters)
+        IReadOnlyDictionary<string, EffectiveFilter> filters,
+        CancellationToken ct)
     {
         var rootKeys = filters.Keys.ToList();
 
@@ -251,8 +252,15 @@ public sealed class ScanService
         // the UI doesn't look frozen while the FRN map / directory walk is built.
         var seen = 0L;
 
-        foreach (var item in EnumerateRaw(volume, mountRoot, roots))
+        foreach (var item in EnumerateRaw(volume, mountRoot, roots, ct))
         {
+            // C18: this is the long blind phase (minutes on a big volume) and the only place
+            // that runs between two awaits, so it is where a shutdown has to be observed. The
+            // ports honour the token too, but the consumer checks as well: a port that ignores
+            // it must not be able to hold the service past its ShutdownTimeout. Nothing is
+            // committed here — the scan just stops, and §9a leaves the checkpoint unwritten.
+            ct.ThrowIfCancellationRequested();
+
             if (++seen % SeenReportInterval == 0)
             {
                 _statusTracker.ReportSeen(volume.Id, seen);
@@ -320,12 +328,13 @@ public sealed class ScanService
         }
     }
 
-    private IEnumerable<ScanItem> EnumerateRaw(Volume volume, string mountRoot, List<WatchedRoot> roots)
+    private IEnumerable<ScanItem> EnumerateRaw(
+        Volume volume, string mountRoot, List<WatchedRoot> roots, CancellationToken ct)
     {
         if (volume.ScanEngine == VolumeScanEngine.UsnJournal)
         {
             // USN enumerates the whole volume; root filtering happens upstream.
-            foreach (var e in _usnReader.ReadFullSnapshot(volume.VolumeGuid, CancellationToken.None))
+            foreach (var e in _usnReader.ReadFullSnapshot(volume.VolumeGuid, ct))
             {
                 yield return new ScanItem(
                     ScanPath.Normalize(e.RelativePath),
@@ -343,7 +352,7 @@ public sealed class ScanService
 
         foreach (var root in roots)
         {
-            foreach (var e in _enumerator.Enumerate(mountRoot, root.RelativePath, CancellationToken.None))
+            foreach (var e in _enumerator.Enumerate(mountRoot, root.RelativePath, ct))
             {
                 yield return new ScanItem(
                     ScanPath.Normalize(e.RelativePath),
