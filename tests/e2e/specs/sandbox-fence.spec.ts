@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import { expect, test } from '../src/fixtures.js';
 import type { RecordedJob } from '../src/fence.js';
 import { watchAndScanSandbox, watchSandbox } from '../src/scenario.js';
@@ -10,6 +12,12 @@ import { watchAndScanSandbox, watchSandbox } from '../src/scenario.js';
  * being a way to move a stranger's files is the three layers in `src/fence.ts`, and a guard nobody
  * ever fires is a guard nobody knows works. So each layer gets an attempt aimed straight at it,
  * and the test passes only when the attempt is refused, by name, with nothing created.
+ *
+ * The attempts point **just outside** the fence — the sandbox's own parent folder, still under
+ * `.artifacts` — and never at a folder of the system. That is deliberate: the way to prove this
+ * spec is not vacuous is to disable the fence and watch it go red, and a destination like
+ * `Windows\Temp` would turn that demonstration into the accident the fence exists to prevent.
+ * Just outside is just as outside.
  */
 test.describe('Recinto della sandbox', () => {
   test('rifiuta una destinazione fuori dalla sandbox prima che il servizio la veda', async ({
@@ -21,23 +29,24 @@ test.describe('Recinto della sandbox', () => {
     const { files } = await api.walkCatalog(volume.id);
     const victim = files[0]!;
 
-    // A destination that is a perfectly ordinary path — and not ours. This is the mistake the
-    // fence exists for: a typo in a test, not a malicious one.
+    // One level up from the watched folder: an ordinary path, and not ours. This is the mistake
+    // the fence exists for — a typo in a test, not a malicious one.
+    const justOutside = path.dirname(sandbox.volumeRelativePath);
+
     await expect(
       api.enqueue(
         {
           type: 'MoveFile',
           sourceFileId: victim.id,
           targetVolumeId: volume.id,
-          targetRelativePath: 'Windows\\Temp',
+          targetRelativePath: justOutside,
         },
         sandbox.fence,
       ),
-    ).rejects.toThrow(/SANDBOX FENCE.*Windows\\Temp/s);
+    ).rejects.toThrow(/SANDBOX FENCE.*resolves outside the sandbox/s);
 
-    // Walking out of the sandbox with `..` is refused too, and refused as unreadable rather than
-    // resolved: the product never writes a path like this, so seeing one means something is wrong
-    // upstream of the destination.
+    // Walking out with `..` is refused too, and refused as unreadable rather than resolved: the
+    // product never writes a path like this, so seeing one means something upstream is wrong.
     await expect(
       api.enqueue(
         {
@@ -49,7 +58,7 @@ test.describe('Recinto della sandbox', () => {
       ),
     ).rejects.toThrow(/SANDBOX FENCE/);
 
-    // The sibling folder trap: a prefix compare without the separator would accept this.
+    // The sibling trap: a prefix compare without the separator would accept this.
     await expect(
       api.enqueue(
         {
@@ -72,7 +81,7 @@ test.describe('Recinto della sandbox', () => {
         },
         sandbox.fence,
       ),
-    ).rejects.toThrow(/SANDBOX FENCE/);
+    ).rejects.toThrow(/SANDBOX FENCE.*is not the sandbox volume/s);
 
     // A rename is the other way out: a name that is really a path relocates the file.
     await expect(
@@ -88,6 +97,7 @@ test.describe('Recinto della sandbox', () => {
 
   test('rifiuta un accodamento partito dal browser', async ({ page, sandbox, api }) => {
     const volume = await watchSandbox(api, sandbox);
+    const justOutside = `${path.dirname(sandbox.volumeRelativePath)}\\cartella-fuori-recinto`;
 
     await page.goto('/dashboard');
 
@@ -103,7 +113,7 @@ test.describe('Recinto della sandbox', () => {
             body: JSON.stringify({
               type: 'CreateFolder',
               targetVolumeId: input.volumeId,
-              targetRelativePath: 'Windows\\filetracert-e2e',
+              targetRelativePath: input.target,
             }),
           });
           return `sent, service answered ${response.status}`;
@@ -111,7 +121,7 @@ test.describe('Recinto della sandbox', () => {
           return `refused: ${String(error)}`;
         }
       },
-      { token: api.token, volumeId: volume.id },
+      { token: api.token, volumeId: volume.id, target: justOutside },
     );
 
     expect(outcome).toMatch(/^refused:/);
@@ -120,7 +130,7 @@ test.describe('Recinto della sandbox', () => {
     // on purpose — and asserted, so the refusal names what it stopped.
     const violations = sandbox.fence.takeBrowserViolations();
     expect(violations).toHaveLength(1);
-    expect(violations[0]).toContain('Windows\\filetracert-e2e');
+    expect(violations[0]).toContain('cartella-fuori-recinto');
 
     expect(await api.jobs()).toHaveLength(0);
   });
@@ -137,10 +147,12 @@ test.describe('Recinto della sandbox', () => {
       isIntraVolume: true,
       sourceVolumeId: volume.id,
       targetVolumeId: volume.id,
-      sourcePath: 'Users\\qualcuno\\Documenti\\tesi.docx',
+      sourcePath: `${path.dirname(sandbox.volumeRelativePath)}\\qualcosa-di-qualcun-altro.docx`,
       targetPath: sandbox.volumeRelativePath,
     };
-    expect(() => sandbox.fence.auditRecordedJobs([outside])).toThrow(/SANDBOX FENCE.*tesi\.docx/s);
+    expect(() => sandbox.fence.auditRecordedJobs([outside])).toThrow(
+      /SANDBOX FENCE.*qualcosa-di-qualcun-altro\.docx/s,
+    );
 
     // Cross-volume is a violation on its own: it is the only path that deletes a source file, and
     // it deletes it into the recycle bin — where this suite must never put anything.
