@@ -132,4 +132,9 @@ scritte accanto al codice:
 | `specs/volumes.spec.ts` | il dettaglio mostra GUID, filesystem e cartelle monitorate; si aggiunge una cartella monitorata dall'albero reale del Setup; si cambia il filtro e l'indice si riallinea |
 | `specs/scan.spec.ts` | la scansione parte dalla UI, l'avanzamento compare e sparisce perché l'hub lo spinge, e i contatori finiscono allineati alla sandbox |
 
-Catalogo, ricerca, coda e realtime sono lo **step 12b**.
+## I flussi coperti (step 12b)
+
+| file | cosa verifica |
+| --- | --- |
+| `specs/sandbox-fence.spec.ts` | i tre strati del recinto rifiutano un'operazione diretta fuori dalla sandbox — dal test, dal browser, e nell'audit finale |
+| `specs/catalog.spec.ts` | l'albero lazy si naviga livello per livello e conta ciò che il test ha messo su disco; una cartella esclusa dal filtro **resta** nell'albero (11h) |

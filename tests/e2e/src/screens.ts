@@ -66,6 +66,44 @@ export const watchFolder = (page: Page, name: string): Locator =>
 /** The list of monitored roots on the Setup screen. */
 export const watchedRootRows = (page: Page): Locator => page.locator('ul.roots li.root');
 
+// ── Catalogo ──────────────────────────────────────────────────────────────────────────────────
+
+/** The Catalogo's volume button, found by the mount letter in its metadata line. */
+export const catalogVolume = (page: Page, letter: string): Locator =>
+  page.locator('button.vol-item').filter({ hasText: letter });
+
+/** One folder card of the Catalogo, found by the name printed on it. */
+export const folderCard = (page: Page, name: string): Locator =>
+  page.locator('.dir-card').filter({ has: page.locator('.dir-name', { hasText: exact(name) }) });
+
+/** One file row of the Catalogo, found by the name printed on it. */
+export const fileRow = (page: Page, name: string): Locator =>
+  page.locator('tr.file-row').filter({ has: page.locator('.file-name', { hasText: exact(name) }) });
+
+/**
+ * Opens one folder of the Catalogo and waits until the breadcrumb says we are in it.
+ *
+ * Waiting on the breadcrumb rather than on the card disappearing is what makes a walk down several
+ * levels safe: each level is its own request, and clicking the next card before the previous
+ * answer landed would click a card that is about to be replaced.
+ */
+export async function openFolder(page: Page, name: string): Promise<void> {
+  await folderCard(page, name).locator('.dir-card-open').click();
+  await expect(page.locator('.breadcrumb-seg--current')).toHaveText(name);
+}
+
+/** Walks the Catalogo from the volume root down to the sandbox, one lazy level at a time. */
+export async function openPath(page: Page, segments: readonly string[]): Promise<void> {
+  for (const segment of segments) {
+    await openFolder(page, segment);
+  }
+}
+
+/** A locator that matches the whole text and nothing more of it. */
+function exact(text: string): RegExp {
+  return new RegExp(`^\\s*${text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`);
+}
+
 /** What the page recorded for one watched selector: whether it ever appeared, and its first text. */
 export interface Appearance {
   readonly seen: boolean;
