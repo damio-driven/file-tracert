@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net10.0-windows</TargetFramework>
@@ -31,6 +31,9 @@
     <ProjectReference Include="..\..\src\backend\FileTracert.Platform\FileTracert.Platform.csproj" />
     <ProjectReference Include="..\..\src\backend\FileTracert.Business\FileTracert.Business.csproj" />
     <ProjectReference Include="..\..\src\backend\FileTracert.Host\FileTracert.Host.csproj" />
+    <!-- Reproduction of the process-wide connection-pool race (step 11i). It has to be a
+         separate process: clearing every pool would break the suite that runs it. -->
+    <ProjectReference Include="..\FileTracert.PoolProbe\FileTracert.PoolProbe.csproj" />
   </ItemGroup>
 
 </Project>
