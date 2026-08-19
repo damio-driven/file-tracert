@@ -1,22 +1,26 @@
-﻿using FileTracert.Contracts.Operations;
+using FileTracert.Contracts.Operations;
 using FileTracert.Contracts.Paging;
+using FileTracert.Host.Infrastructure;
 using Microsoft.AspNetCore.Mvc;
 
 namespace FileTracert.Host.Controllers;
 
-/// <summary>Queue operation endpoints: enqueue, preview, list, cancel.</summary>
+/// <summary>
+/// Queue operation endpoints: enqueue, preview, list, retry, cancel.
+///
+/// <para>Every action's error handling lives in <see cref="QueueExceptionFilter"/> (K11): the same
+/// try/catch was copied six times, and twice it chose between 404 and 400 by looking for the words
+/// "not found" inside the message. The rule is now carried by the exception TYPE, and — §9 — the
+/// filter logs what it converts, which four of the six actions did not do.</para>
+/// </summary>
 [ApiController]
 [Route("api/operations")]
+[TypeFilter<QueueExceptionFilter>]
 public sealed class OperationsController : ControllerBase
 {
     private readonly IQueueService _queue;
-    private readonly ILogger<OperationsController> _logger;
 
-    public OperationsController(IQueueService queue, ILogger<OperationsController> logger)
-    {
-        _queue = queue;
-        _logger = logger;
-    }
+    public OperationsController(IQueueService queue) => _queue = queue;
 
     /// <summary>Returns all jobs ordered by sequence, with feasibility attached for Blocked jobs.</summary>
     [HttpGet]
@@ -40,18 +44,8 @@ public sealed class OperationsController : ControllerBase
         [FromBody] CreateJobRequest req,
         CancellationToken ct)
     {
-        try
-        {
-            var dto = await _queue.EnqueueAsync(req, ct);
-            return CreatedAtAction(nameof(List), new { }, dto);
-        }
-        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
-        {
-            // §9: surfaced to the user AND logged in full. The message alone reaches the client;
-            // the stack (and any inner exception) only exists here.
-            _logger.LogWarning(ex, "Enqueue of a {Type} operation rejected as invalid.", req.Type);
-            return BadRequest(new { error = ex.Message });
-        }
+        var dto = await _queue.EnqueueAsync(req, ct);
+        return CreatedAtAction(nameof(List), new { }, dto);
     }
 
     /// <summary>
@@ -65,18 +59,8 @@ public sealed class OperationsController : ControllerBase
         [FromBody] List<CreateJobRequest> reqs,
         CancellationToken ct)
     {
-        try
-        {
-            var dtos = await _queue.EnqueueBatchAsync(reqs, ct);
-            return CreatedAtAction(nameof(List), new { }, dtos);
-        }
-        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
-        {
-            // §9: surfaced to the user AND logged in full. The message alone reaches the client;
-            // the stack (and the inner exception naming the real cause) only exists here.
-            _logger.LogWarning(ex, "Batch enqueue of {Count} operations rejected as invalid.", reqs?.Count ?? 0);
-            return BadRequest(new { error = ex.Message });
-        }
+        var dtos = await _queue.EnqueueBatchAsync(reqs, ct);
+        return CreatedAtAction(nameof(List), new { }, dtos);
     }
 
     /// <summary>
@@ -87,20 +71,7 @@ public sealed class OperationsController : ControllerBase
     public async Task<ActionResult<FeasibilityResult>> Preview(
         [FromBody] CreateJobRequest req,
         CancellationToken ct)
-    {
-        try
-        {
-            return Ok(await _queue.PreviewAsync(req, ct));
-        }
-        catch (ArgumentException ex)
-        {
-            return BadRequest(new { error = ex.Message });
-        }
-        catch (InvalidOperationException ex)
-        {
-            return BadRequest(new { error = ex.Message });
-        }
-    }
+        => Ok(await _queue.PreviewAsync(req, ct));
 
     /// <summary>
     /// Computes feasibility for a whole batch of operations as one aggregated demand
@@ -111,58 +82,22 @@ public sealed class OperationsController : ControllerBase
     public async Task<ActionResult<FeasibilityResult>> PreviewBatch(
         [FromBody] List<CreateJobRequest> reqs,
         CancellationToken ct)
-    {
-        try
-        {
-            return Ok(await _queue.PreviewBatchAsync(reqs, ct));
-        }
-        catch (ArgumentException ex)
-        {
-            return BadRequest(new { error = ex.Message });
-        }
-        catch (InvalidOperationException ex)
-        {
-            return BadRequest(new { error = ex.Message });
-        }
-    }
+        => Ok(await _queue.PreviewBatchAsync(reqs, ct));
 
     /// <summary>
     /// Puts a Blocked or Failed job back in queue for another attempt (Riprova).
-    /// Returns 400 for non-retryable states (Completed, Cancelled, already queued/running).
+    /// Returns 400 for non-retryable states (Completed, Cancelled, already queued/running)
+    /// and 404 when there is no such job.
     /// </summary>
     [HttpPost("{id:int}/retry")]
     public async Task<ActionResult<OperationJobDto>> Retry(int id, CancellationToken ct)
-    {
-        try
-        {
-            return Ok(await _queue.RetryAsync(id, ct));
-        }
-        catch (InvalidOperationException ex) when (ex.Message.Contains("not found"))
-        {
-            return NotFound(new { error = ex.Message });
-        }
-        catch (InvalidOperationException ex)
-        {
-            return BadRequest(new { error = ex.Message });
-        }
-    }
+        => Ok(await _queue.RetryAsync(id, ct));
 
     /// <summary>Cancels a non-terminal job and releases its ledger reservation.</summary>
     [HttpDelete("{id:int}")]
     public async Task<IActionResult> Cancel(int id, CancellationToken ct)
     {
-        try
-        {
-            await _queue.CancelAsync(id, ct);
-            return NoContent();
-        }
-        catch (InvalidOperationException ex) when (ex.Message.Contains("not found"))
-        {
-            return NotFound(new { error = ex.Message });
-        }
-        catch (InvalidOperationException ex)
-        {
-            return BadRequest(new { error = ex.Message });
-        }
+        await _queue.CancelAsync(id, ct);
+        return NoContent();
     }
 }

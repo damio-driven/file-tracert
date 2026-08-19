@@ -2,6 +2,7 @@
 using FileTracert.Business.Realtime;
 using FileTracert.Business.Scanning;
 using FileTracert.Contracts.Enums;
+using FileTracert.Contracts.Errors;
 using FileTracert.Contracts.Operations;
 using FileTracert.Contracts.Paging;
 using FileTracert.Contracts.Platform;
@@ -306,7 +307,7 @@ public sealed class QueueService : IQueueService
             .Include(j => j.Items)
             .Include(j => j.TargetVolume)
             .FirstOrDefaultAsync(j => j.Id == jobId, ct)
-            ?? throw new InvalidOperationException($"Job {jobId} not found.");
+            ?? throw EntityNotFoundException.For("Job", jobId);
 
         // The State concurrency token (finding #2) can trip if the engine commits a transition
         // between our read and our write. A cancel must win over any non-terminal state, so
@@ -398,7 +399,7 @@ public sealed class QueueService : IQueueService
             .Include(j => j.SourceVolume)
             .Include(j => j.TargetVolume)
             .FirstOrDefaultAsync(j => j.Id == jobId, ct)
-            ?? throw new InvalidOperationException($"Job {jobId} not found.");
+            ?? throw EntityNotFoundException.For("Job", jobId);
 
         if (job.State is not (JobState.Blocked or JobState.Failed))
             throw new InvalidOperationException(
