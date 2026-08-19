@@ -74,7 +74,7 @@ public sealed class OperationsController : ControllerBase
         {
             // §9: surfaced to the user AND logged in full. The message alone reaches the client;
             // the stack (and the inner exception naming the real cause) only exists here.
-            _logger.LogWarning(ex, "Batch enqueue of {Count} operations rejected as invalid.", reqs.Count);
+            _logger.LogWarning(ex, "Batch enqueue of {Count} operations rejected as invalid.", reqs?.Count ?? 0);
             return BadRequest(new { error = ex.Message });
         }
     }

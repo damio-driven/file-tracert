@@ -28,6 +28,14 @@
               partirà da sola appena quella si conclude.
             </div>
           }
+          @if (parkedOnResourceCount() > 0) {
+            <div class="enqueued-waiting">
+              {{ parkedOnResourceCount() === 1
+                  ? '1 di queste è in attesa di spazio o del volume di destinazione'
+                  : parkedOnResourceCount() + ' di queste sono in attesa di spazio o del volume di destinazione' }}:
+              la Coda dice quanto manca e riparte da sola.
+            </div>
+          }
           <button type="button" class="ft-btn ft-btn--primary" (click)="goToQueue()">
             Vai alla Coda →
           </button>

@@ -59,6 +59,8 @@ export class OperationPicker implements OnInit {
   protected readonly enqueuedCount = signal(0);
   /** How many of those were parked behind an operation already in the queue (§5). */
   protected readonly waitingCount = signal(0);
+  /** How many were parked on a resource: not enough room, or a volume that is unplugged. */
+  protected readonly parkedOnResourceCount = signal(0);
   protected readonly error = signal<string | null>(null);
 
   /** Cold open: nothing can be chosen until the volume list is here. */
@@ -93,8 +95,9 @@ export class OperationPicker implements OnInit {
     }
 
     // The store never rejects: it swallows the failure into its own `error` signal, which
-    // `loadList` clears at the start. This is the only load the dialog has in flight, so the
-    // value read here belongs to it.
+    // `loadList` clears at the start. That signal is shared with the Volumi screen, so in
+    // principle a failure raised there in the same instant would be read here as ours — the
+    // narrow price of not giving the dialog a second copy of the list.
     this.volumesError.set(this.volumes.error());
     this.selectDefaultVolume();
   }
@@ -274,6 +277,14 @@ export class OperationPicker implements OnInit {
       // the entity, so the confirmation has to say "queued, waiting" — reporting a plain
       // success would leave the user wondering why nothing moved.
       this.waitingCount.set(jobs.filter(j => j.blockReason === 'DependencyPending').length);
+      // Same reasoning, different cause: the backend weighs the batch as ONE demand, so a
+      // selection can legitimately come back with its tail parked for space or for a volume
+      // that is not connected. Announcing a clean success for operations the user will not
+      // see happen is the thing this screen exists to avoid.
+      this.parkedOnResourceCount.set(jobs.filter(j =>
+        j.blockReason === 'InsufficientSpace'
+        || j.blockReason === 'TargetVolumeOffline'
+        || j.blockReason === 'SourceVolumeOffline').length);
       this.enqueued.set(true);
       this.completed.emit();
     } catch (e) {

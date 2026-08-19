@@ -187,6 +187,67 @@ public sealed class QueueBatchEnqueueTests : IDisposable
         await act.Should().ThrowAsync<ArgumentException>();
     }
 
+    /// <summary>
+    /// The batch is one exclusive write transaction and the guard re-reads the items of every job
+    /// already inserted by it, so an unbounded selection would hold the SQLite write lock long
+    /// enough to starve the processor's own checkpoints. The refusal names the limit and is raised
+    /// before a single row is written.
+    /// </summary>
+    [Fact]
+    public async Task A_selection_larger_than_the_limit_is_refused_before_anything_is_written()
+    {
+        var oversized = Enumerable.Repeat(Move(FileCId), QueueService.MaxBatchSize + 1).ToList();
+
+        var act = async () => await Svc().EnqueueBatchAsync(oversized, None);
+
+        (await act.Should().ThrowAsync<ArgumentException>())
+            .WithMessage($"*{QueueService.MaxBatchSize}*");
+
+        using var db = _harness.CreateContext();
+        db.OperationJobs.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// The "which element, and nothing was queued" wrapper must cover the WHOLE element, not only
+    /// the part that builds it: a guard or sequence-number failure is just as much "element i broke
+    /// and the queue is untouched", and a 400 that omits the second half sends the user straight
+    /// back to the button.
+    /// </summary>
+    [Fact]
+    public async Task A_failure_after_the_insert_is_reported_the_same_way_as_one_before_it()
+    {
+        // A MoveFolder onto its own path is refused by the type-specific build; a directory the
+        // last scan no longer found is refused by the loader. Both are "element i", both must
+        // carry the same two facts.
+        using (var db = _harness.CreateContext())
+        {
+            db.Directories.Add(new DirectoryNode
+            {
+                Id = 9, VolumeId = SourceVolId, Name = "Gone",
+                MaterializedPath = "Gone", IsMaterialized = true, IsPresent = false
+            });
+            db.SaveChanges();
+        }
+
+        var act = async () => await Svc().EnqueueBatchAsync(
+        [
+            Move(FileCId),
+            new CreateJobRequest
+            {
+                Type = JobType.MoveFolder,
+                SourceDirectoryId = 9,
+                TargetVolumeId = TargetVolId,
+                TargetRelativePath = ""
+            },
+        ], None);
+
+        (await act.Should().ThrowAsync<InvalidOperationException>())
+            .WithMessage("*Elemento 2 di 2*");
+
+        using var check = _harness.CreateContext();
+        check.OperationJobs.Should().BeEmpty();
+    }
+
     // ── the guard is asked for every element ──────────────────────────────────
 
     [Fact]
@@ -223,6 +284,30 @@ public sealed class QueueBatchEnqueueTests : IDisposable
         using var db = _harness.CreateContext();
         // The parked job holds no reservation — only the one that fits does.
         db.SpaceLedgerEntries.Count(e => e.IsActive && e.VolumeId == TargetVolId).Should().Be(1);
+    }
+
+    /// <summary>
+    /// The margin (§4) applies to the CUMULATIVE demand of the batch, not to each file on its own,
+    /// which makes a batch strictly stricter than the same moves enqueued one at a time. That is
+    /// the safe direction — the engine's hard re-check would apply the margin to the whole demand
+    /// anyway — but it is a real difference and it is asserted rather than assumed.
+    /// </summary>
+    [Fact]
+    public async Task The_safety_margin_is_applied_to_the_whole_demand_of_the_batch()
+    {
+        using (var db = _harness.CreateContext())
+        {
+            db.AppSettings.Add(new AppSettings { Id = 1, ApiToken = "token", SpaceMarginPercent = 10 });
+            db.SaveChanges();
+        }
+
+        // 2 500 free. 500 + 2 000 = 2 500 fits exactly with no margin; with 10% on the cumulative
+        // demand it does not, so the second job is parked instead of being promised room.
+        var dtos = await Svc().EnqueueBatchAsync([Move(FileCId), Move(FileAId)], None);
+
+        dtos[0].State.Should().Be("Pending");
+        dtos[1].State.Should().Be("Blocked");
+        dtos[1].BlockReason.Should().Be(nameof(JobBlockReason.InsufficientSpace));
     }
 
     [Fact]

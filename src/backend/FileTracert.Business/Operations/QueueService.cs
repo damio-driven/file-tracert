@@ -20,6 +20,19 @@ public sealed class QueueService : IQueueService
 {
     private static readonly HashSet<JobState> TerminalStates = [.. JobStates.Terminal];
 
+    /// <summary>
+    /// Largest selection accepted by one <see cref="EnqueueBatchAsync"/> call.
+    ///
+    /// The batch is one exclusive SQLite write transaction, and the conflict guard re-reads the
+    /// items of every job already inserted by it, so the cost of an element grows with the
+    /// elements before it. Left unbounded, a "select all" over a large folder would hold the
+    /// write lock long enough for the processor's own checkpoints to hit the busy timeout — on a
+    /// job that is physically copying — and an abort would then throw away minutes of work.
+    /// A refusal that names the limit is a worse gesture than a slow one but a far better outcome
+    /// than a queue that stalls, and splitting the selection is something the user can actually do.
+    /// </summary>
+    public const int MaxBatchSize = 500;
+
     private readonly FileTracertDbContext _db;
     private readonly ISpaceLedger _ledger;
     private readonly SpaceCheck _spaceCheck;
@@ -83,11 +96,19 @@ public sealed class QueueService : IQueueService
     /// still assigned inside the transaction against the unique index (C26/9c), and each job's
     /// overlay and ledger rows are staged in the same unit of work.
     /// </summary>
+    /// <exception cref="ArgumentException">
+    /// The batch is empty, exceeds <see cref="MaxBatchSize"/>, or one of its requests is invalid.
+    /// </exception>
     public async Task<IReadOnlyList<OperationJobDto>> EnqueueBatchAsync(
         IReadOnlyList<CreateJobRequest> requests, CancellationToken ct)
     {
         if (requests.Count == 0)
             throw new ArgumentException("Nessuna operazione da accodare: la richiesta è vuota.");
+
+        if (requests.Count > MaxBatchSize)
+            throw new ArgumentException(
+                $"Troppe operazioni in una sola richiesta ({requests.Count}): il massimo è " +
+                $"{MaxBatchSize}. Dividere la selezione e accodarla in più riprese.");
 
         var created = new List<(OperationJob Job, List<OperationJobItem> Items, bool Reserved)>(requests.Count);
         // What this batch has already promised to each target volume. The in-memory ledger only
@@ -101,73 +122,81 @@ public sealed class QueueService : IQueueService
         for (int i = 0; i < requests.Count; i++)
         {
             var request = requests[i];
-            OperationJob job;
-            List<OperationJobItem> items;
-            bool shouldReserve;
             try
             {
-                (job, items, shouldReserve) = await BuildJobAsync(
+                var (job, items, shouldReserve) = await BuildJobAsync(
                     request,
                     request.TargetVolumeId is { } tv ? batchDemandByVolume.GetValueOrDefault(tv) : 0,
                     ct);
+
+                _db.OperationJobs.Add(job);
+                foreach (var item in items)
+                    _db.OperationJobItems.Add(item);
+                // Assigns job.Id and job.SequenceOrder, still inside the open transaction (C26).
+                await AssignSequenceOrderAndSaveAsync(job, ct);
+
+                // Finding 8 — the guard runs AFTER the insert, deliberately. SQLite grants the write
+                // lock at the first write, not at BEGIN: asking before it would read a snapshot another
+                // enqueue can still change underneath, and two requests racing on the same entity would
+                // both read "clear" and both land Pending on it (§5 allows one). From here on this
+                // connection holds the lock, so a competitor has either already committed — and is
+                // therefore visible to this read — or is queued behind us. Within a batch the same
+                // property makes each element see the elements before it: they are already inserted on
+                // this connection, so two requests for the same entity in one batch serialize exactly
+                // as two separate calls would.
+                await ApplyPendingWorkGuardAsync(job, ct);
+
+                // §5 — queuing an operation mutates the PROJECTION immediately: the entity is shown at
+                // once under its new name / in its new folder / on its new volume. Written here, inside
+                // the job's own transaction, so job and overlay commit together or not at all — an
+                // overlay without a job would point at a job that never existed.
+                // Applied AFTER the offline gate and regardless of its verdict: a job parked
+                // Blocked(volume offline) is still in the queue, therefore still in the projection.
+                // The ONE exception is a job born Blocked(DependencyPending): the entity is already
+                // another job's, and the projection must keep showing THAT job's promise. This dependent
+                // writes its own overlay when the revaluation releases it (JobUnblocker).
+                if (JobDependencies.OwnsItsEntity(job))
+                    await _overlay.ApplyAsync(job, items, ct);
+
+                // C3: stage the ledger reservation in the SAME transaction as the job, so the two commit
+                // atomically. The old code reserved AFTER the commit — a throw or aborted request between
+                // the two left the job Pending with no ledger entry, making every other job's feasibility
+                // under-count this demand and overcommit the target.
+                if (shouldReserve)
+                {
+                    _db.SpaceLedgerEntries.AddRange(SpaceLedger.BuildReservationEntries(
+                        job.Id, job.TargetVolumeId!.Value, job.RequiredBytesTarget,
+                        job.SourceVolumeId, job.FreedBytesSource));
+                    await _db.SaveChangesAsync(ct);
+
+                    batchDemandByVolume[job.TargetVolumeId!.Value] =
+                        batchDemandByVolume.GetValueOrDefault(job.TargetVolumeId!.Value)
+                        + job.RequiredBytesTarget;
+                }
+
+                created.Add((job, items, shouldReserve));
             }
             catch (Exception ex) when (requests.Count > 1 && ex is ArgumentException or InvalidOperationException)
             {
-                // Says WHICH element of the selection is the problem and that nothing was queued —
-                // without the position the user cannot tell what to fix, and without the second
-                // half they cannot tell whether clicking again would duplicate anything.
+                // Wraps the WHOLE element, not just its build: a sequence-number exhaustion or a
+                // guard failure is just as much "element i broke and nothing was queued", and a 400
+                // that omits the second half sends the user straight back to the button.
+                // The tracker is cleared because the rollback that follows (the transaction is
+                // disposed on the way out) does not undo what EF believes: the jobs it just saved
+                // would stay Unchanged with server-generated ids that no longer exist on disk.
+                _db.ChangeTracker.Clear();
                 throw DescribeBatchFailure(ex, i, requests.Count);
             }
-
-            _db.OperationJobs.Add(job);
-            foreach (var item in items)
-                _db.OperationJobItems.Add(item);
-            // Assigns job.Id and job.SequenceOrder, still inside the open transaction (C26).
-            await AssignSequenceOrderAndSaveAsync(job, ct);
-
-            // Finding 8 — the guard runs AFTER the insert, deliberately. SQLite grants the write
-            // lock at the first write, not at BEGIN: asking before it would read a snapshot another
-            // enqueue can still change underneath, and two requests racing on the same entity would
-            // both read "clear" and both land Pending on it (§5 allows one). From here on this
-            // connection holds the lock, so a competitor has either already committed — and is
-            // therefore visible to this read — or is queued behind us. Within a batch the same
-            // property makes each element see the elements before it: they are already inserted on
-            // this connection, so two requests for the same entity in one batch serialize exactly
-            // as two separate calls would.
-            await ApplyPendingWorkGuardAsync(job, ct);
-
-            // §5 — queuing an operation mutates the PROJECTION immediately: the entity is shown at
-            // once under its new name / in its new folder / on its new volume. Written here, inside
-            // the job's own transaction, so job and overlay commit together or not at all — an
-            // overlay without a job would point at a job that never existed.
-            // Applied AFTER the offline gate and regardless of its verdict: a job parked
-            // Blocked(volume offline) is still in the queue, therefore still in the projection.
-            // The ONE exception is a job born Blocked(DependencyPending): the entity is already
-            // another job's, and the projection must keep showing THAT job's promise. This dependent
-            // writes its own overlay when the revaluation releases it (JobUnblocker).
-            if (JobDependencies.OwnsItsEntity(job))
-                await _overlay.ApplyAsync(job, items, ct);
-
-            // C3: stage the ledger reservation in the SAME transaction as the job, so the two commit
-            // atomically. The old code reserved AFTER the commit — a throw or aborted request between
-            // the two left the job Pending with no ledger entry, making every other job's feasibility
-            // under-count this demand and overcommit the target.
-            if (shouldReserve)
-            {
-                _db.SpaceLedgerEntries.AddRange(SpaceLedger.BuildReservationEntries(
-                    job.Id, job.TargetVolumeId!.Value, job.RequiredBytesTarget,
-                    job.SourceVolumeId, job.FreedBytesSource));
-                await _db.SaveChangesAsync(ct);
-
-                batchDemandByVolume[job.TargetVolumeId!.Value] =
-                    batchDemandByVolume.GetValueOrDefault(job.TargetVolumeId!.Value)
-                    + job.RequiredBytesTarget;
-            }
-
-            created.Add((job, items, shouldReserve));
         }
 
         await tx.CommitAsync(ct);
+
+        // From here the durable work is DONE, so nothing below may be cancelled: an abort between
+        // the commit and the mirror update would leave N reservations in the database and none in
+        // memory, and every later feasibility check would under-count the demand on that volume —
+        // the direction that overcommits a drive. The mirror is only rebuilt from the DB at
+        // startup, so that state would persist for the whole run.
+        var afterCommit = CancellationToken.None;
 
         // Update the in-memory mirror ONLY after the DB commit succeeds: the durable entries and
         // the job now exist together, and the mirror can never claim a reservation the DB lacks.
@@ -176,7 +205,7 @@ public sealed class QueueService : IQueueService
             if (!reserved) continue;
             await _ledger.RegisterReservationInMemoryAsync(
                 job.Id, job.SequenceOrder, job.TargetVolumeId!.Value,
-                job.RequiredBytesTarget, job.SourceVolumeId, job.FreedBytesSource, ct);
+                job.RequiredBytesTarget, job.SourceVolumeId, job.FreedBytesSource, afterCommit);
         }
 
         // Wake the processor now instead of letting it discover the jobs on its next safety poll.

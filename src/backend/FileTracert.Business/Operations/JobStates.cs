@@ -1,4 +1,4 @@
-using FileTracert.Contracts.Enums;
+﻿using FileTracert.Contracts.Enums;
 
 namespace FileTracert.Business.Operations;
 
@@ -21,6 +21,10 @@ public static class JobStates
     /// <summary>
     /// States in which the engine is physically working on the job right now. Pending and
     /// SpaceReserved are queued, not running: nothing is being copied for them yet.
+    ///
+    /// These three also appear in <see cref="Runnable"/>, which answers a different question
+    /// ("should the processor pick this up?", resumed in-flight states included). Kept as a
+    /// separate array rather than derived from it because both must translate to a SQL <c>IN</c>.
     /// </summary>
     public static readonly JobState[] Active =
     [

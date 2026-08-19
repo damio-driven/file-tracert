@@ -77,6 +77,7 @@ function setup(volumes: VolumeDto[] = []) {
     error: { (): string | null };
     enqueuedCount: { (): number };
     waitingCount: { (): number };
+    parkedOnResourceCount: { (): number };
     newFolderName: string;
     openDirectory(dir: CatalogDirDto): Promise<void>;
     navigateToRoot(): Promise<void>;
@@ -254,6 +255,24 @@ describe('OperationPicker target path', () => {
   // Step 9c: a conflict with a queued job is no longer a 409. The operation IS accepted,
   // parked behind the job that holds the entity — so the confirmation must say "waiting",
   // not report a clean success the user will not see happen.
+  // A batch now weighs as ONE demand on the target, so its tail can legitimately come back
+  // parked for space or for an unplugged volume — states a per-file enqueue never produced.
+  it('counts the operations parked on space or on a volume, not only the dependent ones', async () => {
+    const { cmp, enqueueBatch } = setup();
+    enqueueBatch.mockImplementationOnce(() => of([
+      { id: 1, blockReason: 'None' },
+      { id: 2, blockReason: 'InsufficientSpace' },
+      { id: 3, blockReason: 'TargetVolumeOffline' },
+      { id: 4, blockReason: 'DependencyPending' },
+    ] as never));
+
+    await cmp.enqueue();
+
+    expect(cmp.enqueuedCount()).toBe(4);
+    expect(cmp.parkedOnResourceCount()).toBe(2);
+    expect(cmp.waitingCount()).toBe(1);
+  });
+
   it('counts the operations that came back queued-but-waiting', async () => {
     const { cmp, enqueueBatch } = setup();
     enqueueBatch.mockImplementationOnce(() =>

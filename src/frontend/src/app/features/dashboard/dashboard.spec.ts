@@ -80,7 +80,9 @@ describe('Dashboard queue cards', () => {
     await fixture.whenStable();
     const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
 
-    expect(text).toContain('7');
+    // The queue card's own value, not any 7 in the strip.
+    const cards = [...(fixture.nativeElement as HTMLElement).querySelectorAll('ft-card')];
+    expect(cards[2].textContent).toContain('7');
     expect(text).toContain('2 in corso · 1 bloccata');
     // The bytes card carries the resource-blocked residue, not a zero.
     expect(text).toContain('da copiare quando si sblocca');
