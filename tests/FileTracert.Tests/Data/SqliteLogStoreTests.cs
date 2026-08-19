@@ -91,6 +91,48 @@ public sealed class SqliteLogStoreTests : IDisposable
         page.Items.Select(e => e.Message).Should().BeEquivalentTo(["scan finished", "boom"]);
     }
 
+    /// <summary>
+    /// C28: the search text is a literal, not a pattern. '%' and '_' are LIKE wildcards, and a
+    /// user hunting for "100%" or "file_name" would otherwise get whatever happened to match.
+    /// </summary>
+    [Theory]
+    [InlineData("100%", "disk at 100% capacity", "counter reached 100 items")]
+    [InlineData("file_name", "bad file_name rejected", "bad fileXname rejected")]
+    public async Task Query_search_treats_LIKE_wildcards_as_literals(string search, string hit, string miss)
+    {
+        var t0 = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        await _store.WriteBatchAsync(
+            [Record(2, hit, t0), Record(2, miss, t0.AddSeconds(1))],
+            CancellationToken.None);
+
+        var page = await _store.QueryAsync(
+            new LogQuery(Skip: 0, Take: 50, Search: search),
+            CancellationToken.None);
+
+        page.TotalCount.Should().Be(1);
+        page.Items.Single().Message.Should().Be(hit);
+    }
+
+    /// <summary>The escape character itself must not go through raw either.</summary>
+    [Fact]
+    public async Task Query_search_matches_a_literal_backslash()
+    {
+        var t0 = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        await _store.WriteBatchAsync(
+            [
+                Record(2, @"copying C:\Temp\a.jpg", t0),
+                Record(2, "copying C:/Temp/a.jpg", t0.AddSeconds(1)),
+            ],
+            CancellationToken.None);
+
+        var page = await _store.QueryAsync(
+            new LogQuery(Skip: 0, Take: 50, Search: @"C:\Temp"),
+            CancellationToken.None);
+
+        page.TotalCount.Should().Be(1);
+        page.Items.Single().Message.Should().Be(@"copying C:\Temp\a.jpg");
+    }
+
     [Fact]
     public async Task Writes_are_visible_to_a_separate_store_instance_on_the_same_file()
     {

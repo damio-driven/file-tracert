@@ -183,8 +183,11 @@ public sealed class SqliteLogStore : ILogStore
 
         if (!string.IsNullOrWhiteSpace(query.Search))
         {
-            clauses.Add("(Message LIKE $search OR Exception LIKE $search)");
-            parameters.Add(("$search", $"%{query.Search}%"));
+            // Contains match, on the same terms as the Category filter above: what the user
+            // typed is a literal, so '%' and '_' are escaped — searching for "100%" or
+            // "file_name" must not turn into a wildcard that matches anything.
+            clauses.Add(@"(Message LIKE $search ESCAPE '\' OR Exception LIKE $search ESCAPE '\')");
+            parameters.Add(("$search", $"%{EscapeLike(query.Search)}%"));
         }
 
         if (query.FromUtc is { } from)
