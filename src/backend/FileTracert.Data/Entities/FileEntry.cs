@@ -38,7 +38,37 @@ public class FileEntry : IAuditable
     /// <summary>Full hash (lazy).</summary>
     public string? Hash { get; set; }
 
+    /// <summary>
+    /// The row is part of the catalog the user asked for. Derived, and kept in step with the three
+    /// cause flags below by every writer: <c>IsIncluded == !(ExcludedByType || ExcludedByRoot ||
+    /// ExcludedByScan)</c>. It stays a column of its own because it is what the Catalog, the search
+    /// index and the covering indexes read — one boolean instead of three ORed at every seek.
+    /// </summary>
     public bool IsIncluded { get; set; }
+
+    /// <summary>
+    /// Excluded because the extension is outside the allow-list. Undone by <c>FilterReconciler</c>
+    /// the moment the filter widens — no scan needed, the extension is right there on the row.
+    /// </summary>
+    public bool ExcludedByType { get; set; }
+
+    /// <summary>
+    /// Excluded because no ACTIVE watched root governs it: the root was switched off or removed.
+    /// Undone by <c>FilterReconciler</c> when the root comes back — again with no scan, because
+    /// "is this root active" is a fact of the settings, not of the disk.
+    /// </summary>
+    public bool ExcludedByRoot { get; set; }
+
+    /// <summary>
+    /// Excluded because the scan itself stepped over it: its attributes (Hidden/System), an
+    /// excluded segment in its path, or a folder above it that failed one of those rules.
+    ///
+    /// <para>This is the cause reconciliation must NOT undo, and the reason the causes are
+    /// persisted at all (step 11h). Nothing in Setup can know whether that folder is still hidden;
+    /// only a scan can, and the merge clears the flag when it sees the file again.</para>
+    /// </summary>
+    public bool ExcludedByScan { get; set; }
+
     public bool IsPresent { get; set; }
     public DateTime LastIndexedUtc { get; set; }
 

@@ -3,6 +3,7 @@ using System;
 using FileTracert.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -10,9 +11,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace FileTracert.Data.Migrations
 {
     [DbContext(typeof(FileTracertDbContext))]
-    partial class FileTracertDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260819181917_AddFileExclusionCauses")]
+    partial class AddFileExclusionCauses
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.8");
