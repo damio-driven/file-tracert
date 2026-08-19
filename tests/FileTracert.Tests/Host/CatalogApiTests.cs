@@ -169,6 +169,12 @@ public sealed class CatalogApiTests
         {
             DisableVolumeSync = true,
             DisableScan = true,
+            // The seed below parks a LIVE Pending job, because the overlay it carries is only
+            // valid while the job exists. With the real queue worker running, that job is
+            // runnable: it executes against a volume that exists only in this database, fails,
+            // and clears the very overlay this test is about — a lost race the machine wins
+            // whenever it is busy. The subject here is the catalog projection, not the queue.
+            DisableQueue = true,
             Seed = async (db, ct) =>
             {
                 var vol = new Volume { VolumeGuid = $@"\\?\Volume{{{Guid.NewGuid()}}}\", Label = "Disk4", FileSystem = "NTFS", Kind = VolumeKind.Fixed, IsCatalogable = true, IsOnline = true };
