@@ -150,6 +150,7 @@ di ogni assert fallito (con i path concreti) e dalle note del run.
 | `intra-collision-blocked` | qualsiasi | Move intra-volume su destinazione occupata: `Blocked(NameCollision)` riattivabile, mai `Failed`, nessun file toccato. |
 | `search-date-filter` | qualsiasi | Bound data della ricerca: `from` a mezzanotte tiene il giorno, `to` a mezzanotte lo esclude; i timestamp tornano UTC. |
 | `rescan-preserves-overlay` | qualsiasi | Seconda scansione completa: `Files.Id`/`Directories.Id` invariati, overlay `Pending*` intatto, file sparito marcato `IsPresent=false` (mai cancellato), FTS aggiornata, job ancora eseguibile sulla riga ri-scansionata. **È l'unico scenario che esegue una scansione vera del volume: il più lento.** |
+| `exclusion-vs-absence` | qualsiasi | Perimetro ristretto fra due scansioni: la riga sotto la cartella resa Hidden esce `IsIncluded=false` con `IsPresent` **intatto**, il file davvero cancellato esce `IsPresent=false`, la cartella nascosta resta presente; poi il ritorno dentro il perimetro — un solo scan dopo aver tolto Hidden, e lo switch del watched root **senza alcuna scansione**. Esegue scansioni vere del proprio sottoalbero. |
 | `index-update-fail-once` | cross | Upsert FTS fallisce una volta durante il completamento: il commit atomico fa retry, il job chiude `Completed`, spazio decrementato una sola volta. |
 | `phantom-reservation-rebuild` | cross | Riserva ledger orfana su job terminale (crash footprint): riconciliata al rebuild di startup, la feasibility torna corretta. |
 | `insufficient-space` | cross | Job più grande di quanto il drive abbia **davvero**: `Blocked(InsufficientSpace)`, **non** `Failed`, niente copiato. |
@@ -210,7 +211,7 @@ interromperlo: lo scenario riporta **SKIP** con la spiegazione e il rimedio (alz
   (giusto per il prodotto, minuti per volume qui). L'harness indicizza solo il proprio
   sottoalbero, passando comunque dal port di enumerazione e dal filtro reali. Dallo step 9a
   la scansione **fa merge** invece di troncare, quindi ri-indicizzare non è più distruttivo:
-  lo scenario che deve provare la scansione vera (`rescan-preserves-overlay`) la esegue
+  gli scenari che devono provare la scansione vera (`rescan-preserves-overlay`, `exclusion-vs-absence`) la eseguono
   esplicitamente, su un watched root limitato alla propria area di fixture.
 - Lo scenario `offline-simulated` marca il volume offline **nel catalogo** mentre resta
   fisicamente montato: verifica il *gate logico* della coda. Il comportamento hardware vero

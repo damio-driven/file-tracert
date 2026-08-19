@@ -24,6 +24,7 @@ public static class ScenarioCatalog
         new ProjectionOverlayScenario(),
         new JobDependenciesScenario(),
         new RescanPreservesOverlayScenario(),
+        new ExclusionVsAbsenceScenario(),
         new IndexUpdateFailOnceScenario(),
         new PhantomReservationScenario(),
         new InsufficientSpaceScenario(),
