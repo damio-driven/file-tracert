@@ -583,15 +583,21 @@ public sealed class QueueService : IQueueService
     {
         var total = await _db.OperationJobs.CountAsync(ct);
 
+        // E1 — the items are NOT loaded. The list needs exactly one thing out of them, the source
+        // path it shows in the row, and `.Include(j => j.Items)` bought that with every item of
+        // every job on the page: a cross-volume MoveFolder of 100 000 files materialised 100 000
+        // entities so the screen could print one path. The volumes stay included — they are one
+        // row each and the DTO shows their labels.
         var jobs = await _db.OperationJobs
             .Include(j => j.SourceVolume)
             .Include(j => j.TargetVolume)
-            .Include(j => j.Items)
             .OrderBy(j => j.SequenceOrder)
             .Skip(skip)
             .Take(take)
             .AsNoTracking()
             .ToListAsync(ct);
+
+        var sourcePaths = await FirstSourcePathsAsync([.. jobs.Select(j => j.Id)], ct);
 
         var dtos = new List<OperationJobDto>(jobs.Count);
         foreach (var job in jobs)
@@ -609,10 +615,38 @@ public sealed class QueueService : IQueueService
                 // number than the one that parked the job.
                 feasibility = (await _spaceCheck.EvaluateHardAsync(job, ct)).Feasibility;
             }
-            dtos.Add(MapToDto(job, [.. job.Items], feasibility));
+            dtos.Add(MapToDto(job, sourcePaths.GetValueOrDefault(job.Id), feasibility));
         }
 
         return new PagedResult<OperationJobDto>(dtos, total, skip, take);
+    }
+
+    /// <summary>
+    /// The source path each of these jobs shows in the queue row: the one belonging to its FIRST
+    /// item, which is what <c>items.FirstOrDefault()</c> returned when the whole collection was
+    /// loaded. "First" is pinned to the lowest item id — the insertion order — instead of being
+    /// left to whatever order the database happened to return, so a job's row cannot start
+    /// showing a different one of its files after an unrelated change of plan (E1).
+    ///
+    /// Two aggregate round trips for the whole page rather than one per job, and at most one row
+    /// materialised per job either way: the first picks the minimum id per job (an aggregate over
+    /// the <c>JobId</c> index, no rows returned), the second reads the paths of exactly those ids.
+    /// </summary>
+    private async Task<Dictionary<int, string>> FirstSourcePathsAsync(
+        IReadOnlyList<int> jobIds, CancellationToken ct)
+    {
+        if (jobIds.Count == 0) return [];
+
+        var firstItemIds = await _db.OperationJobItems.AsNoTracking()
+            .Where(i => jobIds.Contains(i.JobId))
+            .GroupBy(i => i.JobId)
+            .Select(g => g.Min(i => i.Id))
+            .ToListAsync(ct);
+
+        return await _db.OperationJobItems.AsNoTracking()
+            .Where(i => firstItemIds.Contains(i.Id))
+            .Select(i => new { i.JobId, i.SourceRelativePath })
+            .ToDictionaryAsync(i => i.JobId, i => i.SourceRelativePath, ct);
     }
 
     // ── private: job building ─────────────────────────────────────────────────
@@ -1139,7 +1173,19 @@ public sealed class QueueService : IQueueService
 
     // ── private: mapping ───────────────────────────────────────────────────────
 
+    /// <summary>
+    /// For a caller that already holds the job's items — the enqueue and the retry, which have
+    /// just written them. The only thing the DTO wants out of them is the first source path.
+    /// </summary>
     private static OperationJobDto MapToDto(OperationJob job, List<OperationJobItem> items,
+        FeasibilityResult? feasibility) =>
+        MapToDto(job, items.OrderBy(i => i.Id).FirstOrDefault()?.SourceRelativePath, feasibility);
+
+    /// <summary>
+    /// For a caller that read the source path without loading the items — the list (E1), where
+    /// loading them would mean one entity per file of every job on the page.
+    /// </summary>
+    private static OperationJobDto MapToDto(OperationJob job, string? sourcePath,
         FeasibilityResult? feasibility)
     {
         return new OperationJobDto
@@ -1152,7 +1198,7 @@ public sealed class QueueService : IQueueService
             SourceVolumeLabel = job.SourceVolume?.Label,
             TargetVolumeId = job.TargetVolumeId,
             TargetVolumeLabel = job.TargetVolume?.Label,
-            SourcePath = items.FirstOrDefault()?.SourceRelativePath,
+            SourcePath = sourcePath,
             TargetPath = job.TargetRelativePath,
             IsIntraVolume = job.IsIntraVolume,
             TotalBytes = job.TotalBytes,
