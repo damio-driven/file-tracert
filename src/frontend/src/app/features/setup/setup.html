@@ -11,10 +11,10 @@
   @if (volume(); as v) {
     @if (store.lastReconcile(); as r) {
       <div class="ft-note" [class.warn]="r.needsScan" role="status">
-        Filtro applicato all'indice: {{ r.includedCount.toLocaleString('it-IT') }} inclusi ·
+        Indice riallineato: {{ r.includedCount.toLocaleString('it-IT') }} file inclusi ·
         {{ r.excludedCount.toLocaleString('it-IT') }} esclusi.
         @if (r.needsScan) {
-          <b>Servono nuovi tipi: avvia una scansione per acquisirli.</b>
+          <b>Avvia una scansione per acquisire i file non ancora indicizzati.</b>
         }
       </div>
     }

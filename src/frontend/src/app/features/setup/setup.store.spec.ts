@@ -68,4 +68,21 @@ describe('SetupStore', () => {
 
     expect(store.lastReconcile()?.needsScan).toBe(true);
   });
+
+  it('surfaces the reconcile outcome of switching a root back on', async () => {
+    const store = configure({
+      updateRoot: () => of({
+        root: fotoRoot,
+        reconcile: { includedCount: 12, excludedCount: 3, needsScan: true },
+      }),
+    });
+    store.init(1);
+
+    await store.toggleRoot(7, true);
+
+    // Switching a folder on re-includes its rows with no rescan, and leaves behind whatever
+    // was never indexed while it was off — both facts belong on screen.
+    expect(store.lastReconcile()?.includedCount).toBe(12);
+    expect(store.lastReconcile()?.needsScan).toBe(true);
+  });
 });

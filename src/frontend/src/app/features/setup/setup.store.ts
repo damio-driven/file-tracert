@@ -94,7 +94,15 @@ export const SetupStore = signalStore(
         patchState(store, { busy: true, error: null });
         try {
           const res = await firstValueFrom(api.updateRoot(id, { isActive, filterOverride: null }));
-          patchState(store, (s) => ({ roots: s.roots.map((r) => (r.id === id ? res.root : r)), busy: false }));
+          patchState(store, (s) => ({
+            roots: s.roots.map((r) => (r.id === id ? res.root : r)),
+            // Switching a folder off or on moves the index too (rows excluded, or included
+            // again with no rescan), and switching one back on leaves behind whatever was
+            // never indexed while it was off. Dropping this outcome asked the user to take
+            // that on faith.
+            lastReconcile: res.reconcile,
+            busy: false,
+          }));
         } catch (e) {
           fail(e);
         }
