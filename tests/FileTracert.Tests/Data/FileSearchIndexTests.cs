@@ -1,4 +1,4 @@
-using FileTracert.Contracts.Enums;
+﻿using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Search;
 using FileTracert.Data;
 using FileTracert.Data.Entities;
@@ -308,5 +308,28 @@ public sealed class FileSearchIndexTests
             CancellationToken.None);
 
         included.TotalCount.Should().Be(1);
+    }
+
+    /// <summary>
+    /// K12: the emptiness probe the startup backfill asks. It used to be a cast to
+    /// <c>SqliteConnection</c> and a hand-written statement in <c>Host</c>; now the answer comes
+    /// from the implementation that owns the FTS5 table, and this pins the only two answers that
+    /// matter — empty before anything is synced, not empty after one file is.
+    /// </summary>
+    [Fact]
+    public async Task IsEmpty_is_true_only_until_the_first_entry_exists()
+    {
+        using var setup = await SetupAsync();
+        var (ctx, fts) = (setup.Ctx, setup.Fts);
+
+        (await fts.IsEmptyAsync(CancellationToken.None)).Should().BeTrue(
+            "a freshly created FTS5 table holds nothing");
+
+        var (volId, dirId) = await SeedVolumeAndDirAsync(ctx);
+        await AddFileAsync(ctx, volId, dirId, "vacation.jpg", "jpg");
+        await fts.SyncVolumeFromDbAsync(volId, CancellationToken.None);
+
+        (await fts.IsEmptyAsync(CancellationToken.None)).Should().BeFalse(
+            "one indexed file is enough to make the backfill unnecessary");
     }
 }

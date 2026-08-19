@@ -5,7 +5,6 @@ using FileTracert.Contracts.Search;
 using FileTracert.Data;
 using FileTracert.Data.Entities;
 using FileTracert.Host.Logging;
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
 namespace FileTracert.Host.Infrastructure;
@@ -134,7 +133,11 @@ public sealed class DatabaseInitializer
     /// <summary>
     /// One-time FTS backfill: if the database has indexed files but the FTS5 table is
     /// empty (first startup after the search feature was introduced), rebuild the index.
-    /// Subsequent startups are cheap — the COUNT query returns quickly on a non-empty table.
+    /// Subsequent startups are cheap — the emptiness probe stops at the first row.
+    ///
+    /// <para>K12: both questions are now asked through an abstraction. The probe used to be a
+    /// cast to <c>SqliteConnection</c> and a hand-written statement against an FTS5 virtual
+    /// table, in <c>Host</c> — SQLite leaking straight through the boundary §3 puts around it.</para>
     /// </summary>
     private static async Task BackfillFtsIfNeededAsync(
         IServiceScope scope, FileTracertDbContext db, CancellationToken ct)
@@ -142,21 +145,9 @@ public sealed class DatabaseInitializer
         var hasFiles = await db.Files.AnyAsync(f => f.IsIncluded && f.IsPresent, ct);
         if (!hasFiles) return;
 
-        var conn = (SqliteConnection)db.Database.GetDbConnection();
-        await db.Database.OpenConnectionAsync(ct);
-
-        long ftsCount;
-        await using (var cmd = conn.CreateCommand())
-        {
-            cmd.CommandText = "SELECT EXISTS(SELECT 1 FROM FileSearchIndex)";
-            ftsCount = (long)(await cmd.ExecuteScalarAsync(ct))!;
-        }
-
-        if (ftsCount == 0)
-        {
-            var fts = scope.ServiceProvider.GetRequiredService<IFileSearchIndex>();
+        var fts = scope.ServiceProvider.GetRequiredService<IFileSearchIndex>();
+        if (await fts.IsEmptyAsync(ct))
             await fts.RebuildAsync(ct);
-        }
     }
 
     private static string GenerateToken() => Convert.ToHexString(RandomNumberGenerator.GetBytes(32));

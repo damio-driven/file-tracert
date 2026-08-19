@@ -93,6 +93,22 @@ public sealed class FileSearchIndex : IFileSearchIndex
     }
 
     /// <summary>
+    /// EXISTS, not COUNT: the answer is "is there at least one row", and on a populated index
+    /// COUNT would walk the whole table to say what the first hit already says. Run through the
+    /// raw connection because <c>FileSearchIndex</c> is an FTS5 virtual table with no entity
+    /// behind it — which is precisely why this belongs on this side of the boundary (K12).
+    /// </summary>
+    public async Task<bool> IsEmptyAsync(CancellationToken ct)
+    {
+        var conn = _db.Database.GetDbConnection();
+        await _db.Database.OpenConnectionAsync(ct);
+
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT EXISTS(SELECT 1 FROM FileSearchIndex)";
+        return (long)(await cmd.ExecuteScalarAsync(ct))! == 0;
+    }
+
+    /// <summary>
     /// Ids are inlined rather than parameterised: they are <see cref="int"/> values (nothing to
     /// escape) and SQLite has no array-valued parameter, so a parameter per id would hit the
     /// statement's variable ceiling on a full batch. Chunked to keep each statement small.

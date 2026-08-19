@@ -18,6 +18,19 @@ public interface IFileSearchIndex
     Task RebuildAsync(CancellationToken ct);
 
     /// <summary>
+    /// True when the index holds no entry at all — the one question the startup backfill has to
+    /// ask before deciding whether <see cref="RebuildAsync"/> is worth running.
+    ///
+    /// <para>K12: it exists so the caller does not have to. The backfill used to cast the
+    /// <c>DbConnection</c> to <c>SqliteConnection</c> and run its own
+    /// <c>SELECT EXISTS(SELECT 1 FROM FileSearchIndex)</c> from <c>Host</c> — the table name, the
+    /// fact that "empty" is cheap to answer with EXISTS rather than COUNT, and the provider
+    /// itself, all leaking through the boundary §3 draws around SQLite. The implementation keeps
+    /// the FTS5 specifics; the caller keeps the decision.</para>
+    /// </summary>
+    Task<bool> IsEmptyAsync(CancellationToken ct);
+
+    /// <summary>
     /// Re-syncs the entries of exactly these files: each is removed and re-added from its
     /// current row, so calling it twice is a no-op rather than a duplicate. This is how a scan
     /// keeps the index in step batch by batch, instead of rebuilding the whole volume once the

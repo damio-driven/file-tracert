@@ -255,6 +255,7 @@ public sealed class JobCompletionAtomicityTests : IDisposable
         public Task ClearVolumeAsync(int volumeId, CancellationToken ct) => Task.CompletedTask;
         public Task SyncVolumeFromDbAsync(int volumeId, CancellationToken ct) => Task.CompletedTask;
         public Task RebuildAsync(CancellationToken ct) => Task.CompletedTask;
+        public Task<bool> IsEmptyAsync(CancellationToken ct) => Task.FromResult(true);
         public Task SyncFilesAsync(IReadOnlyCollection<int> fileIds, CancellationToken ct) => Task.CompletedTask;
         public Task SyncDirectoriesAsync(IReadOnlyCollection<int> directoryIds, CancellationToken ct) => Task.CompletedTask;
         public Task PruneVolumeAsync(int volumeId, CancellationToken ct) => Task.CompletedTask;
@@ -281,6 +282,7 @@ public sealed class JobCompletionAtomicityTests : IDisposable
         public Task ClearVolumeAsync(int volumeId, CancellationToken ct) => Task.CompletedTask;
         public Task SyncVolumeFromDbAsync(int volumeId, CancellationToken ct) => Task.CompletedTask;
         public Task RebuildAsync(CancellationToken ct) => Task.CompletedTask;
+        public Task<bool> IsEmptyAsync(CancellationToken ct) => Task.FromResult(true);
         public Task SyncFilesAsync(IReadOnlyCollection<int> fileIds, CancellationToken ct) => Task.CompletedTask;
         public Task SyncDirectoriesAsync(IReadOnlyCollection<int> directoryIds, CancellationToken ct) => Task.CompletedTask;
         public Task PruneVolumeAsync(int volumeId, CancellationToken ct) => Task.CompletedTask;
