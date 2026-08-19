@@ -199,10 +199,6 @@
 .ft-notif-skel {
   height: 56px;
   margin: 11px 15px;
-  border-radius: var(--r-ctl);
-  background: linear-gradient(90deg, var(--panel-2), var(--panel-3), var(--panel-2));
-  background-size: 200% 100%;
-  animation: ft-notif-shimmer 1.3s linear infinite;
 }
 
 @keyframes ft-notif-in {
@@ -216,12 +212,6 @@
   }
 }
 
-@keyframes ft-notif-shimmer {
-  from { background-position: 200% 0; }
-  to { background-position: -200% 0; }
-}
-
 @media (prefers-reduced-motion: reduce) {
   .ft-notif-panel { animation: none; }
-  .ft-notif-skel { animation: none; }
 }

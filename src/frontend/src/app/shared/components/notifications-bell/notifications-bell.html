@@ -40,7 +40,7 @@
     <div class="ft-notif-body">
       @if (loading()) {
         @for (s of [1, 2, 3]; track s) {
-          <div class="ft-notif-skel"></div>
+          <div class="ft-skel ft-notif-skel"></div>
         }
       } @else if (items().length === 0) {
         <div class="ft-notif-empty">

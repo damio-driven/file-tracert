@@ -59,13 +59,58 @@ export class OperationPicker implements OnInit {
   protected readonly waitingCount = signal(0);
   protected readonly error = signal<string | null>(null);
 
-  ngOnInit(): void {
-    void this.volumes.loadList();
-    const online = this.volumes.catalogable().find(v => v.isOnline);
-    if (online) {
-      this.targetVolumeId = online.id;
-      void this.loadChildren(null);
+  /** Cold open: nothing can be chosen until the volume list is here. */
+  protected readonly volumesLoading = signal(false);
+  protected readonly volumesError = signal<string | null>(null);
+
+  async ngOnInit(): Promise<void> {
+    await this.loadVolumes();
+  }
+
+  /**
+   * C27 — this used to fire `loadList()` and read `catalogable()` on the very next line, so on
+   * a cold store the dialog opened with an empty select, no folder tree and a disabled button
+   * that explained nothing. It now waits for the list, and the dialog says which of the three
+   * situations it is in: loading, failed (with a way to try again), or no volume to move to.
+   */
+  protected async loadVolumes(): Promise<void> {
+    // A warm store already holds the answer. Showing a loading state over data we have would be
+    // a flicker that means nothing, so pick the default at once and refresh underneath.
+    const warm = this.volumes.volumes().length > 0;
+    this.volumesError.set(null);
+    if (warm) {
+      this.selectDefaultVolume();
+    } else {
+      this.volumesLoading.set(true);
     }
+
+    try {
+      await this.volumes.loadList();
+    } finally {
+      this.volumesLoading.set(false);
+    }
+
+    // The store never rejects: it swallows the failure into its own `error` signal, which
+    // `loadList` clears at the start. This is the only load the dialog has in flight, so the
+    // value read here belongs to it.
+    this.volumesError.set(this.volumes.error());
+    this.selectDefaultVolume();
+  }
+
+  /** First online catalogable volume, once. A choice already made by the user is never undone. */
+  private selectDefaultVolume(): void {
+    if (this.targetVolumeId !== null) return;
+    const online = this.volumes.catalogable().find(v => v.isOnline);
+    if (!online) return;
+    this.targetVolumeId = online.id;
+    void this.loadChildren(null);
+  }
+
+  /** True when the list came back and simply has nothing to offer as a destination. */
+  protected get noDestinations(): boolean {
+    return !this.volumesLoading()
+      && this.volumesError() === null
+      && this.volumes.catalogable().length === 0;
   }
 
   protected get totalBytes(): number {

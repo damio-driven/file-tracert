@@ -1,14 +1,14 @@
 import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Router } from '@angular/router';
-import { of, throwError } from 'rxjs';
+import { Subject, of, throwError } from 'rxjs';
 import { describe, expect, it, vi } from 'vitest';
 
 import { CatalogApi } from '../../../core/api/catalog-api.service';
 import { QueueApi } from '../../../core/api/queue-api.service';
 import { VolumesApi } from '../../../core/api/volumes-api.service';
 import {
-  CatalogChildrenDto, CatalogDirDto, CreateJobRequest, FeasibilityResult, SelectedItem,
+  CatalogChildrenDto, CatalogDirDto, CreateJobRequest, FeasibilityResult, SelectedItem, VolumeDto,
 } from '../../../core/models/catalog.models';
 import { OperationPicker } from './operation-picker';
 
@@ -41,10 +41,11 @@ function childrenResult(directories: CatalogDirDto[]): CatalogChildrenDto {
   };
 }
 
-function setup() {
+function setup(volumes: VolumeDto[] = []) {
   const enqueueBatch = vi.fn((reqs: CreateJobRequest[]) =>
     of(reqs.map((_, i) => ({ id: i + 1, blockReason: 'None' })) as never));
   const previewBatch = vi.fn((_reqs: CreateJobRequest[]) => of(feasibility));
+  const volumeList = vi.fn(() => of(volumes));
   const children = vi.fn((_volumeId: number, dirId: number | null) => {
     if (dirId === null) return of(childrenResult([dir(10, 'Documenti'), dir(11, 'Archivio')]));
     if (dirId === 10) return of(childrenResult([dir(20, 'Foto')]));
@@ -56,7 +57,7 @@ function setup() {
       provideZonelessChangeDetection(),
       { provide: QueueApi, useValue: { enqueueBatch, previewBatch } },
       { provide: CatalogApi, useValue: { children } },
-      { provide: VolumesApi, useValue: { list: () => of([]) } },
+      { provide: VolumesApi, useValue: { list: volumeList } },
       { provide: Router, useValue: { navigate: () => Promise.resolve(true) } },
     ],
   });
@@ -83,10 +84,15 @@ function setup() {
     confirmNewFolder(): void;
     enqueue(): Promise<void>;
     runPreview(): Promise<void>;
+    ngOnInit(): Promise<void>;
+    loadVolumes(): Promise<void>;
+    volumesLoading: { (): boolean };
+    volumesError: { (): string | null };
+    noDestinations: boolean;
   };
   cmp.targetVolumeId = 1;
 
-  return { enqueueBatch, previewBatch, children, cmp, fixture };
+  return { enqueueBatch, previewBatch, children, volumeList, cmp, fixture };
 }
 
 describe('OperationPicker target path', () => {
@@ -277,5 +283,76 @@ describe('OperationPicker target path', () => {
 
     expect(cmp.error()).toBeNull();
     expect(cmp.dirChildren()).toEqual([dir(10, 'Documenti'), dir(11, 'Archivio')]);
+  });
+});
+
+function volume(id: number, label: string, isOnline = true): VolumeDto {
+  return {
+    id, volumeGuid: '\\\\?\\Volume{' + id + '}\\', label, currentLetter: 'D:', fileSystem: 'NTFS',
+    isRemovable: false, isOnline, lastSeenUtc: new Date().toISOString(),
+    capacityBytes: 1000, freeBytes: 900, fileCount: 0, lastFullScanUtc: null,
+    dataIsLive: isOnline, isStale: !isOnline, kind: 'Fixed', isCatalogable: true,
+  };
+}
+
+// C27 — the dialog used to fire `loadList()` and read `catalogable()` on the next line, so a
+// cold store opened it empty: no volume, no tree, a dead "Accoda" button and no explanation.
+describe('OperationPicker cold open', () => {
+  it('waits for the volume list before deciding what to preselect', async () => {
+    const listed = new Subject<VolumeDto[]>();
+    const { cmp, children, volumeList } = setup();
+    cmp.targetVolumeId = null;
+    volumeList.mockImplementationOnce(() => listed.asObservable());
+
+    const init = cmp.ngOnInit();
+    expect(cmp.volumesLoading()).toBe(true);
+    expect(cmp.targetVolumeId).toBeNull();
+
+    listed.next([volume(4, 'Archivio')]);
+    listed.complete();
+    await init;
+
+    expect(cmp.volumesLoading()).toBe(false);
+    expect(cmp.targetVolumeId).toBe(4);
+    // ...and the folder tree of that volume was actually asked for.
+    expect(children).toHaveBeenCalledWith(4, null);
+  });
+
+  it('says why it is empty when the volume list cannot be read, and can try again', async () => {
+    const { cmp, volumeList } = setup();
+    cmp.targetVolumeId = null;
+    volumeList.mockImplementationOnce(() => throwError(() => new Error('Servizio non raggiungibile')));
+
+    await cmp.ngOnInit();
+
+    expect(cmp.volumesError()).toBe('Servizio non raggiungibile');
+    expect(cmp.canSubmit).toBe(false);
+
+    volumeList.mockImplementationOnce(() => of([volume(7, 'Foto')]));
+    await cmp.loadVolumes();
+
+    expect(cmp.volumesError()).toBeNull();
+    expect(cmp.targetVolumeId).toBe(7);
+  });
+
+  it('distinguishes "no destination exists" from "still loading"', async () => {
+    const { cmp } = setup();
+    cmp.targetVolumeId = null;
+
+    await cmp.ngOnInit();
+
+    expect(cmp.volumesLoading()).toBe(false);
+    expect(cmp.volumesError()).toBeNull();
+    expect(cmp.noDestinations).toBe(true);
+  });
+
+  it('does not flash a loading state over a list it already has', async () => {
+    const { cmp } = setup([volume(4, 'Archivio')]);
+    cmp.targetVolumeId = null;
+    await cmp.ngOnInit();          // warms the root-scoped store
+
+    const second = cmp.loadVolumes();
+    expect(cmp.volumesLoading()).toBe(false);
+    await second;
   });
 });

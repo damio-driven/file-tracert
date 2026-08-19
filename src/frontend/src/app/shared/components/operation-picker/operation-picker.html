@@ -61,16 +61,37 @@
         <!-- Target volume -->
         <div class="picker-field">
           <label class="picker-label" for="picker-vol">Volume destinazione</label>
-          <select id="picker-vol" class="picker-select" [(ngModel)]="targetVolumeId" (ngModelChange)="onVolumeChange()">
-            <option [ngValue]="null" disabled>Scegli un volume…</option>
-            @for (v of volumes.catalogable(); track v.id) {
-              <option [ngValue]="v.id">
-                {{ v.label ?? '(senza etichetta)' }}
-                {{ v.currentLetter ? '(' + v.currentLetter + ')' : '' }}
-                {{ v.isOnline ? '' : '— offline' }}
-              </option>
-            }
-          </select>
+
+          @if (volumesLoading()) {
+            <div class="picker-loading" role="status">
+              <span class="ft-skel picker-skeleton" aria-hidden="true"></span>
+              <span class="picker-hint txt-faint">Lettura dei volumi…</span>
+            </div>
+          } @else if (volumesError(); as failure) {
+            <div class="picker-error">
+              <span class="picker-error-icon" aria-hidden="true">⚠</span>
+              <span class="picker-error-text">
+                Impossibile leggere l'elenco dei volumi: <span class="mono">{{ failure }}</span>
+              </span>
+              <button type="button" class="ft-btn ft-btn--ghost" (click)="loadVolumes()">Riprova</button>
+            </div>
+          } @else if (noDestinations) {
+            <div class="picker-notice">
+              Nessun volume catalogabile: aggiungine uno dalla schermata Volumi per poter
+              spostare qui i file.
+            </div>
+          } @else {
+            <select id="picker-vol" class="picker-select" [(ngModel)]="targetVolumeId" (ngModelChange)="onVolumeChange()">
+              <option [ngValue]="null" disabled>Scegli un volume…</option>
+              @for (v of volumes.catalogable(); track v.id) {
+                <option [ngValue]="v.id">
+                  {{ v.label ?? '(senza etichetta)' }}
+                  {{ v.currentLetter ? '(' + v.currentLetter + ')' : '' }}
+                  {{ v.isOnline ? '' : '— offline' }}
+                </option>
+              }
+            </select>
+          }
         </div>
 
         <!-- Target folder -->
@@ -128,6 +149,8 @@
                 </div>
               } @else if (loadingDirs()) {
                 <div class="folder-empty txt-faint">Caricamento…</div>
+              } @else if (targetVolumeId === null) {
+                <div class="folder-empty txt-faint">Scegli prima un volume di destinazione.</div>
               } @else if (dirChildren().length === 0) {
                 <div class="folder-empty txt-faint">Cartella vuota</div>
               } @else {
@@ -168,7 +191,12 @@
                 <button type="button" class="ft-btn ft-btn--ghost" (click)="cancelNewFolder()">Annulla</button>
               </div>
             } @else {
-              <button type="button" class="new-folder-toggle" (click)="openNewFolderInput()">
+              <button
+                type="button"
+                class="new-folder-toggle"
+                [disabled]="targetVolumeId === null"
+                (click)="openNewFolderInput()"
+              >
                 + Nuova cartella
               </button>
             }
