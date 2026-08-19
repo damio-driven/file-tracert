@@ -1,4 +1,5 @@
-﻿using FileTracert.Business.Projection;
+﻿using FileTracert.Business.Filtering;
+using FileTracert.Business.Projection;
 using FileTracert.Business.Scanning;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Search;
@@ -19,17 +20,20 @@ public sealed class IndexUpdater
     private readonly FileTracertDbContext _db;
     private readonly IFileSearchIndex _fts;
     private readonly DirectoryResolver _directories;
+    private readonly RootFilterResolver _filters;
     private readonly ILogger<IndexUpdater> _logger;
 
     public IndexUpdater(
         FileTracertDbContext db,
         IFileSearchIndex fts,
         DirectoryResolver directories,
+        RootFilterResolver filters,
         ILogger<IndexUpdater> logger)
     {
         _db = db;
         _fts = fts;
         _directories = directories;
+        _filters = filters;
         _logger = logger;
     }
 
@@ -61,6 +65,18 @@ public sealed class IndexUpdater
         await FindOrCreateDirAsync(job.TargetVolumeId.Value, job.TargetRelativePath, ct);
     }
 
+    /// <summary>
+    /// C19. A rename used to write the new <c>Name</c> and stop there, so <c>Extension</c> and
+    /// <c>Category</c> kept describing the OLD name until the next full re-scan — and everything
+    /// that filters on them (the search facets, <c>FilterReconciler</c>) worked on dead values:
+    /// <c>foto.jpg</c> renamed to <c>foto.txt</c> stayed an Image with extension <c>jpg</c>.
+    ///
+    /// Both are re-derived with the SAME helpers the scan pipeline uses (§9, no second rule
+    /// written by hand here), and inclusion is reconciled the way §4 requires: a name that
+    /// leaves the allow-list flips <c>IsIncluded</c> to false — never a delete — and one that
+    /// comes back in is re-included. The search index follows in the same direction, because an
+    /// excluded row that stayed in FTS would still be a hit.
+    /// </summary>
     private async Task RenameFileIndexAsync(OperationJob job, CancellationToken ct)
     {
         var item = job.Items.FirstOrDefault();
@@ -69,9 +85,24 @@ public sealed class IndexUpdater
         var file = await _db.Files.FirstOrDefaultAsync(f => f.Id == item.FileId.Value, ct);
         if (file is null) return;
 
-        file.Name = ScanPath.Name(item.TargetRelativePath);
+        var newName = ScanPath.Name(item.TargetRelativePath);
+        var extension = FileFilter.GetExtension(newName);
+        var categories = await _db.ExtensionCategories.AsNoTracking()
+            .ToDictionaryAsync(e => e.Extension, e => e.Category, ct);
+        var filter = await _filters.ResolveForPathAsync(file.VolumeId, item.TargetRelativePath, ct);
+
+        file.Name = newName;
+        file.Extension = extension;
+        file.Category = FileFilter.ResolveCategory(extension, categories);
+        file.IsIncluded = FileFilter.ShouldIncludeFile(
+            item.TargetRelativePath, extension, file.Attributes, filter);
+
         await _db.SaveChangesAsync(ct);
-        await _fts.UpsertAsync(file.Id, file.Name, item.TargetRelativePath, ct);
+
+        if (file.IsIncluded)
+            await _fts.UpsertAsync(file.Id, file.Name, item.TargetRelativePath, ct);
+        else
+            await _fts.RemoveAsync(file.Id, ct);
     }
 
     private async Task RenameFolderIndexAsync(OperationJob job, CancellationToken ct)

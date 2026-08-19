@@ -1,4 +1,5 @@
-﻿using FileTracert.Business.Notifications;
+﻿using FileTracert.Business.Filtering;
+using FileTracert.Business.Notifications;
 using FileTracert.Business.Operations;
 using FileTracert.Business.Projection;
 using FileTracert.Business.Realtime;
@@ -27,6 +28,10 @@ public static class BusinessServiceCollectionExtensions
         // the worker's ScanService writes it, the API reads it → singleton.
         services.AddSingleton<IScanStatusTracker, ScanStatusTracker>();
         services.AddScoped<FilterReconciler>();
+
+        // "Which filter governs this path?" for the single-file decisions outside the scan
+        // pipeline (a rename re-checking its own inclusion, C19).
+        services.AddScoped<RootFilterResolver>();
         services.AddScoped<FolderBrowseService>();
         services.AddScoped<FilterSettingsService>();
         services.AddScoped<WatchedRootsService>();

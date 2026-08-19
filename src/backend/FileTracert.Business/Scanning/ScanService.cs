@@ -245,11 +245,9 @@ public sealed class ScanService
                 _statusTracker.ReportSeen(volume.Id, seen);
             }
 
-            // Find the most specific active root that contains this item.
-            var rootKey = rootKeys
-                .Where(k => ScanPath.IsWithin(item.RelativePath, k))
-                .OrderByDescending(k => k.Length)
-                .FirstOrDefault();
+            // Find the most specific active root that contains this item — the same rule the
+            // single-path resolution uses, spelled once (C19).
+            var rootKey = RootFilterResolver.MostSpecificRoot(rootKeys, item.RelativePath);
             if (rootKey is null)
             {
                 continue;

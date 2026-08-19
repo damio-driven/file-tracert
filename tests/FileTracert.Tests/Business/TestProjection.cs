@@ -1,4 +1,5 @@
-﻿using FileTracert.Business.Operations;
+﻿using FileTracert.Business.Filtering;
+using FileTracert.Business.Operations;
 using FileTracert.Business.Projection;
 using FileTracert.Business.Realtime;
 using FileTracert.Contracts.Operations;
@@ -44,6 +45,10 @@ internal static class TestProjection
         new(publisher ?? new NullRealtimePublisher(), NullLogger<RealtimeEvents>.Instance);
 
     public static IndexUpdater Index(FileTracertDbContext db, IFileSearchIndex? fts = null) =>
-        new(db, fts ?? new FakeFileSearchIndex(), new DirectoryResolver(db),
+        new(db, fts ?? new FakeFileSearchIndex(), new DirectoryResolver(db), Filters(db),
             NullLogger<IndexUpdater>.Instance);
+
+    /// <summary>The real filter resolution — a rename asks it whether the new name is still included.</summary>
+    public static RootFilterResolver Filters(FileTracertDbContext db) =>
+        new(db, NullLogger<RootFilterResolver>.Instance);
 }
