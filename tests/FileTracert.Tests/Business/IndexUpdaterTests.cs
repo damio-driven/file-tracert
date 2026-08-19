@@ -1,4 +1,4 @@
-using FileTracert.Business.Operations;
+﻿using FileTracert.Business.Operations;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Paging;
 using FileTracert.Contracts.Search;
@@ -292,6 +292,97 @@ public sealed class IndexUpdaterTests : IDisposable
         FtsRows().Should().Contain((9, "unrelated.txt", @"Archive\unrelated.txt"));
     }
 
+    /// <summary>
+    /// K1. An intra-volume MoveFolder that lands on the VOLUME ROOT used to write
+    /// <c>ParentId = null</c> on the moved row. Null is not "the root" in this schema: the root is
+    /// a real <c>Directories</c> row with an empty <c>MaterializedPath</c>, which the scan links
+    /// every top-level folder to, and which the Catalog uses as the parent it lists children of.
+    /// A row detached from it is still in the database, still correct on paper, and invisible in
+    /// the tree — the folder the user just moved disappears.
+    ///
+    /// <para>This is the divergence between the two copies of the cascade: the rename copy set the
+    /// leaf NAME and never touched the parent, the move copy re-parented and never touched the
+    /// name. Unified, the top row gets both, and the parent is resolved through
+    /// <c>DirectoryResolver</c> — which answers the volume root with the root ROW.</para>
+    /// </summary>
+    [Fact]
+    public async Task MoveFolder_intra_to_the_volume_root_stays_attached_to_the_root_row()
+    {
+        using (var db = _harness.CreateContext())
+        {
+            SeedVolumes(db);
+            db.Directories.AddRange(
+                Dir(40, SrcVol, string.Empty, string.Empty),   // the volume root row
+                Dir(50, SrcVol, "Docs", "Docs", parentId: 40),
+                Dir(51, SrcVol, "Sub", @"Docs\Sub", parentId: 50));
+            db.Files.Add(File(1, SrcVol, 51, "note.txt", null));
+
+            var job = Job(JobType.MoveFolder, "Sub");
+            job.IsIntraVolume = true;
+            job.TargetVolumeId = SrcVol;
+            job.Items.Add(FolderMarker(@"Docs\Sub", "Sub"));
+            db.OperationJobs.Add(job);
+            db.SaveChanges();
+        }
+
+        await using (var db = _harness.CreateContext())
+        {
+            var job = await db.OperationJobs.Include(j => j.Items).SingleAsync();
+            await TestProjection.Index(db, new FileSearchIndex(db)).UpdateAfterCompletionAsync(job, CancellationToken.None);
+        }
+
+        await using (var probe = _harness.CreateContext())
+        {
+            var moved = await probe.Directories.SingleAsync(d => d.Id == 51);
+            moved.MaterializedPath.Should().Be("Sub");
+            moved.Name.Should().Be("Sub");
+            moved.ParentId.Should().Be(40, "the volume root is a row, not a null");
+        }
+    }
+
+    /// <summary>
+    /// The other half of K1: a folder RENAME still cascades the whole subtree and still writes the
+    /// new leaf name on the top row. The move copy of the cascade did not set <c>Name</c> at all,
+    /// so unifying on it would have left every renamed folder showing its old name in the Catalog
+    /// (which reads <c>Name</c>, not the path).
+    /// </summary>
+    [Fact]
+    public async Task RenameFolder_writes_the_new_name_and_cascades_the_subtree()
+    {
+        using (var db = _harness.CreateContext())
+        {
+            SeedVolumes(db);
+            db.Directories.AddRange(
+                Dir(40, SrcVol, string.Empty, string.Empty),
+                Dir(50, SrcVol, "Docs", "Docs", parentId: 40),
+                Dir(51, SrcVol, "Sub", @"Docs\Sub", parentId: 50));
+
+            var job = Job(JobType.RenameFolder, "Documenti");
+            job.IsIntraVolume = true;
+            job.TargetVolumeId = SrcVol;
+            job.Items.Add(FolderMarker("Docs", "Documenti"));
+            db.OperationJobs.Add(job);
+            db.SaveChanges();
+        }
+
+        await using (var db = _harness.CreateContext())
+        {
+            var job = await db.OperationJobs.Include(j => j.Items).SingleAsync();
+            await TestProjection.Index(db, new FileSearchIndex(db)).UpdateAfterCompletionAsync(job, CancellationToken.None);
+        }
+
+        await using (var probe = _harness.CreateContext())
+        {
+            var top = await probe.Directories.SingleAsync(d => d.Id == 50);
+            top.Name.Should().Be("Documenti");
+            top.MaterializedPath.Should().Be("Documenti");
+            top.ParentId.Should().Be(40, "a rename does not move the folder anywhere");
+
+            (await probe.Directories.SingleAsync(d => d.Id == 51))
+                .MaterializedPath.Should().Be(@"Documenti\Sub");
+        }
+    }
+
     // ── seed helpers ──────────────────────────────────────────────────────────
 
     private static void SeedVolumes(FileTracert.Data.FileTracertDbContext db) =>
@@ -299,9 +390,10 @@ public sealed class IndexUpdaterTests : IDisposable
             new Volume { Id = SrcVol, VolumeGuid = @"\\?\Volume{s}\", FileSystem = "NTFS", IsOnline = true },
             new Volume { Id = TgtVol, VolumeGuid = @"\\?\Volume{t}\", FileSystem = "NTFS", IsOnline = true });
 
-    private static DirectoryNode Dir(int id, int volumeId, string name, string path) => new()
+    private static DirectoryNode Dir(int id, int volumeId, string name, string path, int? parentId = null) => new()
     {
-        Id = id, VolumeId = volumeId, Name = name, MaterializedPath = path, IsMaterialized = true,
+        Id = id, VolumeId = volumeId, ParentId = parentId, Name = name, MaterializedPath = path,
+        IsMaterialized = true,
     };
 
     private static FileEntry File(int id, int volumeId, int dirId, string name, long? frn) => new()

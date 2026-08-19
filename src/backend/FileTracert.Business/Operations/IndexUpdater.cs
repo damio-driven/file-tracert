@@ -120,7 +120,7 @@ public sealed class IndexUpdater
         var item = job.Items.FirstOrDefault();
         if (item is null || job.SourceVolumeId is null) return;
 
-        await CascadeDirRenameAsync(job.SourceVolumeId.Value,
+        await CascadeDirMoveAsync(job.SourceVolumeId.Value,
             item.SourceRelativePath, item.TargetRelativePath, ct);
     }
 
@@ -158,35 +158,8 @@ public sealed class IndexUpdater
         var item = job.Items.FirstOrDefault();
         if (item is null || job.SourceVolumeId is null) return;
 
-        var oldPath = item.SourceRelativePath;
-        var newPath = item.TargetRelativePath;
-
-        // Load all dirs in the subtree.
-        var dirs = await _db.Directories
-            .InSubtree(job.SourceVolumeId.Value, oldPath)
-            .ToListAsync(ct);
-
-        var topDir = dirs.FirstOrDefault(d => ScanPath.SamePath(d.MaterializedPath, oldPath));
-        if (topDir is null) return;
-
-        // Re-parent the top directory.
-        var newParentPath = ScanPath.Parent(newPath);
-        if (string.IsNullOrEmpty(newParentPath))
-        {
-            topDir.ParentId = null;
-        }
-        else
-        {
-            var newParent = await FindOrCreateDirAsync(job.SourceVolumeId.Value, newParentPath, ct);
-            topDir.ParentId = newParent.Id;
-        }
-
-        // Cascade MaterializedPath across the whole subtree.
-        foreach (var d in dirs)
-            d.MaterializedPath = newPath + d.MaterializedPath[oldPath.Length..];
-
-        await _db.SaveChangesAsync(ct);
-        await UpdateFtsForDirsAsync(dirs, ct);
+        await CascadeDirMoveAsync(job.SourceVolumeId.Value,
+            item.SourceRelativePath, item.TargetRelativePath, ct);
     }
 
     private async Task MoveFolderCrossIndexAsync(
@@ -367,8 +340,36 @@ public sealed class IndexUpdater
     private Task<DirectoryNode> FindOrCreateDirAsync(int volumeId, string path, CancellationToken ct) =>
         _directories.FindOrCreateMaterializedAsync(volumeId, path, ct);
 
-    /// <summary>Cascades a directory rename/move across the subtree and updates FTS.</summary>
-    private async Task CascadeDirRenameAsync(int volumeId, string oldPath, string newPath, CancellationToken ct)
+    /// <summary>
+    /// Cascades a folder RENAME or an intra-volume folder MOVE across the whole subtree, and
+    /// re-syncs the search index for it.
+    ///
+    /// <para>K1 — one method, because a rename IS a move whose parent happens not to change. The
+    /// two used to be written out separately and had already drifted apart in three places, each
+    /// half doing something the other forgot:</para>
+    /// <list type="bullet">
+    ///   <item>the rename copy wrote the new leaf <c>Name</c> and never touched <c>ParentId</c>;</item>
+    ///   <item>the move copy re-parented and never wrote <c>Name</c> (harmless only because a move
+    ///     keeps its leaf name — one folder operation that changes both would have been wrong);</item>
+    ///   <item>the move copy gave up when the top row was missing, the rename copy carried on.</item>
+    /// </list>
+    ///
+    /// <para>The top row now gets its new name always, and a new parent when the parent path
+    /// actually changed — resolved through <see cref="DirectoryResolver"/> instead of by hand.
+    /// That last part is the bug the move copy carried: for a destination at the volume root it
+    /// wrote <c>ParentId = null</c>, but null is not "the root" in this schema — the root is a
+    /// real row with an empty <c>MaterializedPath</c>, the one the scan links every top-level
+    /// folder to and the one the Catalog lists children of. A folder moved to the root became
+    /// invisible in the tree while looking perfectly correct in the table.</para>
+    ///
+    /// <para>The missing-top-row branch keeps the rename copy's behaviour (carry on). With a
+    /// consistent catalog the two are indistinguishable: no row matching <paramref name="oldPath"/>
+    /// means the subtree query returned nothing at all, and both spellings do nothing. They only
+    /// differ over descendants orphaned from their root — already a broken catalog — and there,
+    /// rewriting their paths at least leaves them agreeing with the disk, where giving up
+    /// guarantees the Catalog and the search index keep showing a path that no longer exists.</para>
+    /// </summary>
+    private async Task CascadeDirMoveAsync(int volumeId, string oldPath, string newPath, CancellationToken ct)
     {
         var dirs = await _db.Directories
             .InSubtree(volumeId, oldPath)
@@ -376,7 +377,22 @@ public sealed class IndexUpdater
 
         var topDir = dirs.FirstOrDefault(d => ScanPath.SamePath(d.MaterializedPath, oldPath));
         if (topDir is not null)
+        {
             topDir.Name = ScanPath.Name(newPath);
+
+            // Only when the parent really changed — which is exactly what tells a move from a
+            // rename, and the reason one method can serve both. Skipping it for a rename is not
+            // an optimization: resolving a parent that is already the right one would still write
+            // (and, for a folder at the volume root, CREATE) rows for a relationship nothing
+            // asked to move.
+            var oldParentPath = ScanPath.Parent(oldPath);
+            var newParentPath = ScanPath.Parent(newPath);
+            if (!ScanPath.SamePath(oldParentPath, newParentPath))
+            {
+                var newParent = await FindOrCreateDirAsync(volumeId, newParentPath, ct);
+                topDir.ParentId = newParent.Id;
+            }
+        }
 
         foreach (var d in dirs)
             d.MaterializedPath = newPath + d.MaterializedPath[oldPath.Length..];
