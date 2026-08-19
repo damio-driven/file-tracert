@@ -61,8 +61,9 @@ public sealed class LogShutdownDrainTests
         elapsed.Elapsed.Should().BeLessThan(
             cap + TimeSpan.FromSeconds(4), "the drain is capped; a stuck sink must not become a stuck service");
 
-        // Giving up is not the same as pretending: the abandoned records are counted.
-        host.Services.GetRequiredService<SqliteLogProcessor>().FailedRecordCount.Should().BeGreaterThan(0);
+        // Giving up is not the same as pretending: the abandoned records are counted — as
+        // abandoned, since the consumer we walked away from may still write them.
+        host.Services.GetRequiredService<SqliteLogProcessor>().AbandonedRecordCount.Should().BeGreaterThan(0);
 
         host.Dispose();
     }

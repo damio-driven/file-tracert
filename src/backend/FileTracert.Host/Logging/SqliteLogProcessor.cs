@@ -13,7 +13,8 @@ namespace FileTracert.Host.Logging;
 /// <para>
 /// The sink cannot log its own failures through <c>ILogger</c> — that is the very
 /// path that is broken — but silence is not the alternative (§9). Every loss is counted
-/// (<see cref="DroppedRecordCount"/>, <see cref="FailedRecordCount"/>) and leaves a
+/// (<see cref="DroppedRecordCount"/>, <see cref="FailedRecordCount"/>,
+/// <see cref="AbandonedRecordCount"/>) and leaves a
 /// breadcrumb <em>outside</em> the sink: stderr for a console run, <see cref="Trace"/> for
 /// an attached debugger / DebugView when running as a service.
 /// </para>
@@ -34,6 +35,7 @@ public sealed class SqliteLogProcessor : IAsyncDisposable
 
     private long _droppedRecords;
     private long _failedRecords;
+    private long _abandonedRecords;
     private long _lastBreadcrumbTimestamp;
     private int _inFlightRecords;
     private int _draining;
@@ -65,6 +67,14 @@ public sealed class SqliteLogProcessor : IAsyncDisposable
 
     /// <summary>Records the queue accepted but the store could not persist.</summary>
     public long FailedRecordCount => Interlocked.Read(ref _failedRecords);
+
+    /// <summary>
+    /// Records still queued (or mid-write) when the shutdown drain ran out of budget. Kept apart
+    /// from <see cref="FailedRecordCount"/> on purpose: the abandoned consumer keeps running, so
+    /// these may still land or may still fail, and folding them into "unwritten" would either
+    /// count them twice or claim a loss that did not happen.
+    /// </summary>
+    public long AbandonedRecordCount => Interlocked.Read(ref _abandonedRecords);
 
     /// <summary>Queues a record for persistence. Non-blocking; never throws.</summary>
     public void Enqueue(LogRecord record)
@@ -177,13 +187,15 @@ public sealed class SqliteLogProcessor : IAsyncDisposable
             return;
         }
 
-        // Still queued, plus the batch the consumer was in the middle of writing. A pessimistic
-        // count at this instant: the abandoned write may yet land, but nobody will be here to see.
+        // Still queued, plus the batch the consumer was in the middle of writing. Reported as
+        // ABANDONED, not failed: the consumer is still running and may yet write them (or fail
+        // and count them itself) — nobody will be here to find out, and a counter that guessed
+        // would either double-count or claim a loss that did not happen.
         var abandoned = _channel.Reader.Count + Volatile.Read(ref _inFlightRecords);
-        Interlocked.Add(ref _failedRecords, abandoned);
+        Interlocked.Exchange(ref _abandonedRecords, abandoned);
         Breadcrumb(
             $"log queue drain gave up after {_drainTimeout.TotalSeconds:0.#}s; " +
-            $"{abandoned} record(s) left unwritten",
+            $"{abandoned} record(s) abandoned (queued or mid-write)",
             exception: null,
             force: true);
         ReportLosses();
@@ -198,13 +210,15 @@ public sealed class SqliteLogProcessor : IAsyncDisposable
     {
         var dropped = DroppedRecordCount;
         var failed = FailedRecordCount;
-        if (dropped == 0 && failed == 0)
+        var abandoned = AbandonedRecordCount;
+        if (dropped == 0 && failed == 0 && abandoned == 0)
         {
             return;
         }
 
         Breadcrumb(
-            $"log sink ended the run with {dropped} dropped and {failed} unwritten record(s)",
+            $"log sink ended the run with {dropped} dropped, {failed} unwritten and " +
+            $"{abandoned} abandoned record(s)",
             exception: null,
             force: true);
     }
