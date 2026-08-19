@@ -121,20 +121,17 @@ public sealed class WatchedRootsService
     }
 
     /// <summary>
-    /// Recomputes inclusion under a root against its resolved filter — or excludes everything
-    /// under it when the root is not active, because an inactive root is a perimeter the scan will
-    /// not walk into, and a row inside it is excluded, not missing.
+    /// Recomputes inclusion under a root against its resolved filter. An inactive root — a
+    /// perimeter the scan will not walk into, whose rows are excluded rather than missing — is
+    /// handled inside <see cref="FilterReconciler.ReconcileRootAsync"/>, so this method no longer
+    /// has a branch of its own: two places asking "is this root active?" is how the answer starts
+    /// disagreeing. Narrowing needs no scan whatever the filter did.
     /// </summary>
     private async Task<ReconcileResultDto> ReconcileAsync(
         WatchedRoot root, EffectiveFilter filter, bool widened, CancellationToken ct)
     {
-        if (!root.IsActive)
-        {
-            return new ReconcileResultDto(0, await _reconciler.ExcludeAllUnderAsync(root, ct), NeedsScan: false);
-        }
-
         var (included, excluded) = await _reconciler.ReconcileRootAsync(root, filter, ct);
-        return new ReconcileResultDto(included, excluded, widened);
+        return new ReconcileResultDto(included, excluded, widened && root.IsActive);
     }
 
     /// <summary>Serializes a per-root override; <c>UseDefault</c> (or null) → no override stored.</summary>
