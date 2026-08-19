@@ -131,14 +131,26 @@
               </tr>
               <tr><td>Cartelle monitorate</td><td class="mono txt-dim">{{ roots(v.watchedRoots) }}</td></tr>
               <tr><td>Filtro tipi file</td><td>{{ filterSummary(v.watchedRoots) }}</td></tr>
+              <!--
+                Two figures, two perimeters, so two rows: the file count answers to the filter
+                (a root switched off takes it to zero), the folder count does not — a folder that
+                exists on disk exists whether or not its content is indexed. Side by side after a
+                middot they read as one census and the pair became a lie the moment they diverged.
+              -->
               <tr>
                 <td>Indice</td>
                 <td>
-                  {{ v.fileCount.toLocaleString('it-IT') }} file · {{ v.directoryCount.toLocaleString('it-IT') }} cartelle ·
-                  {{ v.indexedBytes | bytes }}
+                  {{ v.fileCount.toLocaleString('it-IT') }} file inclusi · {{ v.indexedBytes | bytes }}
                   @if (v.lastUsn !== null) {
                     · checkpoint USN <span class="mono txt-dim">#{{ v.lastUsn!.toLocaleString('it-IT') }}</span>
                   }
+                </td>
+              </tr>
+              <tr>
+                <td>Struttura</td>
+                <td>
+                  {{ v.directoryCount.toLocaleString('it-IT') }} cartelle nell'albero
+                  <span class="txt-faint">(comprese quelle senza file inclusi)</span>
                 </td>
               </tr>
               <tr>

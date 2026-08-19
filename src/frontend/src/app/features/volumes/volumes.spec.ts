@@ -79,6 +79,28 @@ describe('Volumes screen', () => {
     expect(el.textContent).toContain('44.821.330');
   });
 
+  it('says what each index figure counts instead of pairing two perimeters', async () => {
+    const fixture = TestBed.createComponent(Volumes);
+    await fixture.whenStable();
+    const el = fixture.nativeElement as HTMLElement;
+
+    const rowLabelled = (label: string) =>
+      [...el.querySelectorAll('.ft-table--kv tr')].find(
+        (r) => r.querySelector('td')?.textContent?.trim() === label,
+      );
+
+    // The file figure answers to the filter, so it says so. A root switched off takes it to zero.
+    const index = rowLabelled('Indice');
+    expect(index?.textContent).toContain('5 file inclusi');
+    expect(index?.textContent).not.toContain('cartelle');
+
+    // The folder figure does not: a folder on disk is a folder, indexed content or not. Sitting
+    // next to the file count after a middot, the pair read as one census and stopped being true.
+    const structure = rowLabelled('Struttura');
+    expect(structure?.textContent).toContain("2 cartelle nell'albero");
+    expect(structure?.textContent).toContain('senza file inclusi');
+  });
+
   it('shows an exclude button in the detail panel for catalogable volumes', async () => {
     const setCatalogableSpy = vi.fn(() => of(undefined));
     await TestBed.configureTestingModule({
