@@ -12,6 +12,7 @@ import { BytesPipe } from '../../pipes/bytes.pipe';
 import { RelativeTimePipe } from '../../pipes/relative-time.pipe';
 import { FtPill } from '../ft-pill/ft-pill';
 import { httpErrorMessage } from '../../../core/http/http-error';
+import { validateLeafName } from '../../validation/name.util';
 import {
   CatalogDirDto, CreateJobRequest, FeasibilityResult, SelectedItem, VolumeDto,
 } from '../../../core/models/catalog.models';
@@ -48,6 +49,7 @@ export class OperationPicker implements OnInit {
   protected readonly dirChildren = signal<CatalogDirDto[]>([]);
   protected readonly loadingDirs = signal(false);
   protected readonly newFolderInputOpen = signal(false);
+  protected readonly newFolderError = signal<string | null>(null);
   protected newFolderName = '';
 
   protected readonly preview = signal<FeasibilityResult | null>(null);
@@ -178,17 +180,33 @@ export class OperationPicker implements OnInit {
 
   protected openNewFolderInput(): void {
     this.newFolderName = '';
+    this.newFolderError.set(null);
     this.newFolderInputOpen.set(true);
   }
 
   protected cancelNewFolder(): void {
     this.newFolderInputOpen.set(false);
     this.newFolderName = '';
+    this.newFolderError.set(null);
+  }
+
+  /** Clears a stale complaint as soon as the user starts fixing the name. */
+  protected onNewFolderInput(): void {
+    if (this.newFolderError() !== null) this.newFolderError.set(null);
   }
 
   protected confirmNewFolder(): void {
     const name = this.newFolderName.trim();
-    if (!name) return;
+    // K14 — the same rules, and the same words, as the rename / new-folder dialog. This used to
+    // check "not empty" only, so `foo\bar` became one virtual segment here and was refused by
+    // the other dialog: two answers to one question, and the backend's is a third round trip
+    // away (OperationName.TryValidateLeaf, which this mirrors).
+    const problem = validateLeafName(name);
+    if (problem !== null) {
+      this.newFolderError.set(problem);
+      return;
+    }
+    this.newFolderError.set(null);
     this.preview.set(null);
     this.newFolderSegments.update(s => [...s, name]);
     this.dirChildren.set([]);

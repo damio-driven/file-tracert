@@ -10,10 +10,8 @@ import { FtPill, PillVariant } from '../../shared/components/ft-pill/ft-pill';
 import { FtBar } from '../../shared/components/ft-bar/ft-bar';
 import { FtPanel } from '../../shared/components/ft-panel/ft-panel';
 import { JobBlockReason, JobState, JobType, OperationJobDto } from '../../core/models/catalog.models';
+import { isActiveJobState, isTerminalJobState } from '../../core/models/job-state';
 import { QueueStore } from './queue.store';
-
-const ACTIVE_STATES = new Set<JobState>(['Copying', 'Verifying', 'DeletingSource']);
-const TERMINAL_STATES = new Set<JobState>(['Completed', 'Failed', 'Cancelled']);
 
 @Component({
   selector: 'ft-queue',
@@ -132,11 +130,11 @@ export class Queue implements OnInit {
   }
 
   protected isActive(state: JobState): boolean {
-    return ACTIVE_STATES.has(state);
+    return isActiveJobState(state);
   }
 
   protected isTerminal(state: JobState): boolean {
-    return TERMINAL_STATES.has(state);
+    return isTerminalJobState(state);
   }
 
   protected isCancelling(id: number): boolean {

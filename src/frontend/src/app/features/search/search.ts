@@ -12,6 +12,7 @@ import { FtPanel } from '../../shared/components/ft-panel/ft-panel';
 import { localDayEndToUtcIso, localDayStartToUtcIso, utcIsoToLocalDay } from '../../shared/date/day-range.util';
 import { OperationPicker } from '../../shared/components/operation-picker/operation-picker';
 import { FtProjectionBadge } from '../../shared/components/ft-projection-badge/ft-projection-badge';
+import { FILE_CATEGORIES, fileCategoryLabel, fileCategoryTag } from '../../shared/file-category';
 import { FileCategory, SearchResultDto, SearchScope, SearchSort, SelectedItem } from '../../core/models/catalog.models';
 
 @Component({
@@ -40,13 +41,7 @@ export class Search implements OnInit {
   protected readonly modifiedToDay = computed(() => utcIsoToLocalDay(this.store.filters().modifiedTo));
   protected readonly hasDateFilter = computed(() => !!this.modifiedFromDay() || !!this.modifiedToDay());
 
-  protected readonly CATEGORIES: { value: FileCategory; label: string; icon: string }[] = [
-    { value: 'Image', label: 'Immagini', icon: 'IMG' },
-    { value: 'Video', label: 'Video', icon: 'VID' },
-    { value: 'Audio', label: 'Audio', icon: 'AUD' },
-    { value: 'Document', label: 'Documenti', icon: 'DOC' },
-    { value: 'Archive', label: 'Archivi', icon: 'ARC' },
-  ];
+  protected readonly categories = FILE_CATEGORIES;
 
   protected readonly SORTS: { value: SearchSort; label: string }[] = [
     { value: 'Relevance', label: 'Rilevanza' },
@@ -144,11 +139,11 @@ export class Search implements OnInit {
   }
 
   protected catIcon(cat: FileCategory): string {
-    return this.CATEGORIES.find((c) => c.value === cat)?.icon ?? '???';
+    return fileCategoryTag(cat);
   }
 
   protected catLabel(cat: FileCategory): string {
-    return this.CATEGORIES.find((c) => c.value === cat)?.label ?? cat;
+    return fileCategoryLabel(cat);
   }
 
   protected get hasPrev(): boolean {

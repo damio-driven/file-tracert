@@ -42,15 +42,15 @@
   <!-- Filter chips -->
   <div class="filter-row">
     <div class="filter-chips" role="group" aria-label="Filtra per categoria">
-      @for (cat of CATEGORIES; track cat.value) {
+      @for (cat of categories; track cat) {
         <button
           type="button"
           class="chip"
-          [class.active]="store.filters().category === cat.value"
-          (click)="toggleCategory(cat.value)"
+          [class.active]="store.filters().category === cat"
+          (click)="toggleCategory(cat)"
         >
-          <span class="chip-icon">{{ cat.icon }}</span>
-          {{ cat.label }}
+          <span class="chip-icon">{{ catIcon(cat) }}</span>
+          {{ catLabel(cat) }}
         </button>
       }
     </div>

@@ -1,17 +1,17 @@
-<div class="picker-backdrop" (click)="onBackdropClick($event)" role="dialog" aria-modal="true" aria-label="Sposta file">
-  <div class="picker-modal">
+<div class="ft-modal-backdrop picker-backdrop" (click)="onBackdropClick($event)" role="dialog" aria-modal="true" aria-label="Sposta file">
+  <div class="ft-modal picker-modal">
 
     <!-- Header -->
-    <div class="picker-header">
-      <div class="picker-title">
+    <div class="ft-modal-header">
+      <div class="ft-modal-title">
         Sposta {{ items().length }} {{ items().length === 1 ? 'elemento' : 'elementi' }}
       </div>
-      <button class="picker-close" type="button" (click)="close()" aria-label="Chiudi">✕</button>
+      <button class="ft-modal-close" type="button" (click)="close()" aria-label="Chiudi">✕</button>
     </div>
 
     @if (enqueued()) {
       <!-- Success state -->
-      <div class="picker-body">
+      <div class="ft-modal-body picker-body">
         <div class="enqueued-state">
           <div class="enqueued-icon">✓</div>
           <div class="enqueued-title">
@@ -36,7 +36,7 @@
 
     } @else {
 
-      <div class="picker-body">
+      <div class="ft-modal-body picker-body">
 
         <!-- Selection summary -->
         <div class="file-summary">
@@ -183,13 +183,19 @@
                   type="text"
                   placeholder="Nome cartella"
                   [(ngModel)]="newFolderName"
+                  (ngModelChange)="onNewFolderInput()"
                   (keydown.enter)="confirmNewFolder()"
                   autocomplete="off"
                   spellcheck="false"
+                  [attr.aria-invalid]="newFolderError() !== null"
+                  [attr.aria-describedby]="newFolderError() ? 'picker-new-folder-error' : null"
                 />
                 <button type="button" class="ft-btn ft-btn--ghost" (click)="confirmNewFolder()">Crea</button>
                 <button type="button" class="ft-btn ft-btn--ghost" (click)="cancelNewFolder()">Annulla</button>
               </div>
+              @if (newFolderError(); as problem) {
+                <div class="new-folder-error" id="picker-new-folder-error" role="alert">{{ problem }}</div>
+              }
             } @else {
               <button
                 type="button"

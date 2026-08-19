@@ -5,6 +5,7 @@ import { firstValueFrom } from 'rxjs';
 import { QueueApi } from '../../core/api/queue-api.service';
 import { httpErrorMessage } from '../../core/http/http-error';
 import { OperationJobDto, PagedResult } from '../../core/models/catalog.models';
+import { isActiveJobState, isQueuedJobState, isTerminalJobState } from '../../core/models/job-state';
 import { JobProgress, JobStateChanged } from '../../core/realtime/realtime.models';
 
 interface QueueState {
@@ -34,9 +35,6 @@ const initial: QueueState = {
  */
 const UNKNOWN_JOB_RELOAD_MS = 400;
 
-const ACTIVE_STATES = new Set(['Copying', 'Verifying', 'DeletingSource']);
-const TERMINAL_STATES = new Set(['Completed', 'Failed', 'Cancelled']);
-
 export const QueueStore = signalStore(
   { providedIn: 'root' },
   withState(initial),
@@ -45,21 +43,21 @@ export const QueueStore = signalStore(
     totalCount: computed(() => store.result()?.totalCount ?? 0),
     hasJobs: computed(() => (store.result()?.totalCount ?? 0) > 0),
     hasActiveJobs: computed(() =>
-      (store.result()?.items ?? []).some(j => ACTIVE_STATES.has(j.state))
+      (store.result()?.items ?? []).some(j => isActiveJobState(j.state))
     ),
     activeCount: computed(() =>
-      (store.result()?.items ?? []).filter(j => ACTIVE_STATES.has(j.state)).length
+      (store.result()?.items ?? []).filter(j => isActiveJobState(j.state)).length
     ),
     blockedCount: computed(() =>
       (store.result()?.items ?? []).filter(j => j.state === 'Blocked').length
     ),
     pendingCount: computed(() =>
       (store.result()?.items ?? []).filter(
-        j => j.state === 'Pending' || j.state === 'SpaceReserved'
+        j => isQueuedJobState(j.state)
       ).length
     ),
     completedCount: computed(() =>
-      (store.result()?.items ?? []).filter(j => TERMINAL_STATES.has(j.state)).length
+      (store.result()?.items ?? []).filter(j => isTerminalJobState(j.state)).length
     ),
   })),
   withMethods((store, api = inject(QueueApi)) => {

@@ -10,6 +10,7 @@ import { VolumesApi } from '../../../core/api/volumes-api.service';
 import {
   CatalogChildrenDto, CatalogDirDto, CreateJobRequest, FeasibilityResult, SelectedItem, VolumeDto,
 } from '../../../core/models/catalog.models';
+import { validateLeafName } from '../../validation/name.util';
 import { OperationPicker } from './operation-picker';
 
 const items: SelectedItem[] = [
@@ -82,6 +83,9 @@ function setup(volumes: VolumeDto[] = []) {
     navigateToVirtualCrumb(index: number): void;
     openNewFolderInput(): void;
     confirmNewFolder(): void;
+    cancelNewFolder(): void;
+    onNewFolderInput(): void;
+    newFolderError: { (): string | null };
     enqueue(): Promise<void>;
     runPreview(): Promise<void>;
     ngOnInit(): Promise<void>;
@@ -354,5 +358,49 @@ describe('OperationPicker cold open', () => {
     const second = cmp.loadVolumes();
     expect(cmp.volumesLoading()).toBe(false);
     await second;
+  });
+});
+
+// K14 — the inline "new folder" name used to be checked for emptiness only, while the rename /
+// new-folder dialog ran `validateLeafName`. `foo\bar` was accepted in one place and refused in
+// the other, for the same field of the same app.
+describe('OperationPicker new folder name', () => {
+  it('refuses a name with a path separator, in the words the other dialog uses', () => {
+    const { cmp } = setup();
+
+    cmp.openNewFolderInput();
+    cmp.newFolderName = 'foto\\2025';
+    cmp.confirmNewFolder();
+
+    expect(cmp.newFolderError()).toBe(validateLeafName('foto\\2025'));
+    expect(cmp.newFolderError()).toContain('separatori di percorso');
+    expect(cmp.newFolderSegments()).toEqual([]);
+  });
+
+  it('refuses the characters Windows forbids', () => {
+    const { cmp } = setup();
+
+    cmp.openNewFolderInput();
+    cmp.newFolderName = 'foto?2025';
+    cmp.confirmNewFolder();
+
+    expect(cmp.newFolderError()).toBe('Il nome contiene caratteri non consentiti.');
+    expect(cmp.newFolderSegments()).toEqual([]);
+  });
+
+  it('drops the complaint as soon as the name is being fixed, and accepts a valid one', () => {
+    const { cmp } = setup();
+
+    cmp.openNewFolderInput();
+    cmp.newFolderName = '..';
+    cmp.confirmNewFolder();
+    expect(cmp.newFolderError()).not.toBeNull();
+
+    cmp.newFolderName = 'Foto 2025';
+    cmp.onNewFolderInput();
+    expect(cmp.newFolderError()).toBeNull();
+
+    cmp.confirmNewFolder();
+    expect(cmp.newFolderSegments()).toEqual(['Foto 2025']);
   });
 });

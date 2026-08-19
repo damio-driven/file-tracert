@@ -10,17 +10,8 @@ import { FtPanel } from '../../shared/components/ft-panel/ft-panel';
 import { OperationPicker } from '../../shared/components/operation-picker/operation-picker';
 import { NameDialog } from '../../shared/components/name-dialog/name-dialog';
 import { FtProjectionBadge } from '../../shared/components/ft-projection-badge/ft-projection-badge';
+import { fileCategoryLabel, fileCategoryTag } from '../../shared/file-category';
 import { CatalogDirDto, CatalogFileDto, FileCategory, SelectedItem, VolumeDto } from '../../core/models/catalog.models';
-
-const CATEGORY_LABELS: Record<FileCategory, string> = {
-  Image: 'Immagine', Video: 'Video', Audio: 'Audio',
-  Document: 'Documento', Archive: 'Archivio', Other: 'Altro',
-};
-
-const CATEGORY_ICONS: Record<FileCategory, string> = {
-  Image: 'IMG', Video: 'VID', Audio: 'AUD',
-  Document: 'DOC', Archive: 'ARC', Other: '???',
-};
 
 @Component({
   selector: 'ft-catalog',
@@ -66,11 +57,11 @@ export class Catalog implements OnInit {
   }
 
   protected catLabel(cat: FileCategory): string {
-    return CATEGORY_LABELS[cat] ?? cat;
+    return fileCategoryLabel(cat);
   }
 
   protected catIcon(cat: FileCategory): string {
-    return CATEGORY_ICONS[cat] ?? '???';
+    return fileCategoryTag(cat);
   }
 
   protected get hasPrev(): boolean {

@@ -1,17 +1,17 @@
 <div
-  class="dialog-backdrop"
+  class="ft-modal-backdrop dialog-backdrop"
   (click)="onBackdropClick($event)"
   role="dialog"
   aria-modal="true"
   [attr.aria-label]="title()"
 >
-  <div class="dialog-modal">
-    <div class="dialog-header">
-      <div class="dialog-title">{{ title() }}</div>
-      <button class="dialog-close" type="button" (click)="close()" aria-label="Chiudi">✕</button>
+  <div class="ft-modal dialog-modal">
+    <div class="ft-modal-header">
+      <div class="ft-modal-title">{{ title() }}</div>
+      <button class="ft-modal-close" type="button" (click)="close()" aria-label="Chiudi">✕</button>
     </div>
 
-    <div class="dialog-body">
+    <div class="ft-modal-body">
       <div class="dialog-field">
         <label class="dialog-label" for="name-dialog-input">
           {{ mode() === 'rename' ? 'Nuovo nome' : 'Nome cartella' }}
