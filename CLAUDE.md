@@ -575,7 +575,8 @@ unificato, WP4 intero), **step 10a** (device watcher: il remount è un push, non
 ascolta invece di pollare) — **fatti**. Gli **step 9 e 10 sono chiusi**.
 Prossimo, in ordine:
 1. **Work package minori rimanenti** (dalla code review): ~~indice/ricerca (WP5)~~ —
-   **fatto allo step 11a**; restano **spazio** (11b), **logging/shutdown** (11c),
+   **fatto allo step 11a**; ~~spazio (WP6)~~ — **fatto allo step 11b**; restano
+   **logging/shutdown** (11c),
    **frontend/UX** (11d), **efficienza** (11e), **cleanup** (11f, incl. eventuale
    spostamento di `ScanPath` in `Contracts` come da review, e la discrepanza §3:
    `IBulkIndexWriter` sta in `Data/Indexing` e `IFileSearchIndex` in
@@ -589,6 +590,129 @@ Prossimo, in ordine:
    ma chiuderlo vuol dire portare l'insieme escluso dentro il merge e il pass degli
    assenti di `IBulkIndexWriter`. C'è un test che **fissa** il comportamento attuale.
 2. **Step 12 — Test UI end-to-end (Playwright).**
+
+### Fatto nello step 11b (2026-08-19, commit `82bf73a`…`0bba4bf`)
+**WP6 chiuso** (finding 10): la fattibilità a spazio smette di credere alle proprie stime.
+- **Il ricontrollo hard legge il disco.** `JobExecutionEngine` confrontava la domanda con
+  `Volumes.FreeBytesLastKnown`, scritto dall'ultimo `VolumeSync`: bastava che un altro processo
+  scrivesse decine di GB nel frattempo e il job passava il check per morire disk-full a metà, con
+  la destinazione a pezzi e il sorgente ancora al suo posto — il «copiare sulla fiducia di una
+  stima» vietato dal §4. Ora i byte liberi arrivano dal **dispositivo**, attraverso la port
+  (`Business` non vede Win32, §3).
+- **`IVolumeProbe.TryGetFreeBytes`**, non `TryGetByGuid`: quest'ultimo enumera **tutti** i volumi
+  e risolve la topologia dei dischi via WMI per rispondere, che è troppo lavoro per l'unico numero
+  che serve prima di ogni job cross-volume. Una `GetDiskFreeSpaceEx` sul volume GUID path, che fa
+  anche da **prova di presenza**: un volume smontato fallisce la chiamata invece di restituire un
+  numero vecchio. `null` non è un'eccezione, è il volume che dice «non ci sono» (log completo con
+  l'errore Win32, §9).
+- **`SpaceCheck` (Business/Operations) è l'unico posto che risponde «ci sta?»**, in due viste:
+  **planning** (preview/enqueue: le liberazioni promesse contano, e un volume che non risponde
+  ripiega sull'ultimo valore noto invece di far rifiutare il job — §4 «mai rifiutare all'enqueue»)
+  e **hard** (esecuzione e rivalutazione: nessun credito alle promesse, e un volume che non
+  risponde **blocca** il job, `TargetVolumeOffline`, riserva mantenuta, riattivabile). È
+  **scoped** e memoizza per volume: una passata di rivalutazione giudica tutti i candidati su
+  **una** fotografia del drive, e una lista di cinquanta job bloccati costa un probe per volume,
+  non cinquanta.
+- **La rivalutazione usa lo stesso oggetto dell'engine.** Liberare un job su un numero che
+  l'engine contraddice un istante dopo è il ping-pong `Blocked → Pending → Blocked` senza che si
+  muova un byte.
+- **`SpaceMarginPercent` è finalmente un consumatore vero** (era seedato a 3 e letto da nessuno).
+  Il margine è una percentuale **della domanda**, non del libero: copre lo scarto fra la somma
+  delle dimensioni e ciò che atterra davvero (slack di cluster, metadati, stream) più chi scrive
+  sul drive mentre copiamo — tutte cose che crescono con l'operazione, non con il disco. Una
+  percentuale del libero pretenderebbe 60 GB di franco per spostare un kilobyte su un volume da
+  2 TB, e quasi nulla su un volume pieno: esattamente al contrario. Il ledger lo riceve come
+  parametro (`marginBytes`) e **non** legge le settings da solo — è un singleton su un percorso
+  caldo; `SpaceCheck` legge la percentuale una volta per scope e la **clampa a 0–50%**, con log:
+  un 300 per errore di battitura non deve parcheggiare la coda in silenzio. `FeasibilityResult`
+  riporta `RequiredBytes` e `MarginBytes` **separati**, così la domanda resta la dimensione onesta
+  dell'operazione. Il margine vale anche in planning: promettere all'enqueue spazio che l'engine
+  poi rifiuta sposta solo la delusione più avanti.
+- **`EstimateIsLive` dice la verità**: prima significava «la riga del volume dice `IsOnline`»,
+  cioè un dato dell'ultimo sync vestito da lettura fresca. Ora è vero **solo** quando il numero
+  è stato letto dal dispositivo in quell'istante; quando il volume non risponde si mostra
+  comunque l'ultimo valore noto — è il migliore che c'è — ma marcato non-live (stesso principio
+  dell'indicatore di connessione di 10c). Preview, enqueue e la colonna fattibilità della Coda
+  passano dallo stesso `SpaceCheck`: il deficit mostrato per un job bloccato viene dal **medesimo**
+  ricontrollo che l'ha parcheggiato, margine incluso, invece che da una stima che citava un altro
+  numero.
+- **Il decremento accumulato a fine job è stato tolto** (la domanda esplicita del task). Il
+  completamento sottraeva i byte del job a `FreeBytesLastKnown` del target e accreditava quelli
+  del sorgente. Con il probe che scrive ciò che misura, quell'aritmetica cade su un numero che
+  **già** contiene i byte appena scritti: l'ha beccato l'harness sul ferro, con la stima esattamente
+  una dimensione-job sotto la verità fino al probe successivo. E la metà sorgente non era comunque
+  vera: i file vanno nel **cestino**, quindi quei byte non sono liberi finché il cestino non si
+  svuota — accreditarli è proprio l'ottimismo che fa partire una copia che il drive non può
+  chiudere. Sopravvive il probe: `FreeBytesLastKnown` contiene **solo misure** (volume sync, o il
+  refresh del ricontrollo hard). La seconda metà del finding #7 («il retry non deve decrementare
+  due volte») diventa irraggiungibile invece che gestita.
+- **Verifica**: xUnit **631 verdi** (+18), build backend pulita (warnings-as-errors). RED dimostrato
+  rimettendo il prodotto com'era: valore stantio al posto del probe → **7 test rossi**; margine
+  ignorato nel ledger → **2**; planning sulla stima → **3**. Harness sul ferro **44 scenari,
+  44 PASS / 0 FAIL** sulla coppia cross `D:\Collaudo\A` → `C:\Collaudo\B` (E: non esiste più su
+  questa macchina; il volume secondario è stato preso su C:). Fra questi il nuovo
+  `live-space-recheck` e il nuovo `space-margin`. Nota: `job-dependencies` cross, FAIL
+  pre-esistente dallo step 10b, **passa** da 11a. Flakiness pre-esistenti osservate una volta
+  ciascuna sulla suite completa e verdi in isolamento (`LogsApiTests`, `DatabaseInitializerTests`,
+  `DomainApiTests`): DB reali in `%TEMP%` condiviso, non regressioni di questo giro.
+La **code review finale** (indipendente, sulle modifiche di questo giro) ha trovato sei cose reali,
+tutte corrette nel commit `0bba4bf`, nessuna bloccante:
+1. il probe restituiva `lpTotalNumberOfFreeBytes` invece di `lpFreeBytesAvailableToCaller` — sotto
+   una quota NTFS è spazio su cui *questo* processo non può scrivere, quindi il check sarebbe
+   passato e la copia sarebbe morta lo stesso: ora si prende il **minore** dei due;
+2. un volume presente ma momentaneamente illeggibile veniva parcheggiato su `TargetVolumeOffline`
+   con una frase **in inglese** che nominava il volume per Id, sotto un'etichetta della Coda che
+   dice «volume di destinazione offline»: etichetta e messaggio descrivevano due situazioni
+   diverse, una delle quali falsa. Stessa lingua e stesso nome del volume di `VolumeOfflineGate`,
+   con «non risponde» al posto di «non è collegato»;
+3. tolto il fold, `FreeBytesLastKnown` restava alla misura **pre-copia** proprio dopo il job che
+   ha spostato più byte di tutti — e lo leggono Dashboard, `VolumeStatusChanged` e il fallback del
+   planning. Il completamento ora **ri-misura** i due volumi (una lettura, non l'aritmetica che è
+   stata tolta): l'invariante «solo una misura scrive quella colonna» regge senza lasciarla
+   vecchia di un job intero;
+4. la lista della Coda era diventata un percorso che tocca il dispositivo: una syscall e, per un
+   job bloccato su un drive rimosso, **due Warning per ogni refresh di schermata**, più il rischio
+   di piantare la richiesta API su un device mezzo staccato. `SpaceCheck` non interroga più un
+   volume che il catalogo sa già scollegato;
+5. `required + margine` poteva **overfloware** a una domanda negativa e dichiarare fattibile un job
+   impossibile (ora satura, fallendo *chiuso*), e il segnaposto «niente da controllare» dichiarava
+   una misura mai fatta (ora esplicitamente non-live, e la lista non allega alcuna fattibilità a un
+   job che non ha una domanda di spazio);
+6. l'harness non seedava `AppSettings`, quindi **sul ferro tutti gli scenari giravano a margine 0**
+   e il default di produzione (3%) non veniva mai esercitato.
+La review ha verificato pulite: layering (§3), assenza di duplicazione (tutti i call site di
+`ComputeFeasibilityAsync` passano da `SpaceCheck`), rilascio del ledger ancora dentro la
+transazione terminale, nessuna riserva fantasma, nessun `Failed` al posto di un `Blocked`
+recuperabile, vita del memo corretta per ogni scope di produzione, e test veri (ledger/engine/SQLite
+reali, sostituita solo la port di piattaforma).
+
+**Deviazioni e limiti noti:**
+- **Un job ripreso da un checkpoint non ri-controlla lo spazio** (il ricontrollo sta dentro
+  `if (job.State == JobState.Pending)`): un job interrotto in `Copying` riprende la copia senza
+  chiedere di nuovo al disco. È **pre-esistente** e non è stato toccato qui, ma dopo questo giro è
+  l'ultimo buco rimasto nel «mai copiare sulla fiducia di una stima» — candidato per i WP minori.
+- **Il planning continua ad accreditare come liberazione i byte che finiscono nel cestino**
+  (`includeQueuedLiberations: true` conta `FreedBytesSource`). È coerente con §4 (il planning non
+  rifiuta mai), ma va detto accanto al punto sopra: è una promessa che la vista hard non onora.
+- **`FeasibilityResult.MarginBytes` non ha ancora un lettore**: il deficit mostrato in Coda
+  **include** il margine, quindi l'utente legge un numero più grande della dimensione
+  dell'operazione senza la spiegazione — che esiste nel DTO ma la UI non la usa (è 11d).
+- **Gli scenari harness non riempiono il drive**, come invece suggeriva il task. Con la fattibilità
+  che legge il dispositivo, la scarsità si arrangia sul lato **domanda** (dimensione indicizzata,
+  o `RequiredBytesTarget` del job già accodato = «un altro processo ha riempito il disco dopo
+  l'enqueue»): è lo stesso confronto visto dall'altro capo. Una zavorra vera avrebbe dovuto
+  portare a zero un volume da centinaia di GB — e sul ferro disponibile il volume di destinazione
+  è **C:**, il disco di sistema. Non è un test, è un disservizio, e un processo ucciso a metà
+  lascerebbe il drive pieno.
+- **La ripresa «A libera lo spazio che serve a B» ora dipende dalla fisica.** Finché i sorgenti
+  finiscono nel cestino, il completamento di A **non** libera davvero i byte, e B resta `Blocked`
+  finché il cestino non viene svuotato (prima ripartiva sulla stima e sarebbe morto a metà copia).
+  `fifo-auto-recovery` è stato riscritto di conseguenza: B è bloccato dallo spazio che A ha
+  **prenotato**, e riparte da solo quando A rilascia. Se in futuro si vorrà la vecchia promessa,
+  la strada è svuotare/contabilizzare il cestino, non tornare a fidarsi di una stima.
+- **`BlockedJobRevaluator` esegue i gate offline/spazio prima del refresh degli snapshot**
+  (~:92/:101): segnalato in 11a, **non** riordinato qui — non è materia di questo task.
+- Il **frontend non è stato toccato** (è 11d).
 
 ### Fatto nello step 11a (2026-08-19, commit `455c9ac`…`c399048`)
 **WP5 chiuso**: i quattro difetti di correttezza dell'indice che sopravvivevano fino al re-scan
