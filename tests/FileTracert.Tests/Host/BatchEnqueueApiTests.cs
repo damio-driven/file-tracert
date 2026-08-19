@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using FileTracert.Contracts.Dtos;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Operations;
 using FileTracert.Contracts.Paging;
@@ -146,6 +147,26 @@ public sealed class BatchEnqueueApiTests
 
         // The queue is exactly as it was: the same click, corrected, cannot duplicate anything.
         (await QueuedCountAsync(client)).Should().Be(0);
+    }
+
+    // C30 — the Dashboard used to answer 0 while the Coda screen listed these very jobs.
+    [Fact]
+    public async Task The_dashboard_counts_the_jobs_that_are_really_in_the_queue()
+    {
+        using var factory = MakeFactory();
+        var client = Authed(factory);
+
+        (await client.GetFromJsonAsync<DashboardStatsDto>("/api/dashboard", JsonOpts))!
+            .QueuedJobs.Should().Be(0);
+
+        var resp = await client.PostAsJsonAsync(
+            "/api/operations/enqueue-batch", new[] { Move(_fileAId), Move(_fileBId) }, JsonOpts);
+        resp.StatusCode.Should().Be(HttpStatusCode.Created, await resp.Content.ReadAsStringAsync());
+
+        var stats = (await client.GetFromJsonAsync<DashboardStatsDto>("/api/dashboard", JsonOpts))!;
+        stats.QueuedJobs.Should().Be(2);
+        stats.RunningJobs.Should().Be(0);   // the worker is off: queued is not running
+        stats.BlockedJobs.Should().Be(0);
     }
 
     private sealed record ErrorBody(string Error);

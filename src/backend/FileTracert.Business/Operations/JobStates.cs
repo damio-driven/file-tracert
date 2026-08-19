@@ -18,6 +18,17 @@ public static class JobStates
         JobState.DeletingSource,
     ];
 
+    /// <summary>
+    /// States in which the engine is physically working on the job right now. Pending and
+    /// SpaceReserved are queued, not running: nothing is being copied for them yet.
+    /// </summary>
+    public static readonly JobState[] Active =
+    [
+        JobState.Copying,
+        JobState.Verifying,
+        JobState.DeletingSource,
+    ];
+
     /// <summary>Terminal states: the job will never run again (Blocked is NOT terminal).</summary>
     public static readonly JobState[] Terminal =
     [

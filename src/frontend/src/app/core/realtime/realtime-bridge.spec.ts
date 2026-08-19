@@ -11,6 +11,7 @@ import { SearchApi } from '../api/search-api.service';
 import { ScansApi } from '../api/scans-api.service';
 import { VolumesApi } from '../api/volumes-api.service';
 import { CatalogStore } from '../../features/catalog/catalog.store';
+import { DashboardStore } from '../../features/dashboard/dashboard.store';
 import { QueueStore } from '../../features/queue/queue.store';
 import { ScanStatusStore } from '../../features/scans/scan-status.store';
 import { VolumesStore } from '../../features/volumes/volumes.store';
@@ -181,6 +182,25 @@ describe('RealtimeBridge', () => {
 
     expect(invalidate).toHaveBeenCalledTimes(1);
     expect(invalidate).toHaveBeenCalledWith(1);
+  });
+
+  // C30 — three of the four Dashboard cards count queue jobs, and the payload carries no
+  // bytes, so a transition has to reach the store as a re-read (coalesced).
+  it('re-reads the dashboard cards after a burst of queue transitions', async () => {
+    vi.useFakeTimers();
+    const { realtime, bridge, stats } = setup();
+    await bridge.start();
+    await TestBed.inject(DashboardStore).load();
+    stats.mockClear();
+
+    for (let i = 1; i <= 30; i++) {
+      realtime.emit('JobStateChanged', {
+        jobId: i, state: 'Pending', blockReason: 'None', errorMessage: null,
+      });
+    }
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(stats).toHaveBeenCalledTimes(1);
   });
 
   it('widens the refresh when the burst spans more than one volume', async () => {

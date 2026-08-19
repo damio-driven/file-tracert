@@ -47,7 +47,12 @@ export class RealtimeBridge {
     this.started = true;
 
     this.realtime.on('JobProgress', (m) => this.queue.applyProgress(m));
-    this.realtime.on('JobStateChanged', (m) => this.queue.applyStateChanged(m));
+    this.realtime.on('JobStateChanged', (m) => {
+      this.queue.applyStateChanged(m);
+      // The Dashboard counts jobs by state and sums the bytes parked on a resource; this
+      // payload carries neither, so the cards are re-read rather than guessed at (C30).
+      this.dashboard.scheduleRefresh();
+    });
     this.realtime.on('VolumeStatusChanged', (m) => this.volumes.applyVolumeStatus(m));
     this.realtime.on('ScanProgress', (m) => this.scans.applyScanProgress(m));
     this.realtime.on('NotificationRaised', () => this.notifications.applyRaised());

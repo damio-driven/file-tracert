@@ -7,8 +7,8 @@ using Microsoft.EntityFrameworkCore;
 namespace FileTracert.Host.Controllers;
 
 /// <summary>
-/// Dashboard aggregates. Counts come straight from the index via scalar/aggregate
-/// queries (no row materialization). Queue figures are placeholders until step 8.
+/// Dashboard aggregates. Counts come straight from the index and the queue via
+/// scalar/aggregate queries (no row materialization).
 /// </summary>
 [ApiController]
 [Route("api/dashboard")]
@@ -30,6 +30,11 @@ public sealed class DashboardController : ControllerBase
         var volumesTotal = await _db.Volumes.CountAsync(ct);
         var volumesOnline = await _db.Volumes.CountAsync(v => v.IsOnline, ct);
 
-        return Ok(DashboardStatsAssembler.From(totalFiles, totalBytes, volumesOnline, volumesTotal));
+        // One aggregate for all four queue figures (C30) — four counts of the same table would
+        // be four scans for one card strip.
+        var queue = await QueueTotals.ComputeAsync(_db.OperationJobs.AsNoTracking(), ct);
+
+        return Ok(DashboardStatsAssembler.From(
+            totalFiles, totalBytes, volumesOnline, volumesTotal, queue));
     }
 }

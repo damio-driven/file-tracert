@@ -13,10 +13,10 @@ const stats: DashboardStatsDto = {
   totalBytes: 3_400_000_000_000,
   volumesOnline: 3,
   volumesTotal: 4,
-  queuedJobs: 0,
-  blockedJobs: 0,
-  runningJobs: 0,
-  pendingBytes: 0,
+  queuedJobs: 7,
+  blockedJobs: 1,
+  runningJobs: 2,
+  pendingBytes: 4_000_000_000,
 };
 
 const offline: VolumeDto = {
@@ -61,5 +61,28 @@ describe('Dashboard screen', () => {
     // Offline volume surfaces the dated estimate badge.
     expect(el.querySelector('.ft-stale')?.textContent).toContain('stima');
     expect(el.textContent).toContain('Scollegato');
+  });
+});
+
+// C30 — the card strip used to render four hard-coded zeros while the Coda screen listed jobs.
+describe('Dashboard queue cards', () => {
+  it('shows the real queue figures and counts in agreeing language', async () => {
+    TestBed.configureTestingModule({
+      providers: [
+        provideZonelessChangeDetection(),
+        { provide: DashboardApi, useValue: { getStats: () => of(stats) } },
+        { provide: VolumesApi, useValue: { list: () => of([offline]) } },
+        { provide: ScansApi, useValue: { status: () => of([]) } },
+      ],
+    });
+
+    const fixture = TestBed.createComponent(Dashboard);
+    await fixture.whenStable();
+    const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
+
+    expect(text).toContain('7');
+    expect(text).toContain('2 in corso · 1 bloccata');
+    // The bytes card carries the resource-blocked residue, not a zero.
+    expect(text).toContain('da copiare quando si sblocca');
   });
 });

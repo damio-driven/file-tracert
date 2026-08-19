@@ -3,8 +3,8 @@
     <div>
       <h1 class="ft-h1">Dashboard</h1>
       <p class="ft-sub">
-        Stato dei volumi, dell'indice e della coda operazioni. I dati si aggiorneranno in
-        tempo reale via SignalR quando un volume viene collegato o un task avanza.
+        Stato dei volumi, dell'indice e della coda operazioni. Si aggiorna da sé quando un
+        volume viene collegato, una scansione avanza o un'operazione cambia stato.
       </p>
     </div>
     <button class="ft-btn ft-btn--ghost" (click)="refresh()" [disabled]="loading()">↻ Aggiorna</button>
@@ -27,7 +27,7 @@
     </div>
   }
 
-  <ft-panel heading="Volumi" caption="stato live · aggiornamento real-time allo step 10">
+  <ft-panel heading="Volumi" caption="stato live">
     <table class="ft-table">
       <thead>
         <tr>

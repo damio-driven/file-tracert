@@ -52,16 +52,21 @@ export class Dashboard implements OnInit {
       volumes: {
         value: `${s.volumesOnline}`,
         unit: `/ ${s.volumesTotal} online`,
-        meta: offline > 0 ? `${offline} scollegato` : 'tutti online',
+        meta: offline > 0
+          ? `${offline} ${offline === 1 ? 'scollegato' : 'scollegati'}`
+          : 'tutti online',
       },
       queue: {
+        // The headline is everything still in the queue; the line under it is the breakdown.
         value: `${s.queuedJobs}`,
-        meta: `${s.runningJobs} in corso · ${s.blockedJobs} bloccato`,
+        meta: s.queuedJobs === 0
+          ? 'nessuna operazione in coda'
+          : `${s.runningJobs} in corso · ${s.blockedJobs} ${s.blockedJobs === 1 ? 'bloccata' : 'bloccate'}`,
       },
       pending: {
         value: pendingNum,
         unit: pendingUnit,
-        meta: 'in attesa di spazio o volume',
+        meta: s.pendingBytes > 0 ? 'da copiare quando si sblocca' : 'nessuna operazione ferma',
       },
     };
   });
