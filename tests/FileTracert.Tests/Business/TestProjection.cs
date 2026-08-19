@@ -42,7 +42,7 @@ internal static class TestProjection
     /// </summary>
     public static SpaceCheck Space(
         FileTracertDbContext db, ISpaceLedger ledger, IVolumeProbe? probe = null) =>
-        new(ledger, probe ?? new LastKnownFreeSpaceProbe(db), NullLogger<SpaceCheck>.Instance);
+        new(db, ledger, probe ?? new LastKnownFreeSpaceProbe(db), NullLogger<SpaceCheck>.Instance);
 
     /// <summary>The real release path: guard re-ask + snapshot refresh + overlay.</summary>
     public static JobUnblocker Unblocker(FileTracertDbContext db, IFileSearchIndex? fts = null) =>

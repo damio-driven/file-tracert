@@ -44,8 +44,8 @@ public sealed class SpaceLedgerTests : IDisposable
 
     private Task<FeasibilityResult> Compute(int volId, long free, long required, bool online = true,
                                             int? excludeJobId = null, int? sequenceOrder = null,
-                                            bool includeQueuedLiberations = true) =>
-        _ledger.ComputeFeasibilityAsync(volId, free, online, required, excludeJobId, sequenceOrder,
+                                            bool includeQueuedLiberations = true, long marginBytes = 0) =>
+        _ledger.ComputeFeasibilityAsync(volId, free, online, required, marginBytes, excludeJobId, sequenceOrder,
             includeQueuedLiberations, CancellationToken.None);
 
     // SequenceOrder defaults to the job id — tests that care about FIFO pass it explicitly.
@@ -391,7 +391,7 @@ public sealed class SpaceLedgerTests : IDisposable
         await newLedger.RebuildFromDbAsync(CancellationToken.None);
 
         // Should see the 600-byte reservation from the DB
-        var r = await newLedger.ComputeFeasibilityAsync(1, 1000, true, 500, null, null, true, CancellationToken.None);
+        var r = await newLedger.ComputeFeasibilityAsync(1, 1000, true, 500, 0, null, null, true, CancellationToken.None);
         r.AvailableEstimateBytes.Should().Be(400);
         r.Feasible.Should().BeFalse();
     }
@@ -407,7 +407,7 @@ public sealed class SpaceLedgerTests : IDisposable
         var newLedger = new SpaceLedger(CreateScopeFactory(_harness), NullLogger<SpaceLedger>.Instance);
         await newLedger.RebuildFromDbAsync(CancellationToken.None);
 
-        var r = await newLedger.ComputeFeasibilityAsync(1, 1000, true, 900,
+        var r = await newLedger.ComputeFeasibilityAsync(1, 1000, true, 900, marginBytes: 0,
             excludeJobId: 1, sequenceOrder: 1, includeQueuedLiberations: true, ct: CancellationToken.None);
         r.Feasible.Should().BeTrue("job 2's reservation comes later in the queue");
         r.AvailableEstimateBytes.Should().Be(1000);
@@ -424,7 +424,7 @@ public sealed class SpaceLedgerTests : IDisposable
         await newLedger.RebuildFromDbAsync(CancellationToken.None);
 
         // Inactive entries must not be loaded
-        var r = await newLedger.ComputeFeasibilityAsync(1, 1000, true, 999, null, null, true, CancellationToken.None);
+        var r = await newLedger.ComputeFeasibilityAsync(1, 1000, true, 999, 0, null, null, true, CancellationToken.None);
         r.Feasible.Should().BeTrue();
         r.AvailableEstimateBytes.Should().Be(1000);
     }
@@ -445,7 +445,7 @@ public sealed class SpaceLedgerTests : IDisposable
         await newLedger.RebuildFromDbAsync(CancellationToken.None);
 
         // Only the live job's 100 bytes count — the terminal job's 900 are a phantom.
-        var r = await newLedger.ComputeFeasibilityAsync(1, 1000, true, 900, null, null, true, CancellationToken.None);
+        var r = await newLedger.ComputeFeasibilityAsync(1, 1000, true, 900, 0, null, null, true, CancellationToken.None);
         r.Feasible.Should().BeTrue("a completed job's reservation is not demand anymore");
         r.AvailableEstimateBytes.Should().Be(900);
 
@@ -471,4 +471,20 @@ public sealed class SpaceLedgerTests : IDisposable
         r2.Feasible.Should().BeFalse();
         r2.AvailableEstimateBytes.Should().Be(300);
     }
+    // ── §4 safety margin ──────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Margin_is_demanded_on_top_of_the_requirement()
+    {
+        // 1 000 free, 1 000 required: it fits exactly — until a 30-byte cushion is asked for.
+        var without = await Compute(volId: 1, free: 1_000, required: 1_000);
+        var with = await Compute(volId: 1, free: 1_000, required: 1_000, marginBytes: 30);
+
+        without.Feasible.Should().BeTrue();
+        with.Feasible.Should().BeFalse("the margin is part of the demand");
+        with.DeficitBytes.Should().Be(30);
+        with.RequiredBytes.Should().Be(1_000, "the requirement stays the honest size of the job");
+        with.MarginBytes.Should().Be(30, "the cushion is reported apart so the UI can explain it");
+    }
+
 }

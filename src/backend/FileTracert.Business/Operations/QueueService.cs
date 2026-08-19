@@ -141,7 +141,7 @@ public sealed class QueueService : IQueueService
         // Prospective job: it would land at the end of the queue, so all active deltas apply
         // (planning view — promised liberations count, the queue materializes them in order).
         return await _ledger.ComputeFeasibilityAsync(
-            vol.Id, vol.FreeBytesLastKnown, vol.IsOnline, totalBytes,
+            vol.Id, vol.FreeBytesLastKnown, vol.IsOnline, totalBytes, marginBytes: 0,
             excludeJobId: null, sequenceOrder: null, includeQueuedLiberations: true, ct);
     }
 
@@ -173,7 +173,7 @@ public sealed class QueueService : IQueueService
                 ?? throw new InvalidOperationException($"Target volume {volumeId} not found.");
 
             var f = await _ledger.ComputeFeasibilityAsync(
-                vol.Id, vol.FreeBytesLastKnown, vol.IsOnline, requiredBytes,
+                vol.Id, vol.FreeBytesLastKnown, vol.IsOnline, requiredBytes, marginBytes: 0,
                 excludeJobId: null, sequenceOrder: null, includeQueuedLiberations: true, ct);
 
             if (tightest is null ||
@@ -493,6 +493,7 @@ public sealed class QueueService : IQueueService
                     job.TargetVolume.FreeBytesLastKnown,
                     job.TargetVolume.IsOnline,
                     job.RequiredBytesTarget,
+                    marginBytes: 0,
                     excludeJobId: job.Id,
                     sequenceOrder: job.SequenceOrder,
                     includeQueuedLiberations: false,
@@ -788,7 +789,7 @@ public sealed class QueueService : IQueueService
             job.FreedBytesSource = file.SizeBytes;
 
             var f = await _ledger.ComputeFeasibilityAsync(
-                targetVol.Id, targetVol.FreeBytesLastKnown, targetVol.IsOnline, file.SizeBytes,
+                targetVol.Id, targetVol.FreeBytesLastKnown, targetVol.IsOnline, file.SizeBytes, marginBytes: 0,
                 excludeJobId: null, sequenceOrder: null, includeQueuedLiberations: true, ct);
 
             job.EstimateIsLive = f.EstimateIsLive;
@@ -886,7 +887,7 @@ public sealed class QueueService : IQueueService
         if (total > 0)
         {
             var f = await _ledger.ComputeFeasibilityAsync(
-                targetVol.Id, targetVol.FreeBytesLastKnown, targetVol.IsOnline, total,
+                targetVol.Id, targetVol.FreeBytesLastKnown, targetVol.IsOnline, total, marginBytes: 0,
                 excludeJobId: null, sequenceOrder: null, includeQueuedLiberations: true, ct);
 
             job.EstimateIsLive = f.EstimateIsLive;

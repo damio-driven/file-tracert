@@ -139,6 +139,58 @@ public sealed class LiveSpaceCheckTests : IDisposable
             "the verdict and the refreshed estimate must come from ONE snapshot of the drive");
     }
 
+    // ── the safety margin (§4: "free space + margin") ─────────────────────────
+
+    [Fact]
+    public async Task The_margin_blocks_a_move_that_would_fit_without_it()
+    {
+        // Exactly enough room for the payload and not one byte more.
+        await SetMarginPercentAsync(3);
+        var probe = new StubFreeSpaceProbe(MoveSizeBytes);
+        var mover = FeasibleMover();
+        int jobId = SeedCrossVolumeJob();
+
+        await MakeEngine(mover, probe).ExecuteJobAsync(jobId, CancellationToken.None);
+
+        var job = await ReadJobAsync(jobId);
+        job.State.Should().Be(JobState.Blocked, "3% of the demand is missing");
+        job.BlockReason.Should().Be(JobBlockReason.InsufficientSpace);
+        job.ErrorMessage.Should().Contain("margin", "a block on the cushion must name the cushion");
+        NothingWasCopied(mover);
+    }
+
+    [Fact]
+    public async Task With_no_margin_the_same_move_runs()
+    {
+        await SetMarginPercentAsync(0);
+        var probe = new StubFreeSpaceProbe(MoveSizeBytes);
+        int jobId = SeedCrossVolumeJob();
+
+        await MakeEngine(FeasibleMover(), probe).ExecuteJobAsync(jobId, CancellationToken.None);
+
+        (await ReadJobAsync(jobId)).State.Should().Be(JobState.Completed,
+            "with the knob at zero the check is exactly the demand");
+    }
+
+    [Fact]
+    public async Task An_absurd_margin_setting_is_clamped_instead_of_parking_everything()
+    {
+        await SetMarginPercentAsync(300);
+
+        await using var db = _harness.CreateContext();
+        var check = TestProjection.Space(db, _ledger, new StubFreeSpaceProbe(MoveSizeBytes));
+
+        (await check.MarginPercentAsync(CancellationToken.None)).Should().Be(50);
+    }
+
+    [Fact]
+    public void The_margin_is_a_percentage_of_the_demand_not_of_the_drive()
+    {
+        SpaceCheck.MarginBytesFor(1_000_000, 3).Should().Be(30_000);
+        SpaceCheck.MarginBytesFor(1_000_000, 0).Should().Be(0);
+        SpaceCheck.MarginBytesFor(0, 5).Should().Be(0);
+    }
+
     // ── the revaluation's hard re-check ───────────────────────────────────────
 
     [Fact]
@@ -279,6 +331,25 @@ public sealed class LiveSpaceCheckTests : IDisposable
             Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(),
             Arg.Any<Func<long, CancellationToken, Task>>(), Arg.Any<CancellationToken>());
 #pragma warning restore CS4014
+    }
+
+    private async Task SetMarginPercentAsync(int percent)
+    {
+        await using var db = _harness.CreateContext();
+        var settings = await db.AppSettings.FirstOrDefaultAsync();
+        if (settings is null)
+        {
+            db.AppSettings.Add(new AppSettings
+            {
+                ApiToken = "token", SpaceMarginPercent = percent,
+                DefaultExtensionFilter = [], ExcludedPaths = [],
+            });
+        }
+        else
+        {
+            settings.SpaceMarginPercent = percent;
+        }
+        await db.SaveChangesAsync();
     }
 
     private async Task SetLastKnownFreeBytesAsync(long bytes)

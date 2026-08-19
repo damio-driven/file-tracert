@@ -1,7 +1,9 @@
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Operations;
 using FileTracert.Contracts.Platform;
+using FileTracert.Data;
 using FileTracert.Data.Entities;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
 namespace FileTracert.Business.Operations;
@@ -48,17 +50,28 @@ public sealed record HardSpaceVerdict(
 /// </summary>
 public sealed class SpaceCheck
 {
+    /// <summary>
+    /// Upper bound accepted from <c>AppSettings.SpaceMarginPercent</c>. §4 asks for 2–5%; a
+    /// cushion worth more than half the operation has stopped being a cushion, and a typo
+    /// (300 instead of 3) must not park the whole queue in silence.
+    /// </summary>
+    private const int MaxMarginPercent = 50;
+
+    private readonly FileTracertDbContext _db;
     private readonly ISpaceLedger _ledger;
     private readonly IVolumeProbe _probe;
     private readonly ILogger<SpaceCheck> _logger;
 
     private readonly Dictionary<int, VolumeFreeSpace> _freeSpaceByVolume = [];
+    private int? _marginPercent;
 
     public SpaceCheck(
+        FileTracertDbContext db,
         ISpaceLedger ledger,
         IVolumeProbe probe,
         ILogger<SpaceCheck> logger)
     {
+        _db = db;
         _ledger = ledger;
         _probe = probe;
         _logger = logger;
@@ -93,15 +106,59 @@ public sealed class SpaceCheck
     }
 
     /// <summary>
+    /// The configured safety margin, read once per scope and clamped to something a queue can
+    /// survive. Zero when the settings row is missing — an anomaly must not park every job.
+    /// </summary>
+    public async Task<int> MarginPercentAsync(CancellationToken ct)
+    {
+        if (_marginPercent is { } cached) return cached;
+
+        int configured = await _db.AppSettings.AsNoTracking()
+            .Select(s => s.SpaceMarginPercent)
+            .FirstOrDefaultAsync(ct);
+
+        int clamped = Math.Clamp(configured, 0, MaxMarginPercent);
+        if (clamped != configured)
+        {
+            _logger.LogWarning(
+                "AppSettings.SpaceMarginPercent is {Configured}%, outside the supported 0–{Max}% " +
+                "range; using {Clamped}% instead.", configured, MaxMarginPercent, clamped);
+        }
+
+        _marginPercent = clamped;
+        return clamped;
+    }
+
+    /// <summary>
+    /// The cushion in bytes for a demand of <paramref name="requiredBytes"/>.
+    ///
+    /// A percentage OF THE DEMAND, not of the free space, and the difference is the whole point:
+    /// what the margin covers is the gap between the sum of the file sizes and what actually
+    /// lands on the target — cluster slack, metadata, streams — plus whatever else writes to the
+    /// drive while we copy. All three grow with the size of the operation, not with the size of
+    /// the drive. A percentage of the free space would demand 60 GB of headroom to move a
+    /// kilobyte onto a 2 TB volume, and next to nothing when the volume is nearly full, which is
+    /// exactly backwards.
+    /// </summary>
+    public static long MarginBytesFor(long requiredBytes, int marginPercent) =>
+        requiredBytes <= 0 || marginPercent <= 0
+            ? 0
+            : (long)((decimal)requiredBytes * marginPercent / 100m);
+
+    /// <summary>
     /// Planning feasibility for a prospective or queued job on <paramref name="volume"/>.
     /// Never blocks anything by itself: the caller decides what an infeasible answer means.
+    /// The margin applies here too — an enqueue that promised room the engine would then refuse
+    /// would only move the disappointment one step later — but §4 still holds: an infeasible
+    /// answer means Blocked, never a refusal.
     /// </summary>
-    public Task<FeasibilityResult> PlanAsync(
+    public async Task<FeasibilityResult> PlanAsync(
         Volume volume, long requiredBytes, int? excludeJobId, int? sequenceOrder, CancellationToken ct)
     {
         var space = ReadFreeSpace(volume);
-        return _ledger.ComputeFeasibilityAsync(
-            volume.Id, space.FreeBytes, space.IsLive, requiredBytes,
+        long margin = MarginBytesFor(requiredBytes, await MarginPercentAsync(ct));
+        return await _ledger.ComputeFeasibilityAsync(
+            volume.Id, space.FreeBytes, space.IsLive, requiredBytes, margin,
             excludeJobId, sequenceOrder, includeQueuedLiberations: true, ct);
     }
 
@@ -117,8 +174,9 @@ public sealed class SpaceCheck
         var volume = job.TargetVolume;
         var space = ReadFreeSpace(volume);
 
+        long margin = MarginBytesFor(job.RequiredBytesTarget, await MarginPercentAsync(ct));
         var feasibility = await _ledger.ComputeFeasibilityAsync(
-            volume.Id, space.FreeBytes, space.IsLive, job.RequiredBytesTarget,
+            volume.Id, space.FreeBytes, space.IsLive, job.RequiredBytesTarget, margin,
             excludeJobId: job.Id, sequenceOrder: job.SequenceOrder,
             includeQueuedLiberations: false, ct);
 
@@ -139,7 +197,8 @@ public sealed class SpaceCheck
             return new HardSpaceVerdict(
                 Ok: false,
                 JobBlockReason.InsufficientSpace,
-                $"Insufficient space: {feasibility.DeficitBytes} bytes short on volume {volume.Id}.",
+                $"Insufficient space: {feasibility.DeficitBytes} bytes short on volume {volume.Id} " +
+                $"(required {job.RequiredBytesTarget}, safety margin {margin}).",
                 feasibility);
         }
 

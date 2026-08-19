@@ -68,7 +68,7 @@ public sealed class JobPartialCleanupTests : IDisposable
         var ledger = Substitute.For<ISpaceLedger>();
         ledger.ReleaseAsync(default, default).ReturnsForAnyArgs(Task.CompletedTask);
         // Always-feasible: the space check is not under test here, the cleanup I/O is.
-        ledger.ComputeFeasibilityAsync(default, default, default, default, default, default, default, default)
+        ledger.ComputeFeasibilityAsync(default, default, default, default, default, default, default, default, default)
               .ReturnsForAnyArgs(new FeasibilityResult(0, 0, long.MaxValue, 0, true, null, true));
 
         var db = _harness.CreateContext();

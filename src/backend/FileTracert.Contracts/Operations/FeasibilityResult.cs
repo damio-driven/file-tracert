@@ -10,7 +10,15 @@ namespace FileTracert.Contracts.Operations;
 /// <param name="DeficitBytes">How many bytes are still missing (0 when feasible).</param>
 /// <param name="EstimateIsLive">True when the target volume is currently online (figures are fresh).</param>
 /// <param name="BlockingVolumeId">The volume that caused infeasibility; null when feasible.</param>
-/// <param name="Feasible">True when <see cref="AvailableEstimateBytes"/> ≥ <see cref="RequiredBytes"/>.</param>
+/// <param name="Feasible">
+/// True when <see cref="AvailableEstimateBytes"/> ≥ <see cref="RequiredBytes"/> +
+/// <see cref="MarginBytes"/>.
+/// </param>
+/// <param name="MarginBytes">
+/// Safety cushion demanded on top of <see cref="RequiredBytes"/> (§4: "free space + margin"),
+/// derived from <c>AppSettings.SpaceMarginPercent</c>. Reported separately so the required
+/// figure stays the honest size of the operation and the UI can explain the difference.
+/// </param>
 public sealed record FeasibilityResult(
     long RequiredBytes,
     long ReservedBytes,
@@ -18,4 +26,5 @@ public sealed record FeasibilityResult(
     long DeficitBytes,
     bool EstimateIsLive,
     int? BlockingVolumeId,
-    bool Feasible);
+    bool Feasible,
+    long MarginBytes = 0);

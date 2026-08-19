@@ -36,14 +36,14 @@ public sealed class SpaceLedger : ISpaceLedger
     // ── ISpaceLedger ─────────────────────────────────────────────────────────
 
     public async Task<FeasibilityResult> ComputeFeasibilityAsync(
-        int targetVolumeId, long freeBytesLastKnown, bool isOnline,
-        long requiredBytes, int? excludeJobId, int? sequenceOrder,
+        int targetVolumeId, long freeBytes, bool estimateIsLive,
+        long requiredBytes, long marginBytes, int? excludeJobId, int? sequenceOrder,
         bool includeQueuedLiberations, CancellationToken ct)
     {
         await _lock.WaitAsync(ct);
         try
         {
-            return Compute(targetVolumeId, freeBytesLastKnown, isOnline, requiredBytes,
+            return Compute(targetVolumeId, freeBytes, estimateIsLive, requiredBytes, marginBytes,
                 excludeJobId, sequenceOrder, includeQueuedLiberations);
         }
         finally { _lock.Release(); }
@@ -188,8 +188,8 @@ public sealed class SpaceLedger : ISpaceLedger
 
     // ── private helpers (always called within _lock) ──────────────────────────
 
-    private FeasibilityResult Compute(int targetVolumeId, long freeBytesLastKnown,
-                                      bool isOnline, long requiredBytes,
+    private FeasibilityResult Compute(int targetVolumeId, long freeBytes,
+                                      bool estimateIsLive, long requiredBytes, long marginBytes,
                                       int? excludeJobId, int? sequenceOrder,
                                       bool includeQueuedLiberations)
     {
@@ -217,8 +217,11 @@ public sealed class SpaceLedger : ISpaceLedger
 
         // available = free − Σ(deltas)
         // positive deltas reduce available; negative deltas (liberations on target) increase it
-        long available = Math.Max(0, freeBytesLastKnown - netDelta);
-        long deficit = Math.Max(0, requiredBytes - available);
+        long available = Math.Max(0, freeBytes - netDelta);
+        // §4: the demand to beat is required + margin. The margin is the caller's policy — the
+        // ledger only owes it consistency between the deficit and the Feasible flag, so that a
+        // job reported feasible here cannot be refused by the very next check.
+        long deficit = Math.Max(0, requiredBytes + marginBytes - available);
         bool feasible = deficit == 0;
 
         return new FeasibilityResult(
@@ -226,9 +229,10 @@ public sealed class SpaceLedger : ISpaceLedger
             ReservedBytes: reserved,
             AvailableEstimateBytes: available,
             DeficitBytes: deficit,
-            EstimateIsLive: isOnline,
+            EstimateIsLive: estimateIsLive,
             BlockingVolumeId: feasible ? null : targetVolumeId,
-            Feasible: feasible);
+            Feasible: feasible,
+            MarginBytes: marginBytes);
     }
 
     private void AddToMemory(int volumeId, int jobId, int sequenceOrder, long delta)

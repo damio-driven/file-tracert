@@ -15,8 +15,9 @@ public interface ISpaceLedger
 {
     /// <summary>
     /// Pure feasibility check — reads in-memory ledger state, no DB access, no mutation.
-    /// The caller provides <paramref name="freeBytesLastKnown"/> and <paramref name="isOnline"/>
-    /// from the Volume entity so the ledger stays free of DB dependencies on this hot path.
+    /// The caller provides <paramref name="freeBytes"/> — read from the device when it can be,
+    /// from the Volume row when it cannot — and says with <paramref name="estimateIsLive"/> which
+    /// of the two it is, so the ledger stays free of DB and platform dependencies on this hot path.
     ///
     /// Feasibility is FIFO-aware: when evaluating an already-enqueued job, pass
     /// <paramref name="excludeJobId"/> (its own reservation must not count against itself)
@@ -24,6 +25,12 @@ public interface ISpaceLedger
     /// queue apply — a liberation from a job enqueued later cannot be credited).
     /// Pass null/null for a prospective job not yet in the queue (preview, enqueue check):
     /// it would land at the end, so every active delta precedes it.
+    ///
+    /// <paramref name="marginBytes"/> is the §4 safety cushion the caller wants on top of
+    /// <paramref name="requiredBytes"/>: the demand the deficit is computed against is the sum of
+    /// the two, while the result keeps reporting them apart. The ledger never reads it from the
+    /// settings itself — it is a singleton on a hot path, and one DB round-trip per feasibility
+    /// question is a round-trip too many.
     ///
     /// <paramref name="includeQueuedLiberations"/> selects the view:
     ///   true  → PLANNING view (enqueue/preview): promised liberations (negative deltas) of
@@ -34,9 +41,10 @@ public interface ISpaceLedger
     /// </summary>
     Task<FeasibilityResult> ComputeFeasibilityAsync(
         int targetVolumeId,
-        long freeBytesLastKnown,
-        bool isOnline,
+        long freeBytes,
+        bool estimateIsLive,
         long requiredBytes,
+        long marginBytes,
         int? excludeJobId,
         int? sequenceOrder,
         bool includeQueuedLiberations,
