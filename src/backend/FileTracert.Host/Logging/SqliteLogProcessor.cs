@@ -24,6 +24,9 @@ public sealed class SqliteLogProcessor : IAsyncDisposable
     /// <summary>Default budget for the shutdown drain; well inside the host's own timeout.</summary>
     public static readonly TimeSpan DefaultDrainTimeout = TimeSpan.FromSeconds(5);
 
+    /// <summary>Upper bound accepted from configuration: past this a "drain" is a hang.</summary>
+    public static readonly TimeSpan MaxDrainTimeout = TimeSpan.FromMinutes(1);
+
     /// <summary>A failing sink fails for every batch: report it, do not narrate it.</summary>
     private static readonly TimeSpan BreadcrumbInterval = TimeSpan.FromSeconds(30);
 
@@ -36,7 +39,8 @@ public sealed class SqliteLogProcessor : IAsyncDisposable
     private long _droppedRecords;
     private long _failedRecords;
     private long _abandonedRecords;
-    private long _lastBreadcrumbTimestamp;
+    private long _lastDropBreadcrumb;
+    private long _lastFailureBreadcrumb;
     private int _inFlightRecords;
     private int _draining;
 
@@ -48,7 +52,13 @@ public sealed class SqliteLogProcessor : IAsyncDisposable
     {
         _store = store;
         _batchSize = batchSize;
-        _drainTimeout = drainTimeout ?? DefaultDrainTimeout;
+        // A drain budget is configuration, and configuration can be wrong: a negative TimeSpan
+        // would make Task.Delay throw straight out of StopAsync — a failed shutdown caused by
+        // the very code that exists to make shutdowns clean. Out-of-range values fall back to
+        // the default rather than being trusted.
+        _drainTimeout = drainTimeout is { } requested && requested > TimeSpan.Zero && requested <= MaxDrainTimeout
+            ? requested
+            : DefaultDrainTimeout;
         _channel = Channel.CreateBounded<LogRecord>(
             new BoundedChannelOptions(capacity)
             {
@@ -116,11 +126,13 @@ public sealed class SqliteLogProcessor : IAsyncDisposable
                     continue;
                 }
 
+                // Published as soon as the batch exists — before the write, not inside it — so a
+                // drain that gives up can report the records it walked away from. Only the batch
+                // still being assembled above can escape the count.
+                Volatile.Write(ref _inFlightRecords, buffer.Count);
+
                 try
                 {
-                    // Published so a drain that gives up can report the batch it abandoned
-                    // mid-write, not just what was still queued behind it.
-                    Volatile.Write(ref _inFlightRecords, buffer.Count);
                     await _store.WriteBatchAsync(buffer, CancellationToken.None);
                 }
                 catch (OperationCanceledException ex)
@@ -164,6 +176,11 @@ public sealed class SqliteLogProcessor : IAsyncDisposable
     /// that stops into a service that never stops. On timeout (or when the caller's own
     /// shutdown budget runs out) the consumer is abandoned — the process is going away anyway —
     /// and the records left behind are counted and reported.
+    /// <para>
+    /// Runs once: a second call returns immediately rather than waiting for the first to finish.
+    /// Every call site is the stop sequence, where those calls are sequential; the guarantee is
+    /// "the queue is closed and its drain has been started", not "the drain has completed".
+    /// </para>
     /// </summary>
     public async Task DrainAsync(CancellationToken ct = default)
     {
@@ -183,14 +200,15 @@ public sealed class SqliteLogProcessor : IAsyncDisposable
         {
             // The consumer loop never lets an exception out, so this only observes completion.
             await _consumer.ConfigureAwait(false);
-            ReportLosses();
+            await ReportLossesAsync().ConfigureAwait(false);
             return;
         }
 
-        // Still queued, plus the batch the consumer was in the middle of writing. Reported as
-        // ABANDONED, not failed: the consumer is still running and may yet write them (or fail
-        // and count them itself) — nobody will be here to find out, and a counter that guessed
-        // would either double-count or claim a loss that did not happen.
+        // Still queued, plus the batch the consumer was in the middle of writing (short by at
+        // most the batch being assembled). Reported as ABANDONED, not failed: the consumer is
+        // still running and may yet write them (or fail and count them itself) — nobody will be
+        // here to find out, and a counter that guessed would either double-count or claim a loss
+        // that did not happen.
         var abandoned = _channel.Reader.Count + Volatile.Read(ref _inFlightRecords);
         Interlocked.Exchange(ref _abandonedRecords, abandoned);
         Breadcrumb(
@@ -198,29 +216,70 @@ public sealed class SqliteLogProcessor : IAsyncDisposable
             $"{abandoned} record(s) abandoned (queued or mid-write)",
             exception: null,
             force: true);
-        ReportLosses();
+
+        // No summary row here on purpose: the store is the thing that did not answer in time, so
+        // writing to it now would spend the budget the cap just enforced. The breadcrumb stands.
+        ReportLosses(persist: false);
     }
 
     /// <summary>
-    /// Last word of the sink, written outside the logging pipeline — by the time the queue is
-    /// closed, an <c>ILogger</c> call would be dropped by this sink and can throw in another
-    /// (a provider disposed earlier in the stop sequence).
+    /// Last word of the sink. The breadcrumb goes outside the logging pipeline — by the time the
+    /// queue is closed an <c>ILogger</c> call would be dropped by this sink and can throw in
+    /// another (a provider disposed earlier in the stop sequence). Returns the summary, or null
+    /// when there is nothing to report.
     /// </summary>
-    private void ReportLosses()
+    private string? ReportLosses(bool persist)
     {
         var dropped = DroppedRecordCount;
         var failed = FailedRecordCount;
         var abandoned = AbandonedRecordCount;
         if (dropped == 0 && failed == 0 && abandoned == 0)
         {
+            return null;
+        }
+
+        var summary =
+            $"log sink ended the run with {dropped} dropped, {failed} unwritten and " +
+            $"{abandoned} abandoned record(s)";
+        Breadcrumb(summary, exception: null, force: true);
+        return persist ? summary : null;
+    }
+
+    /// <summary>
+    /// The same summary, but written <b>into the log database</b> — straight through the store,
+    /// bypassing the closed queue (so there is no recursion). stderr is discarded when running as
+    /// a Windows Service and <see cref="Trace"/> needs a debugger attached: without this row the
+    /// §9 trace would exist only where the production deployment cannot see it.
+    /// </summary>
+    private async Task ReportLossesAsync()
+    {
+        var summary = ReportLosses(persist: true);
+        if (summary is null)
+        {
             return;
         }
 
-        Breadcrumb(
-            $"log sink ended the run with {dropped} dropped, {failed} unwritten and " +
-            $"{abandoned} abandoned record(s)",
-            exception: null,
-            force: true);
+        try
+        {
+            await _store.WriteBatchAsync(
+                [
+                    new LogRecord(
+                        DateTime.UtcNow,
+                        (int)LogLevel.Warning,
+                        typeof(SqliteLogProcessor).FullName!,
+                        summary,
+                        Exception: null,
+                        EventId: null,
+                        Scope: null)
+                ],
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            // The store just finished writing a whole queue, so this is unexpected — and it is
+            // the last thing the sink does, so it can only be said out here.
+            Breadcrumb("could not record the loss summary in the log database", ex, force: true);
+        }
     }
 
     public ValueTask DisposeAsync() => new(DrainAsync());
@@ -233,9 +292,17 @@ public sealed class SqliteLogProcessor : IAsyncDisposable
     /// </summary>
     private void Breadcrumb(string message, Exception? exception, bool force = false)
     {
-        if (!force && !ShouldWriteBreadcrumb())
+        // Two throttle slots, not one: a flood of dropped records must not be able to eat the
+        // slot of a genuine sink failure — the two say very different things.
+        if (!force)
         {
-            return;
+            var allowed = exception is null
+                ? ShouldWriteBreadcrumb(ref _lastDropBreadcrumb)
+                : ShouldWriteBreadcrumb(ref _lastFailureBreadcrumb);
+            if (!allowed)
+            {
+                return;
+            }
         }
 
         // Full detail (§9): ToString() carries the message, the stack and every inner exception.
@@ -256,16 +323,16 @@ public sealed class SqliteLogProcessor : IAsyncDisposable
         }
     }
 
-    private bool ShouldWriteBreadcrumb()
+    private static bool ShouldWriteBreadcrumb(ref long slot)
     {
         var now = Stopwatch.GetTimestamp();
-        var last = Interlocked.Read(ref _lastBreadcrumbTimestamp);
+        var last = Interlocked.Read(ref slot);
         if (last != 0 && Stopwatch.GetElapsedTime(last, now) < BreadcrumbInterval)
         {
             return false;
         }
 
         // Whoever wins the exchange writes; a loser in the same instant stays quiet.
-        return Interlocked.CompareExchange(ref _lastBreadcrumbTimestamp, now, last) == last;
+        return Interlocked.CompareExchange(ref slot, now, last) == last;
     }
 }

@@ -69,6 +69,57 @@ public sealed class LogShutdownDrainTests
     }
 
     /// <summary>
+    /// The counters are useless if nobody can read them where the product actually runs: stderr
+    /// is discarded by a Windows Service and Trace needs a debugger. So the summary also goes
+    /// into the log DB, written straight through the store now that the queue is closed.
+    /// </summary>
+    [Fact]
+    public async Task What_the_sink_lost_is_written_into_the_log_database()
+    {
+        var store = new FailFirstBatchLogStore(TimeSpan.FromMilliseconds(20));
+        var host = BuildHost(store, TimeSpan.FromSeconds(10));
+        await host.StartAsync();
+
+        var logger = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("FileTracert.Test.Loss");
+        logger.LogInformation("this batch dies");
+        await TestPolling.WaitUntilAsync(() => Task.FromResult(
+            host.Services.GetRequiredService<SqliteLogProcessor>().FailedRecordCount > 0));
+
+        await host.StopAsync();
+
+        store.Written.Should().Contain(
+            r => r.Message.Contains("unwritten") && r.Category == typeof(SqliteLogProcessor).FullName,
+            "the run's losses must be readable where an operator looks");
+
+        host.Dispose();
+    }
+
+    /// <summary>
+    /// A drain budget is configuration, and configuration can be wrong. A negative TimeSpan would
+    /// otherwise reach Task.Delay and throw straight out of StopAsync.
+    /// </summary>
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(0)]
+    [InlineData(24 * 60 * 60)]
+    public async Task An_out_of_range_drain_budget_falls_back_instead_of_throwing(int seconds)
+    {
+        var store = new SlowRecordingLogStore(TimeSpan.FromMilliseconds(20));
+        var host = BuildHost(store, TimeSpan.FromSeconds(seconds));
+        await host.StartAsync();
+
+        var logger = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("FileTracert.Test.Budget");
+        logger.LogInformation("still has to land");
+
+        var stop = async () => await host.StopAsync();
+
+        await stop.Should().NotThrowAsync();
+        store.Written.Should().Contain(r => r.Message == "still has to land");
+
+        host.Dispose();
+    }
+
+    /// <summary>
     /// The drain is registered first so that it stops last — that is the whole reason a worker's
     /// goodbye still reaches the log DB. Asserted rather than assumed: the host's stop order is
     /// a framework behaviour this design leans on.

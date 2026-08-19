@@ -11,10 +11,13 @@ namespace FileTracert.Host.Logging;
 public static class SqliteLoggingRegistration
 {
     /// <summary>
-    /// Registers the queued SQLite sink. The store must already have its schema: the sink is
-    /// built before the container exists, because everything after this line may log.
+    /// Registers the queued SQLite sink and returns the processor. The store must already have
+    /// its schema: the sink is built before the container exists, because everything after this
+    /// line may log. The instance comes back so the composition root can drain it on a startup
+    /// that never reaches — or never leaves — the host's stop sequence, without asking a
+    /// container that by then may be disposed.
     /// </summary>
-    public static void AddSqliteLogging(
+    public static SqliteLogProcessor AddSqliteLogging(
         this IHostApplicationBuilder builder,
         ILogStore store,
         LogLevelSwitch levelSwitch,
@@ -39,5 +42,7 @@ public static class SqliteLoggingRegistration
         // The console sink (added by the default host builder) stays alongside it, so
         // early-startup logs — emitted before the log DB is ready — are never lost.
         builder.Logging.AddProvider(new SqliteLoggerProvider(processor, levelSwitch));
+
+        return processor;
     }
 }

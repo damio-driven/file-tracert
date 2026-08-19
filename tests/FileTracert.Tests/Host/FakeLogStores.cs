@@ -31,16 +31,51 @@ internal sealed class ThrowingLogStore : LogStoreFake
 internal sealed class BlockingLogStore : LogStoreFake
 {
     private readonly TaskCompletionSource _gate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private volatile bool _entered;
 
-    public bool Entered { get; private set; }
+    /// <summary>Set by the consumer thread, polled by the test thread: volatile, not luck.</summary>
+    public bool Entered => _entered;
 
     public override async Task WriteBatchAsync(IReadOnlyList<LogRecord> records, CancellationToken ct)
     {
-        Entered = true;
+        _entered = true;
         await _gate.Task;
     }
 
     public void Release() => _gate.TrySetResult();
+}
+
+/// <summary>Fails the first batch, then behaves — so a run can end with a real loss to report.</summary>
+internal sealed class FailFirstBatchLogStore(TimeSpan delayPerBatch) : LogStoreFake
+{
+    private readonly Lock _sync = new();
+    private readonly List<LogRecord> _written = [];
+    private int _calls;
+
+    public IReadOnlyList<LogRecord> Written
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _written.ToList();
+            }
+        }
+    }
+
+    public override async Task WriteBatchAsync(IReadOnlyList<LogRecord> records, CancellationToken ct)
+    {
+        if (Interlocked.Increment(ref _calls) == 1)
+        {
+            throw new InvalidOperationException("disk full");
+        }
+
+        await Task.Delay(delayPerBatch, ct);
+        lock (_sync)
+        {
+            _written.AddRange(records);
+        }
+    }
 }
 
 /// <summary>

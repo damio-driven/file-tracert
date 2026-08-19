@@ -35,7 +35,7 @@ var connectionString = DatabaseLocation.ConnectionString(databasePath);
 // switch gates every provider so changing the level takes effect without a restart.
 var logStore = new SqliteLogStore(DatabaseLocation.ConnectionString(DatabaseLocation.ResolveLogs(databasePath)));
 logStore.EnsureSchema();
-builder.AddSqliteLogging(
+var logProcessor = builder.AddSqliteLogging(
     logStore,
     new LogLevelSwitch(),
     TimeSpan.FromSeconds(options.LogDrainTimeoutSeconds));
@@ -80,22 +80,34 @@ builder.WebHost.ConfigureKestrel(k => k.ListenLocalhost(options.Port));
 
 var app = builder.Build();
 
-// Initialize the DB before serving: migrate + WAL + token. Throws → host stops.
-await app.Services.GetRequiredService<DatabaseInitializer>().InitializeAsync(CancellationToken.None);
+try
+{
+    // Initialize the DB before serving: migrate + WAL + token. Throws → host stops.
+    await app.Services.GetRequiredService<DatabaseInitializer>().InitializeAsync(CancellationToken.None);
 
-app.UseMiddleware<TokenAuthMiddleware>();
+    app.UseMiddleware<TokenAuthMiddleware>();
 
-// Serve the built Angular SPA (wwwroot) as static assets; client routes fall back
-// to a token-injected index.html. Dev uses ng-serve + proxy instead, fetching the
-// token from the Development-only endpoint below.
-app.UseStaticFiles();
+    // Serve the built Angular SPA (wwwroot) as static assets; client routes fall back
+    // to a token-injected index.html. Dev uses ng-serve + proxy instead, fetching the
+    // token from the Development-only endpoint below.
+    app.UseStaticFiles();
 
-app.MapControllers();
-app.MapHub<FileTracertHub>("/hubs/events");
-app.MapDevTokenEndpoint();
-app.MapSpaFallback();
+    app.MapControllers();
+    app.MapHub<FileTracertHub>("/hubs/events");
+    app.MapDevTokenEndpoint();
+    app.MapSpaFallback();
 
-app.Run();
+    await app.RunAsync();
+}
+finally
+{
+    // LogFlushService drains at the end of the stop sequence — but a host that fails to START
+    // never runs a stop sequence, and a migration that throws is exactly when the queued records
+    // are worth having. Drained here too, from the instance the composition root owns: after
+    // RunAsync the container is already disposed and could not hand it back. DrainAsync is
+    // idempotent, so the normal path pays nothing.
+    await logProcessor.DrainAsync();
+}
 
 /// <summary>Exposed so integration tests can host the app via WebApplicationFactory.</summary>
 public partial class Program;

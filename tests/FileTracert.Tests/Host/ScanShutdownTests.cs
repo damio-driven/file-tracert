@@ -117,6 +117,11 @@ public sealed class ScanShutdownTests
         await act.Should().ThrowAsync<OperationCanceledException>();
         started.Stop();
 
+        // Both halves matter: fast enough, AND cut short. Without the second assertion a machine
+        // with a 1 ms timer resolution could walk all 1 000 items inside the budget and let the
+        // unfixed code pass.
+        enumerator.Remaining.Should().BeGreaterThan(
+            0, "the walk must have been abandoned, not merely finished quickly");
         started.Elapsed.Should().BeLessThan(
             budget,
             "a stop during enumeration must not wait for the whole walk ({0} items still to come)",
