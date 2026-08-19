@@ -23,6 +23,15 @@ export class QueueApi {
     return this.http.post<OperationJobDto>(`${this.base}/enqueue`, req);
   }
 
+  /**
+   * A whole selection in one call (C25). The server enqueues all of it or none of it, so a
+   * failure leaves nothing behind and repeating the corrected gesture cannot duplicate jobs.
+   * Returns the created jobs in request order, each with the state it was born in.
+   */
+  enqueueBatch(reqs: CreateJobRequest[]): Observable<OperationJobDto[]> {
+    return this.http.post<OperationJobDto[]>(`${this.base}/enqueue-batch`, reqs);
+  }
+
   preview(req: CreateJobRequest): Observable<FeasibilityResult> {
     return this.http.post<FeasibilityResult>(`${this.base}/preview`, req);
   }

@@ -197,20 +197,20 @@ export class OperationPicker implements OnInit {
 
     this.enqueueing.set(true);
     this.error.set(null);
-    let count = 0;
-    let waiting = 0;
     try {
-      for (const item of this.items()) {
-        // Send the destination folder only — the backend appends the entity name.
-        const job = await firstValueFrom(this.api.enqueue(this.toMoveRequest(item, folder)));
-        count++;
-        // Since 9c a conflicting operation is ACCEPTED and parked behind the job that holds
-        // the entity, so the confirmation has to say "queued, waiting" — reporting a plain
-        // success would leave the user wondering why nothing moved.
-        if (job.blockReason === 'DependencyPending') waiting++;
-      }
-      this.enqueuedCount.set(count);
-      this.waitingCount.set(waiting);
+      // C25 — one gesture, one request. The loop this replaces could stop halfway and leave
+      // part of the selection queued with nothing on screen admitting it; the backend now
+      // takes the whole batch in one transaction, so a failure here means nothing was queued
+      // and pressing "Accoda" again is safe.
+      // The destination folder is sent alone — the backend appends each entity's name.
+      const jobs = await firstValueFrom(this.api.enqueueBatch(
+        this.items().map(item => this.toMoveRequest(item, folder)),
+      ));
+      this.enqueuedCount.set(jobs.length);
+      // Since 9c a conflicting operation is ACCEPTED and parked behind the job that holds
+      // the entity, so the confirmation has to say "queued, waiting" — reporting a plain
+      // success would leave the user wondering why nothing moved.
+      this.waitingCount.set(jobs.filter(j => j.blockReason === 'DependencyPending').length);
       this.enqueued.set(true);
       this.completed.emit();
     } catch (e) {

@@ -42,7 +42,8 @@ function childrenResult(directories: CatalogDirDto[]): CatalogChildrenDto {
 }
 
 function setup() {
-  const enqueue = vi.fn((_req: CreateJobRequest) => of({} as never));
+  const enqueueBatch = vi.fn((reqs: CreateJobRequest[]) =>
+    of(reqs.map((_, i) => ({ id: i + 1, blockReason: 'None' })) as never));
   const previewBatch = vi.fn((_reqs: CreateJobRequest[]) => of(feasibility));
   const children = vi.fn((_volumeId: number, dirId: number | null) => {
     if (dirId === null) return of(childrenResult([dir(10, 'Documenti'), dir(11, 'Archivio')]));
@@ -53,7 +54,7 @@ function setup() {
   TestBed.configureTestingModule({
     providers: [
       provideZonelessChangeDetection(),
-      { provide: QueueApi, useValue: { enqueue, previewBatch } },
+      { provide: QueueApi, useValue: { enqueueBatch, previewBatch } },
       { provide: CatalogApi, useValue: { children } },
       { provide: VolumesApi, useValue: { list: () => of([]) } },
       { provide: Router, useValue: { navigate: () => Promise.resolve(true) } },
@@ -71,6 +72,7 @@ function setup() {
     newFolderSegments: { (): string[] };
     dirChildren: { (): CatalogDirDto[] };
     error: { (): string | null };
+    enqueuedCount: { (): number };
     waitingCount: { (): number };
     newFolderName: string;
     openDirectory(dir: CatalogDirDto): Promise<void>;
@@ -84,18 +86,18 @@ function setup() {
   };
   cmp.targetVolumeId = 1;
 
-  return { enqueue, previewBatch, children, cmp, fixture };
+  return { enqueueBatch, previewBatch, children, cmp, fixture };
 }
 
 describe('OperationPicker target path', () => {
   it('root selection (no folder chosen) is a valid, empty-path target', async () => {
-    const { enqueue, cmp } = setup();
+    const { enqueueBatch, cmp } = setup();
 
     expect(cmp.canSubmit).toBe(true);
     expect(cmp.targetFolder).toBe('');
 
     await cmp.enqueue();
-    expect(enqueue.mock.calls[0][0].targetRelativePath).toBe('');
+    expect(enqueueBatch.mock.calls[0][0][0].targetRelativePath).toBe('');
   });
 
   it('descending into a real folder fetches its children and extends the path', async () => {
@@ -159,15 +161,18 @@ describe('OperationPicker target path', () => {
     expect(cmp.targetFolder).toBe('A');
   });
 
-  it('enqueue sends the derived folder only, without appending the file name', async () => {
-    const { enqueue, cmp } = setup();
+  // C25 — one user gesture is ONE request, whatever the size of the selection.
+  it('enqueue sends the whole selection in a single batch call', async () => {
+    const { enqueueBatch, cmp } = setup();
 
     await cmp.openDirectory(dir(11, 'Archivio'));
     await cmp.enqueue();
 
-    expect(enqueue).toHaveBeenCalledTimes(2);
-    expect(enqueue.mock.calls[0][0].targetRelativePath).toBe('Archivio');
-    expect(enqueue.mock.calls[1][0].targetRelativePath).toBe('Archivio');
+    expect(enqueueBatch).toHaveBeenCalledTimes(1);
+    const batch = enqueueBatch.mock.calls[0][0];
+    expect(batch).toHaveLength(2);
+    expect(batch.map(r => r.sourceFileId)).toEqual([1, 2]);
+    expect(batch.every(r => r.targetRelativePath === 'Archivio')).toBe(true);
   });
 
   // FIX #5 — the preview must evaluate the WHOLE batch, not just the first file.
@@ -187,7 +192,7 @@ describe('OperationPicker target path', () => {
   // Folder ops (step 8): a selected folder becomes a MoveFolder carrying sourceDirectoryId,
   // and the backend weighs its subtree at preview time.
   it('a selected folder is enqueued as MoveFolder with sourceDirectoryId', async () => {
-    const { enqueue, cmp, fixture } = setup();
+    const { enqueueBatch, cmp, fixture } = setup();
     fixture.componentRef.setInput('items', [
       { kind: 'Folder', id: 7, name: 'Vacanze', sizeBytes: 0, volumeId: 1, relativePath: 'Vacanze' },
     ] satisfies SelectedItem[]);
@@ -195,8 +200,8 @@ describe('OperationPicker target path', () => {
     await cmp.openDirectory(dir(11, 'Archivio'));
     await cmp.enqueue();
 
-    expect(enqueue).toHaveBeenCalledTimes(1);
-    const req = enqueue.mock.calls[0][0];
+    expect(enqueueBatch).toHaveBeenCalledTimes(1);
+    const req = enqueueBatch.mock.calls[0][0][0];
     expect(req.type).toBe('MoveFolder');
     expect(req.sourceDirectoryId).toBe(7);
     expect(req.sourceFileId).toBeNull();
@@ -239,19 +244,19 @@ describe('OperationPicker target path', () => {
   // parked behind the job that holds the entity — so the confirmation must say "waiting",
   // not report a clean success the user will not see happen.
   it('counts the operations that came back queued-but-waiting', async () => {
-    const { cmp, enqueue } = setup();
-    enqueue
-      .mockImplementationOnce(() => of({ blockReason: 'DependencyPending' } as never))
-      .mockImplementationOnce(() => of({ blockReason: 'None' } as never));
+    const { cmp, enqueueBatch } = setup();
+    enqueueBatch.mockImplementationOnce(() =>
+      of([{ id: 1, blockReason: 'DependencyPending' }, { id: 2, blockReason: 'None' }] as never));
 
     await cmp.enqueue();
 
+    expect(cmp.enqueuedCount()).toBe(2);
     expect(cmp.waitingCount()).toBe(1);
   });
 
   it('a failed enqueue does not emit completed', async () => {
-    const { cmp, fixture, enqueue } = setup();
-    enqueue.mockImplementationOnce(() => throwError(() => new Error('boom')));
+    const { cmp, fixture, enqueueBatch } = setup();
+    enqueueBatch.mockImplementationOnce(() => throwError(() => new Error('boom')));
 
     const completed = vi.fn();
     fixture.componentInstance.completed.subscribe(completed);
