@@ -53,8 +53,40 @@ public sealed class SqliteLoggingTests : IDisposable
         var act = () => logger.LogInformation("still fine");
 
         act.Should().NotThrow();
-        // Give the consumer a moment to swallow the sink failure; nothing observable.
-        await Task.Delay(200);
+        // C24: swallowed for the caller, but never unrecorded — the records the sink could
+        // not write are counted so the loss is readable instead of invisible.
+        await TestPolling.WaitUntilAsync(() => Task.FromResult(processor.FailedRecordCount >= 1));
+        processor.FailedRecordCount.Should().BeGreaterThanOrEqualTo(1);
+    }
+
+    /// <summary>C24: a record the queue cannot even accept is counted too, not lost in silence.</summary>
+    [Fact]
+    public async Task Records_dropped_by_a_full_queue_are_counted()
+    {
+        // Capacity 1 with a store that never returns: the consumer takes the first record and
+        // stalls inside the write, so everything after it hits a full channel.
+        var store = new BlockingLogStore();
+        await using var processor = new SqliteLogProcessor(store, capacity: 1, batchSize: 1);
+        try
+        {
+            var provider = new SqliteLoggerProvider(processor, new LogLevelSwitch(LogLevel.Trace));
+            var logger = provider.CreateLogger("Test");
+
+            logger.LogInformation("first");
+            await TestPolling.WaitUntilAsync(() => Task.FromResult(store.Entered));
+
+            for (var i = 0; i < 20; i++)
+            {
+                logger.LogInformation("overflow {I}", i);
+            }
+
+            processor.DroppedRecordCount.Should().BeGreaterThan(0);
+        }
+        finally
+        {
+            // Always let the consumer out, or disposing the processor would wait on it forever.
+            store.Release();
+        }
     }
 
     [Fact]
@@ -74,22 +106,6 @@ public sealed class SqliteLoggingTests : IDisposable
 
     private Task<PagedResult<LogEntryDto>> Query() =>
         _store.QueryAsync(new LogQuery(0, 50), CancellationToken.None);
-
-    private sealed class ThrowingLogStore : ILogStore
-    {
-        public void EnsureSchema() { }
-
-        public Task WriteBatchAsync(IReadOnlyList<LogRecord> records, CancellationToken ct) =>
-            throw new InvalidOperationException("disk full");
-
-        public Task<PagedResult<LogEntryDto>> QueryAsync(LogQuery query, CancellationToken ct) =>
-            throw new NotSupportedException();
-
-        public Task<int> TrimAsync(DateTime olderThanUtc, int maxRows, bool vacuum, CancellationToken ct) =>
-            throw new NotSupportedException();
-
-        public Task CheckpointAsync(CancellationToken ct) => throw new NotSupportedException();
-    }
 
     public void Dispose()
     {
