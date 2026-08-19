@@ -648,4 +648,91 @@ public sealed class ScanServiceTests
         (await read.Files.CountAsync()).Should().Be(2);
         (await read.Directories.CountAsync()).Should().Be(2); // root + A
     }
+
+    // ── C16: exclusion is inherited by the whole subtree ──────────────────────
+
+    /// <summary>
+    /// NTFS does not propagate Hidden/System to children: a file inside a hidden folder has
+    /// perfectly clean attributes of its own. The filter only looked at each item's OWN
+    /// attributes, so every file under a hidden folder passed — and the ancestor walk that
+    /// builds the tree then RESURRECTED the excluded folder as a materialized row. Whole trees
+    /// the user believed excluded were fully indexed.
+    /// </summary>
+    [Fact]
+    public async Task Enumeration_scan_excludes_everything_under_a_hidden_directory()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, VolumeScanEngine.Enumeration, "exFAT", ["jpg"]);
+
+        var entries = new List<ScanEntry>
+        {
+            new(@"Photos", "Photos", true, 0, T, T, FileAttributes.Directory),
+            new(@"Photos\ok.jpg", "ok.jpg", false, 10, T, T, FileAttributes.Normal),
+
+            // Hidden folder; its content carries no hidden/system flag of its own.
+            new(@"Secret", "Secret", true, 0, T, T, FileAttributes.Directory | FileAttributes.Hidden),
+            new(@"Secret\a.jpg", "a.jpg", false, 20, T, T, FileAttributes.Normal),
+            new(@"Secret\Deep", "Deep", true, 0, T, T, FileAttributes.Directory),
+            new(@"Secret\Deep\b.jpg", "b.jpg", false, 30, T, T, FileAttributes.Normal),
+        };
+
+        await using (var ctx = harness.CreateContext())
+        {
+            var sut = Build(harness, ctx,
+                new FakeVolumeProbe(ProbedFor("exFAT")),
+                new FakeUsnReader([], 0),
+                new FakeDirectoryEnumerator(entries),
+                new FakeFileMetadataReader(new Dictionary<string, FileMetadata>()));
+            await sut.ScanVolumeAsync(volumeId, CancellationToken.None);
+        }
+
+        await using var read = harness.CreateContext();
+        (await read.Files.Select(f => f.Name).ToListAsync()).Should().BeEquivalentTo("ok.jpg");
+        (await read.Directories.Where(d => d.IsMaterialized).Select(d => d.MaterializedPath).ToListAsync())
+            .Should().BeEquivalentTo("", "Photos");
+    }
+
+    /// <summary>
+    /// The same rule on the USN engine, which is NOT a tree walk (it is an MFT dump in arbitrary
+    /// order): the hidden folder's record can arrive AFTER its content, so the pipeline cannot
+    /// rely on having seen the ancestor first.
+    /// </summary>
+    [Fact]
+    public async Task Usn_scan_excludes_everything_under_a_hidden_directory_whatever_the_record_order()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, VolumeScanEngine.UsnJournal, "NTFS", ["pdf"]);
+
+        // Deliberately "children first": the MFT dump has no parent-before-child guarantee.
+        var usnEntries = new List<UsnEntry>
+        {
+            new(30, 20, "b.pdf", @"Secret\Deep\b.pdf", false, null, FileAttributes.Normal, 30),
+            new(20, 10, "Deep", @"Secret\Deep", true, null, FileAttributes.Directory, 20),
+            new(11, 10, "a.pdf", @"Secret\a.pdf", false, null, FileAttributes.Normal, 11),
+            new(10, 5, "Secret", @"Secret", true, null, FileAttributes.Directory | FileAttributes.Hidden, 10),
+            new(40, 5, "Docs", @"Docs", true, null, FileAttributes.Directory, 40),
+            new(41, 40, "ok.pdf", @"Docs\ok.pdf", false, null, FileAttributes.Normal, 41),
+        };
+        var meta = new Dictionary<string, FileMetadata>
+        {
+            [@"Secret\a.pdf"] = new FileMetadata(1, T, T),
+            [@"Secret\Deep\b.pdf"] = new FileMetadata(2, T, T),
+            [@"Docs\ok.pdf"] = new FileMetadata(3, T, T),
+        };
+
+        await using (var ctx = harness.CreateContext())
+        {
+            var sut = Build(harness, ctx,
+                new FakeVolumeProbe(ProbedFor("NTFS")),
+                new FakeUsnReader(usnEntries, nextUsn: 999),
+                new FakeDirectoryEnumerator([]),
+                new FakeFileMetadataReader(meta));
+            await sut.ScanVolumeAsync(volumeId, CancellationToken.None);
+        }
+
+        await using var read = harness.CreateContext();
+        (await read.Files.Select(f => f.Name).ToListAsync()).Should().BeEquivalentTo("ok.pdf");
+        (await read.Directories.Where(d => d.IsMaterialized).Select(d => d.MaterializedPath).ToListAsync())
+            .Should().BeEquivalentTo("", "Docs");
+    }
 }

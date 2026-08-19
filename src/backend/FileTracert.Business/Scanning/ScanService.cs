@@ -234,6 +234,13 @@ public sealed class ScanService
         var dirs = new List<ScanItem>();
         var files = new List<ScanItem>();
 
+        // C16: every directory the filter rejects takes its whole subtree with it. Collected
+        // while streaming and applied at the end rather than as we go, because only ONE of the
+        // two engines walks a tree: the USN snapshot is an MFT dump whose records arrive in no
+        // particular order, so the parent may well be seen after its children. One rule, both
+        // engines, no assumption about ordering.
+        var excluded = new ExcludedSubtrees();
+
         // Enumeration is the long "blind" phase: report a running count periodically so
         // the UI doesn't look frozen while the FRN map / directory walk is built.
         var seen = 0L;
@@ -261,6 +268,10 @@ public sealed class ScanService
                 {
                     dirs.Add(item);
                 }
+                else
+                {
+                    excluded.Add(item.RelativePath);
+                }
             }
             else
             {
@@ -273,7 +284,34 @@ public sealed class ScanService
         }
 
         _statusTracker.ReportSeen(volume.Id, seen);
+        DropExcludedSubtrees(volume, dirs, files, excluded);
         return (dirs, files);
+    }
+
+    /// <summary>
+    /// Second pass of the C16 rule: drop what survived its own attributes but lives under a
+    /// folder that did not. Dropping the descendant FILES is what also stops the ancestor walk
+    /// in <see cref="BuildDirectoryTree"/> from resurrecting the excluded folder as a
+    /// materialized row — a file the scan never keeps cannot create its own ancestors.
+    /// </summary>
+    private void DropExcludedSubtrees(
+        Volume volume, List<ScanItem> dirs, List<ScanItem> files, ExcludedSubtrees excluded)
+    {
+        if (excluded.Count == 0)
+        {
+            return;
+        }
+
+        var droppedDirs = dirs.RemoveAll(d => excluded.Covers(d.RelativePath));
+        var droppedFiles = files.RemoveAll(f => excluded.Covers(f.RelativePath));
+
+        if (droppedDirs + droppedFiles > 0)
+        {
+            _logger.LogInformation(
+                "Volume {VolumeId}: {Dirs} directory(ies) and {Files} file(s) skipped because an " +
+                "ancestor folder is excluded by the filter.",
+                volume.Id, droppedDirs, droppedFiles);
+        }
     }
 
     private IEnumerable<ScanItem> EnumerateRaw(Volume volume, string mountRoot, List<WatchedRoot> roots)

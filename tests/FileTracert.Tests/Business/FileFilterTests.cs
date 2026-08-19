@@ -115,4 +115,31 @@ public class FileFilterTests
 
         act.Should().Throw<System.Text.Json.JsonException>();
     }
+
+    // ── C16: the excluded-subtree set ─────────────────────────────────────────
+
+    [Theory]
+    [InlineData(@"Secret", true)]
+    [InlineData(@"Secret\a.jpg", true)]
+    [InlineData(@"secret\Deep\b.jpg", true)]        // case-insensitive, like every other path rule
+    [InlineData(@"Secretive\a.jpg", false)]         // segment-aware: Secret is not a prefix of Secretive
+    [InlineData(@"Secret.jpg", false)]              // a sibling FILE that merely starts with the name
+    [InlineData(@"Photos\a.jpg", false)]
+    public void Excluded_subtree_set_covers_descendants_and_only_whole_segments(string path, bool covered)
+    {
+        var excluded = new ExcludedSubtrees();
+        excluded.Add(@"Secret");
+
+        excluded.Covers(path).Should().Be(covered);
+    }
+
+    [Fact]
+    public void Excluded_subtree_set_ignores_the_volume_root()
+    {
+        var excluded = new ExcludedSubtrees();
+        excluded.Add(string.Empty);
+
+        excluded.Count.Should().Be(0);
+        excluded.Covers(@"Anything\at\all").Should().BeFalse();
+    }
 }
