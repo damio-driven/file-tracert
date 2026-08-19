@@ -133,45 +133,48 @@ public sealed class BlockedJobRevaluator
         {
             examined.Add(job.Id);
 
-            // A job waiting for another job is not waiting for the WORLD: the offline and space
-            // gates below would overwrite DependencyPending with a reason that is true but not
-            // the blocking one, and lose track of the prerequisite. Settle the dependency first;
-            // only a job whose path is clear falls through to the other two gates.
-            if (job.BlockReason == JobBlockReason.DependencyPending &&
-                !await DependencyIsSettledAsync(job, ct))
-            {
-                continue;
-            }
-
-            var offline = VolumeOfflineGate.Evaluate(job.SourceVolume, job.TargetVolume);
-            if (offline != JobBlockReason.None)
-            {
-                await KeepBlockedAsync(job, offline,
-                    VolumeOfflineGate.Describe(offline, job.SourceVolume, job.TargetVolume),
-                    job.DependsOnJobId, ct);
-                continue;
-            }
-
-            // Same hard check the engine runs, over the same live figure: releasing a job on a
-            // number the engine would then contradict is how a job ping-pongs Blocked → Pending
-            // → Blocked without ever moving a byte.
-            var space = await _spaceCheck.EvaluateHardAsync(job, ct);
-            if (!space.Ok)
-            {
-                await KeepBlockedAsync(job, space.Reason, space.Message, job.DependsOnJobId, ct);
-                continue;
-            }
-
             try
             {
+                // A job waiting for another job is not waiting for the WORLD: the offline and space
+                // gates below would overwrite DependencyPending with a reason that is true but not
+                // the blocking one, and lose track of the prerequisite. Settle the dependency first;
+                // only a job whose path is clear falls through to the other two gates.
+                if (job.BlockReason == JobBlockReason.DependencyPending &&
+                    !await DependencyIsSettledAsync(job, ct))
+                {
+                    continue;
+                }
+
+                var offline = VolumeOfflineGate.Evaluate(job.SourceVolume, job.TargetVolume);
+                if (offline != JobBlockReason.None)
+                {
+                    await KeepBlockedAsync(job, offline,
+                        VolumeOfflineGate.Describe(offline, job.SourceVolume, job.TargetVolume),
+                        job.DependsOnJobId, ct);
+                    continue;
+                }
+
+                // Same hard check the engine runs, over the same live figure: releasing a job on a
+                // number the engine would then contradict is how a job ping-pongs Blocked → Pending
+                // → Blocked without ever moving a byte.
+                var space = await _spaceCheck.EvaluateHardAsync(job, ct);
+                if (!space.Ok)
+                {
+                    await KeepBlockedAsync(job, space.Reason, space.Message, job.DependsOnJobId, ct);
+                    continue;
+                }
+
                 if (await UnblockAsync(job, ct))
                     unblockedCount++;
             }
             catch (DbUpdateException ex)
             {
+                // Around the WHOLE decision, not only the release: re-parking a job also writes,
+                // and the goal is "one job's write failure does not end the pass", not "one
+                // particular write's failure does not".
                 _logger.LogError(ex,
-                    "Job {Id}: its release could not be written — it stays Blocked ({Reason}), and " +
-                    "the revaluation carries on with the jobs behind it.",
+                    "Job {Id}: its revaluation could not be written — it stays Blocked ({Reason}), " +
+                    "and the pass carries on with the jobs behind it.",
                     job.Id, job.BlockReason);
                 return (unblockedCount, Interrupted: true);
             }

@@ -700,7 +700,10 @@ sopravvive invece di prendere la prima.
 - **`QueueExceptionFilter` cattura lo stesso insieme di prima**, `ArgumentException` e
   `InvalidOperationException`. Il che conserva un difetto noto: `ObjectDisposedException` deriva da
   `InvalidOperationException` e viene letta come 400. Lo era anche prima; allargare o restringere
-  l'insieme è un cambio di comportamento e non appartiene a un giro di dedup.
+  l'insieme è un cambio di comportamento e non appartiene a un giro di dedup. Il filtro sta **sul
+  controller**, come chiedeva il task, quindi copre anche `List`, che prima non aveva try/catch:
+  oggi è inerte (`ListAsync` non lancia nulla di quell'insieme), ma se un domani `List` acquisisce
+  validazione, un guasto del server vi si presenterebbe come 400.
 - **La flakiness della suite sotto carico concorrente documentata da 11e è stata incontrata**
   (un test diverso a ogni giro — `DomainApiTests`, `SetupApiTests`, `RootsBySpecificityTests`,
   `Win32FileMoverTests` — sempre verde in isolamento e su una passata pulita, 750/750). Non è di
