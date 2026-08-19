@@ -77,8 +77,8 @@ contenimento si **verifica**, non si organizza. Tre strati, uno per ogni modo di
    un file fuori**. Verificato sulla risposta del servizio, non dedotto dal fatto che il test ne ha
    registrata una sola.
 2. **Destinazione** (`violationOf`, prima di ogni enqueue) — volume e path di destinazione devono
-   stare dentro la sandbox. Vale per le richieste che parte dal test (`Api.enqueue` **pretende** il
-   fence come parametro) e per quelle che parte dalla **SPA** quando uno spec guida il picker: il
+   stare dentro la sandbox. Vale per le richieste che partono dal test (`Api.enqueue` **pretende** il
+   fence come parametro) e per quelle che partono dalla **SPA** quando uno spec guida il picker: il
    contesto del browser le intercetta e le rifiuta prima che raggiungano il Host, cioè prima che
    l'engine possa agire. Una richiesta pulita passa **intatta**: non si finge nulla.
 3. **Audit** (`auditRecordedJobs`, in teardown mentre il Host risponde ancora) — ogni job che il
@@ -138,3 +138,4 @@ scritte accanto al codice:
 | --- | --- |
 | `specs/sandbox-fence.spec.ts` | i tre strati del recinto rifiutano un'operazione diretta fuori dalla sandbox — dal test, dal browser, e nell'audit finale |
 | `specs/catalog.spec.ts` | l'albero lazy si naviga livello per livello e conta ciò che il test ha messo su disco; una cartella esclusa dal filtro **resta** nell'albero (11h) |
+| `specs/search.spec.ts` | l'FTS trova per nome, «solo nome» e «percorso completo» danno risposte diverse, il filtro categoria stringe, e il filtro data ragiona in **giorni locali** |
