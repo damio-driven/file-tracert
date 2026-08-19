@@ -574,17 +574,128 @@ unificato, WP4 intero), **step 10a** (device watcher: il remount è un push, non
 **step 10b** (hub SignalR + messaggi tipizzati, lato server), **step 10c** (il frontend
 ascolta invece di pollare) — **fatti**. Gli **step 9 e 10 sono chiusi**.
 Prossimo, in ordine:
-1. **Work package minori rimanenti** (dalla code review): indice/
-   ricerca (#6 `UsnFileRef` al move cross-volume, C19 `Extension`/`Category` al
-   rename, C16 esclusione ereditata, P2 collation), spazio, resto UX, logging/
-   shutdown, efficienza, cleanup (incl. eventuale spostamento di `ScanPath` in
-   `Contracts` come da review, e la discrepanza §3: `IBulkIndexWriter` sta in
-   `Data/Indexing` e `IFileSearchIndex` in `Contracts/Search`, mentre §3 li dà
-   entrambi in `Contracts` — segnalata allo step 9a, non spostata).
-   Da valutare qui anche: un file **fuori** dai watched root attivi viene marcato
-   `IsPresent=false` al primo scan del volume. Non è una regressione (prima veniva
-   **cancellato** dal truncate), ma ora è visibile come «assente» invece che sparito.
+1. **Work package minori rimanenti** (dalla code review): ~~indice/ricerca (WP5)~~ —
+   **fatto allo step 11a**; restano **spazio** (11b), **logging/shutdown** (11c),
+   **frontend/UX** (11d), **efficienza** (11e), **cleanup** (11f, incl. eventuale
+   spostamento di `ScanPath` in `Contracts` come da review, e la discrepanza §3:
+   `IBulkIndexWriter` sta in `Data/Indexing` e `IFileSearchIndex` in
+   `Contracts/Search`, mentre §3 li dà entrambi in `Contracts` — segnalata allo
+   step 9a, non spostata).
+   Da valutare lì anche: **`IsPresent=false` usato come «escluso dal filtro»**. Un file
+   **fuori** dai watched root attivi lo era già; dallo step 11a lo è anche un file dentro
+   una cartella **esclusa per attributi**. §6 riserva `IsPresent` a «non c'è più sul
+   disco», e il flag onesto per una decisione di *filtro* è `IsIncluded=false` (§4).
+   Nessuna riga viene mai cancellata e uno scan con il filtro riallargato la ripristina,
+   ma chiuderlo vuol dire portare l'insieme escluso dentro il merge e il pass degli
+   assenti di `IBulkIndexWriter`. C'è un test che **fissa** il comportamento attuale.
 2. **Step 12 — Test UI end-to-end (Playwright).**
+
+### Fatto nello step 11a (2026-08-19, commit `455c9ac`…`de7aa68`)
+**WP5 chiuso**: i quattro difetti di correttezza dell'indice che sopravvivevano fino al re-scan
+successivo (#6, C19, C16, P2) e il **FAIL harness pre-esistente** di `job-dependencies` sulla
+coppia *cross*.
+- **#6 — l'FRN non attraversa i volumi.** L'`UsnFileRef` è l'identità di un file **dentro un
+  volume** (gli indici MFT bassi si ripetono su ogni volume NTFS): portarselo dietro faceva
+  scattare l'indice unico `(VolumeId, UsnFileRef)` **dopo** che i byte erano già stati spostati,
+  ribaltando a `Failed` un job fisicamente riuscito — e il retry saltava gli item `Done` e
+  ribatteva sulla stessa violazione. Azzerato nella **stessa** `SaveChanges` che sposta la riga
+  (una transazione a parte lascerebbe la finestra aperta), da un unico helper
+  `IndexUpdater.RepointToVolume` usato dai **tre** percorsi che cambiano volume a un file:
+  completamento `MoveFile`, `MoveFolder` cross e la **riconciliazione del cancel**, che aveva lo
+  stesso difetto e non era nel finding. `QuickHash`/`Hash` restano: sono funzione del contenuto,
+  non del volume, e l'unico lettore (`BulkIndexWriter.ScanMerge`) li tratta come fatti che uno
+  scan non ri-deriva.
+- **C19 — il rename ricalcola estensione e categoria.** `RenameFileIndexAsync` scriveva il nuovo
+  `Name` e basta: `foto.jpg` rinominato `foto.txt` restava `Image` con estensione `jpg` fino al
+  re-scan, e i filtri di Ricerca ci lavoravano sopra. Ora entrambi si ri-derivano con gli
+  **stessi** helper della pipeline di scansione, e `IsIncluded` si riconcilia con
+  `FileFilter.ShouldIncludeFile` — §4, mai un delete: fuori dall'allow-list → `false`, di nuovo
+  dentro → `true`, con l'FTS che segue nella stessa direzione. Il test asserisce che **la ricerca**
+  lo trova nella categoria nuova, non solo che l'entità è cambiata.
+- **C16 — l'esclusione si eredita.** NTFS non propaga Hidden/System ai figli, e il filtro
+  guardava solo gli attributi *propri*: i file dentro una cartella nascosta passavano, e la
+  risalita che costruisce l'albero **resuscitava** la cartella esclusa come materializzata.
+  Ora ogni directory scartata registra il proprio path in `ExcludedSubtrees` e un secondo passo
+  butta via tutto ciò che sta a o sotto di esso — il che chiude anche la seconda metà: un file
+  che lo scan non tiene non può creare i propri antenati. Raccolta **in streaming** e applicata
+  a fine enumerazione, non propagata durante il cammino, perché **solo uno dei due motori
+  cammina un albero**: il dump MFT non garantisce padre-prima-dei-figli, quindi un flag portato
+  giù funzionerebbe su exFAT e mancherebbe in silenzio su NTFS. Un test per motore, e quello USN
+  alimenta i record **figli-per-primi** apposta.
+- **P2 — una collation sola per `MaterializedPath`.** SQL usava BINARY, la memoria
+  `OrdinalIgnoreCase`: su un case-variant i due non erano d'accordo e la find-or-create
+  inseriva una **seconda** riga per la stessa cartella. Risolto **sulla colonna** (`NOCASE` +
+  migration `MaterializedPathNoCase`), non sui call site: chi confronta quel path sta in cinque
+  posti e sistemarne quattro è il modo in cui il difetto torna. SQLite non altera una colonna sul
+  posto, quindi la migration ricostruisce la tabella e con essa l'indice — che *deve* essere
+  ricostruito, perché un indice conserva la collation con cui è stato creato. Stessa concordanza
+  poi portata in memoria: i due `FirstOrDefault(d => d.MaterializedPath == oldPath)` che
+  sceglievano la **radice del sottoalbero** usano ora `ScanPath.SamePath` (senza, un
+  `MoveFolder` intra non cascadava nulla e un `RenameFolder` lasciava il `Name` vecchio).
+- **Il FAIL harness cross — il dipendente segue il proprio file.** Diagnosticato, non assunto:
+  una riproduzione in-process mostra il rename liberato che conserva `SourceVolumeId = 1` dopo che
+  il file è atterrato sul volume 2. Risolvere l'item per identità dà il **path** giusto, ma un
+  path è solo metà di «dove»: l'engine cercava il file sul drive sbagliato, `IOException` generica,
+  `Failed` terminale per un'operazione perfettamente eseguibile un drive più in là. Ora
+  `JobSnapshotRefresher` raccoglie il volume di ogni item risolto per identità e ri-punta il job.
+  La **forma** del job non cambia mai: un *rename* muove entrambi i capi (la destinazione si deriva
+  dal source aggiornato), un *move cross* muove il solo source e resta cross; ogni altro caso viene
+  **parcheggiato con un messaggio** invece di essere riscritto. Per i casi seguiti il ledger non
+  richiede nulla: entrambi i chiamanti (`BlockedJobRevaluator.UnblockAsync`,
+  `QueueService.RetryAsync`) rifanno release-then-reserve subito dopo il refresh, quindi la voce di
+  liberazione segue il nuovo volume da sola.
+- **Un helper nuovo, non due regole.** La domanda «quale filtro governa QUESTO path?» serviva fuori
+  dalla pipeline di scansione (il rename che ricontrolla la propria inclusione): la regola «radice
+  attiva più specifica» vive ora una volta sola in `RootFilterResolver.MostSpecificRoot`, e
+  `ScanService` la chiama al posto della propria copia inline.
+- **Verifica**: xUnit **613 verdi** (+35), build backend pulita (warnings-as-errors). RED
+  dimostrato **prima** di ogni fix, rompendo il prodotto apposta quando serviva. Harness sul ferro:
+  **42 scenari, 42 PASS, 0 FAIL** su coppia intra ×2 + coppia **cross**, incluso `job-dependencies`
+  cross che era il FAIL pre-esistente dello step 9c. Misura scan invariata: primo scan 0,68–1,88 s,
+  re-scan 0,56–0,61 s su 2 002 file. Migration provata anche su una **copia del DB di produzione**
+  (114 132 directory, 742 033 file, 28 job): righe intatte, `foreign_key_check` 0 violazioni,
+  `integrity_check` ok.
+La **code review finale** (indipendente, sulle modifiche di questo giro) ha trovato una cosa
+**bloccante** e quattro minori, tutte corrette nel commit `de7aa68`. La bloccante: un `MoveFile`
+**intra-volume** il cui file aveva nel frattempo cambiato drive veniva ri-puntato là in silenzio —
+il `TargetRelativePath` di un move è un percorso che l'utente ha scelto *su quel volume* e non
+nomina alcun drive, quindi seguire il file avrebbe scritto file veri su un disco mai scelto, senza
+un messaggio. Ora parcheggia `Blocked` con la spiegazione. Le altre: `RetryAsync` committava lo
+snapshot **riscritto a metà** quando il refresh si arrendeva (e quella coppia path/volume incoerente
+è esattamente ciò che `PendingWorkGuard` legge come rivendicazione); il ramo FTS del rename non
+guardava `IsPresent`; e tre commenti che promettevano più di quanto il codice facesse. La review ha
+verificato uno per uno, e trovati puliti: layering (§3), assenza di catch muti (§9), propagazione
+del `CancellationToken`, completezza del fix #6 (l'unico assegnamento a `FileEntry.VolumeId` in
+tutto il backend), l'SQL reale generato da `InSubtree` e la migration (nessun trigger, FTS5 non
+toccata, indici non-unique quindi nessun rischio da duplicati pre-esistenti).
+**Limiti noti e accettati:**
+- **Il gate offline e quello di spazio girano PRIMA del refresh** (`BlockedJobRevaluator`
+  :92/:101 vs `UnblockAsync`). Se il file è atterrato su un volume online ma il **vecchio** source
+  è scollegato, il gate incolpa il vecchio volume e il refresh non parte mai: il job resta
+  parcheggiato per un'operazione eseguibile, finché l'utente non fa «Riprova» (che passa dal
+  refresh). Ordinamento pre-esistente, non introdotto qui; riordinarlo tocca la macchina della coda
+  ed è materiale da WP minori, non da 11a.
+- **Il guard viene interrogato con volume e path PRE-refresh** (`FindConflictAsync` prima di
+  `RefreshSnapshotsAsync`, sia nel revaluator sia in `RetryAsync`). Era già vero per i path; da
+  questo giro può cambiare anche il volume. Limitato: l'engine intercetta come
+  `Blocked(NameCollision)` e `FinalizePartial` rifiuta un target esistente, quindi nulla viene mai
+  sovrascritto — ma l'invariante «una sola operazione pendente per entità» non è garantita per
+  quella coppia. Stesso WP dell'altro.
+- **`IsPresent=false` per una decisione di filtro** (vedi roadmap sopra): un file già indicizzato
+  che finisce sotto una cartella diventata nascosta viene marcato assente invece che escluso.
+  Fissato da un test, non benedetto.
+- **`NOCASE` piega solo l'ASCII** (stesso limite del merge di scan, step 9a): un case-variant
+  **non ASCII** resta due path diversi, in SQL come in memoria. Costa una riga in più, mai una in
+  meno. Le righe già duplicate in un DB esistente **non** vengono fuse dalla migration: sarebbe
+  una migrazione di *dati* (ri-puntare file, job e overlay). Sul DB di produzione reale ce ne sono
+  **zero**.
+- **Tre letture in più sulla transazione di completamento** di un rename (`ExtensionCategories`,
+  `AppSettings`, `WatchedRoots`), cioè con il write lock di SQLite in mano. Un rename = un job, il
+  volume è basso; sollevarle prima del `BeginTransaction` è materiale da **11e** (efficienza).
+- **Harness non elevato**: il giornale USN non è disponibile senza elevazione, quindi gli scan del
+  collaudo sono passati dal motore a **enumerazione** (fallback previsto e loggato). La coppia
+  cross usata è `D:\Collaudo\A` + `C:\Collaudo\B`, non `E:\` come da procedura: il drive E:
+  non era collegato. La scratch area su C: è stata creata e rimossa a fine collaudo.
 
 ### Fatto nello step 10c (2026-08-18, commit `856af4b`…`9d0d8f4`)
 Il frontend **ascolta**. I tre poll (Coda ogni 2,5 s, campanella ogni 30 s, tracker scansioni a
