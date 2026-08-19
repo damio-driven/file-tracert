@@ -44,6 +44,8 @@ export class SandboxFence {
     private readonly relativeRoot: string,
     /** The same folder as Windows spells it, for messages a human can act on. */
     readonly absoluteRoot: string,
+    /** Root of the volume the sandbox sits on, e.g. `C:\` — what a relative path resolves against. */
+    private readonly driveRoot: string,
   ) {}
 
   /**
@@ -93,23 +95,34 @@ export class SandboxFence {
       );
     }
 
+    // The key set is checked before anything is read out of it. ASP.NET Core binds a body
+    // case-insensitively, so `"TargetVolumeId"` would reach the service and mean everything while
+    // meaning nothing here — the volume check would look at an `undefined` and wave the request
+    // through. A body is either spelled the way the contract spells it, or it is not read at all.
+    const unknownKeys = Object.keys(request).filter((key) => !KNOWN_KEYS.has(key));
+    if (unknownKeys.length > 0) {
+      return (
+        `the request carries ${unknownKeys.map((k) => `"${k}"`).join(', ')}, which this fence ` +
+        `does not know how to read — and a request whose destination cannot be read must not be sent.`
+      );
+    }
+
     const type = String(request.type ?? '');
     if (!KNOWN_TYPES.has(type)) {
       return `unknown job type "${type}": this fence cannot tell where it would write.`;
     }
 
-    if (request.targetVolumeId !== null && request.targetVolumeId !== undefined) {
-      if (request.targetVolumeId !== this.volumeId) {
-        return (
-          `destination volume ${request.targetVolumeId} is not the sandbox volume ` +
-          `${this.volumeId}.`
-        );
-      }
-    }
-
-    // Rename carries a leaf name, every other type carries a path relative to the volume root.
+    // Rename carries a leaf name and no volume; every other type carries both, and the volume is
+    // required rather than checked-if-present: a missing one is the same hole as a wrong one.
     if (type === 'RenameFile' || type === 'RenameFolder') {
       return this.leafViolation(request.newName, 'nuovo nome');
+    }
+
+    if (request.targetVolumeId !== this.volumeId) {
+      return (
+        `destination volume ${String(request.targetVolumeId)} is not the sandbox volume ` +
+        `${this.volumeId}.`
+      );
     }
 
     const target = request.targetRelativePath;
@@ -121,12 +134,36 @@ export class SandboxFence {
 
   /** As above, but the way a test wants it: nothing happens, loudly. */
   assertRequestStaysInside(request: JobRequestLike): void {
-    const violation = this.violationOf(request);
+    this.refuse(this.violationOf(request), JSON.stringify(request));
+  }
+
+  /**
+   * The other way the perimeter can be widened: a watched root. What the scan indexes is what an
+   * operation can name as a **source**, so a root pointing anywhere else would put the user's own
+   * files within reach of a job — with a destination inside the sandbox, which the check above
+   * would happily clear. Both entry points are gated, or neither is.
+   */
+  watchedRootViolation(volumeId: number, relativePath: string): string | null {
+    if (this.volumeId === null) {
+      return 'a folder was put under watch before the sandbox volume was known.';
+    }
+    if (volumeId !== this.volumeId) {
+      return `watched root asked on volume ${volumeId}, which is not the sandbox volume ${this.volumeId}.`;
+    }
+    return this.pathViolation(relativePath);
+  }
+
+  assertWatchedRootStaysInside(volumeId: number, relativePath: string): void {
+    this.refuse(
+      this.watchedRootViolation(volumeId, relativePath),
+      `volume ${volumeId}, root "${relativePath}"`,
+    );
+  }
+
+  private refuse(violation: string | null, what: string): void {
     if (violation !== null) {
       throw new Error(
-        `${VIOLATION} ${violation}\n` +
-          `  request: ${JSON.stringify(request)}\n` +
-          `  sandbox: ${this.absoluteRoot}`,
+        `${VIOLATION} ${violation}\n  request: ${what}\n  sandbox: ${this.absoluteRoot}`,
       );
     }
   }
@@ -147,12 +184,21 @@ export class SandboxFence {
     // whose name merely starts the same way would be the real one (hence the separator).
     const candidate = normalized.toLowerCase();
     const root = normalize(this.relativeRoot)!.toLowerCase();
-    const inside = candidate === root || candidate.startsWith(`${root}\\`);
-    if (!inside) {
+    if (candidate !== root && !candidate.startsWith(`${root}\\`)) {
       return (
         `destination "${relativePath}" resolves outside the sandbox ` +
         `(would write to <volume root>\\${normalized}).`
       );
+    }
+
+    // The same rule asked a second time, of a different resolver: the check above reasons about
+    // the string the catalog uses, this one about the path Node resolves it to. They should always
+    // agree; where they would not, the disagreement is exactly the trick worth refusing, and the
+    // cost of being wrong here is somebody's file.
+    const absolute = path.resolve(this.driveRoot, normalized).toLowerCase();
+    const absoluteRoot = path.resolve(this.absoluteRoot).toLowerCase();
+    if (absolute !== absoluteRoot && !absolute.startsWith(absoluteRoot + path.sep)) {
+      return `destination "${relativePath}" resolves to ${absolute}, which is outside the sandbox.`;
     }
     return null;
   }
@@ -258,6 +304,16 @@ const VIOLATION = '[SANDBOX FENCE]';
 
 const KNOWN_TYPES = new Set(['CreateFolder', 'RenameFile', 'RenameFolder', 'MoveFile', 'MoveFolder']);
 
+/** Exactly the properties of `CreateJobRequest`, in exactly the spelling the API serializes. */
+const KNOWN_KEYS = new Set([
+  'type',
+  'sourceFileId',
+  'sourceDirectoryId',
+  'targetVolumeId',
+  'targetRelativePath',
+  'newName',
+]);
+
 /** The shape of an enqueue body, as `CreateJobRequest` serializes it. */
 export interface JobRequestLike {
   readonly type?: unknown;
@@ -299,13 +355,10 @@ function normalize(relativePath: string): string | null {
     return null;
   }
   const segments = value.split('\\').filter((segment) => segment.length > 0);
-  if (segments.some((segment) => segment === '..' || segment === '.')) {
+  // `..`/`.` walk; a colon anywhere else names a drive or an alternate data stream. The product
+  // writes none of these, so a path carrying one is refused rather than interpreted.
+  if (segments.some((segment) => segment === '..' || segment === '.' || segment.includes(':'))) {
     return null;
   }
   return segments.join('\\');
-}
-
-/** The absolute form of a volume-relative path, for assertions that look at the real filesystem. */
-export function absoluteOf(driveRoot: string, relativePath: string): string {
-  return path.join(driveRoot, relativePath);
 }

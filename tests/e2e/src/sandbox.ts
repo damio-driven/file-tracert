@@ -1,4 +1,4 @@
-import { access, mkdir, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { SandboxFence } from './fence.js';
@@ -93,6 +93,11 @@ export class Sandbox {
     }
   }
 
+  /** When a seeded file was last written, as the filesystem recorded it. */
+  async modifiedAt(...segments: string[]): Promise<Date> {
+    return (await stat(this.absolute(...segments))).mtime;
+  }
+
   /** Creates a folder inside the watched tree. */
   async makeDir(...segments: string[]): Promise<string> {
     const dir = this.absolute(...segments);
@@ -132,7 +137,7 @@ export class Sandbox {
       relative,
       driveRoot,
       caseDir,
-      new SandboxFence(relative, filesDir),
+      new SandboxFence(relative, filesDir, driveRoot),
     );
   }
 

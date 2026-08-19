@@ -12,14 +12,17 @@ import type { Sandbox } from './sandbox.js';
  */
 export async function watchSandbox(api: Api, sandbox: Sandbox): Promise<Volume> {
   const volume = await api.volumeForDrive(sandbox.driveRoot);
-  await api.setCatalogable(volume.id, true);
-  await api.addWatchedRoot(volume.id, sandbox.volumeRelativePath);
-
-  // From here on the test may queue real operations, so the fence learns the one volume they are
-  // allowed to name — and the perimeter is verified against the service's own answer rather than
-  // assumed from the two calls above. Nothing outside the sandbox is in the catalog, therefore no
-  // source id can name anything outside it.
+  // Bound first: from here on the fence knows the one volume this test may name, and the call
+  // that decides what gets indexed — and therefore what an operation may name as a source — is
+  // itself checked.
   sandbox.fence.bindVolume(volume.id);
+
+  await api.setCatalogable(volume.id, true);
+  await api.addWatchedRoot(volume.id, sandbox.volumeRelativePath, sandbox.fence);
+
+  // Then verified against the service's own answer rather than assumed from the calls above:
+  // nothing outside the sandbox is in the catalog, therefore no source id can name anything
+  // outside it.
   await sandbox.fence.assertPerimeter(api);
 
   return volume;

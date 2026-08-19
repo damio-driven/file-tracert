@@ -154,7 +154,16 @@ export class Api {
     expect(response.status(), 'POST catalogable').toBe(204);
   }
 
-  async addWatchedRoot(volumeId: number, relativePath: string): Promise<WatchedRoot> {
+  /**
+   * Puts a folder under watch. Fenced like an enqueue, and for the same reason: what the scan
+   * indexes is what an operation may name as a source.
+   */
+  async addWatchedRoot(
+    volumeId: number,
+    relativePath: string,
+    fence: SandboxFence,
+  ): Promise<WatchedRoot> {
+    fence.assertWatchedRootStaysInside(volumeId, relativePath);
     const response = await this.ctx.post(`/api/volumes/${volumeId}/watched-roots`, {
       data: { relativePath, filterOverride: null },
     });
@@ -215,10 +224,20 @@ export class Api {
     return response.json();
   }
 
+  /**
+   * Every job in the queue. The count is asserted against what the endpoint says it holds, because
+   * this is what the fence's audit reads: a page silently short of the whole truth would be a
+   * containment check that missed the one job that mattered.
+   */
   async jobs(): Promise<Job[]> {
     const response = await this.ctx.get('/api/operations?take=200');
     expect(response.ok(), `GET /api/operations → ${response.status()}`).toBeTruthy();
-    return (await response.json()).items;
+    const page = await response.json();
+    expect(
+      page.items.length,
+      `the queue holds ${page.totalCount} jobs but one page carries ${page.items.length}`,
+    ).toBe(page.totalCount);
+    return page.items;
   }
 
   async job(id: number): Promise<Job> {

@@ -8,12 +8,32 @@ import { Sandbox } from './sandbox.js';
 /** The two routes that create work. Everything else the SPA posts only reads or annotates. */
 const ENQUEUE_PATHS = new Set(['/api/operations/enqueue', '/api/operations/enqueue-batch']);
 
+/** The route that widens what gets indexed, and therefore what an operation may name as a source. */
+const WATCHED_ROOT_PATH = /^\/api\/volumes\/(\d+)\/watched-roots$/;
+
+/** The POSTs whose body has to be read before it is allowed through. */
+function isFencedPath(pathname: string): boolean {
+  return ENQUEUE_PATHS.has(pathname) || WATCHED_ROOT_PATH.test(pathname);
+}
+
 /**
- * The fence's verdict on what the SPA is about to post. A batch is a JSON array, a single enqueue
- * is one object; a body that is neither is refused rather than waved through, because a request
- * this cannot read is a request whose destination it cannot check.
+ * The fence's verdict on what the SPA is about to post. A body the fence cannot read is refused
+ * rather than waved through: a request whose destination cannot be checked is a request that must
+ * not be sent.
  */
-function enqueueViolation(fence: SandboxFence, body: unknown): string | null {
+function postViolation(fence: SandboxFence, pathname: string, body: unknown): string | null {
+  const watchedRoot = WATCHED_ROOT_PATH.exec(pathname);
+  if (watchedRoot !== null) {
+    const relativePath = (body as { relativePath?: unknown } | null)?.relativePath;
+    return typeof relativePath === 'string'
+      ? fence.watchedRootViolation(Number(watchedRoot[1]), relativePath)
+      : `unreadable watched-root body: ${JSON.stringify(body)}`;
+  }
+
+  if (!ENQUEUE_PATHS.has(pathname)) {
+    return null;
+  }
+
   const requests: unknown[] = Array.isArray(body) ? body : [body];
   if (requests.length === 0 || requests.some((r) => typeof r !== 'object' || r === null)) {
     return `unreadable enqueue body: ${JSON.stringify(body)}`;
@@ -25,6 +45,34 @@ function enqueueViolation(fence: SandboxFence, body: unknown): string | null {
     }
   }
   return null;
+}
+
+/**
+ * Reads back every job the service recorded and checks where it was sent — the fence's third
+ * layer, and the only one that looks at what the engine was actually told to do rather than at
+ * what a test asked for.
+ *
+ * A service that cannot be asked is never taken for a pass: the failure says so, and says it
+ * without the `[SANDBOX FENCE]` prefix, which is reserved for work that really did go somewhere
+ * it should not (a spec that stops the Host on purpose would otherwise raise a containment alarm
+ * about a connection).
+ */
+async function auditWhatTheServiceRecorded(host: HostProcess, sandbox: Sandbox): Promise<void> {
+  const api = await Api.create(host);
+  try {
+    let recorded;
+    try {
+      recorded = await api.jobs();
+    } catch (error) {
+      throw new Error(
+        `[e2e] the containment audit could not run: the service did not answer (${String(error)}). ` +
+          `Nothing here can say whether the queued work stayed inside ${sandbox.filesDir}.`,
+      );
+    }
+    sandbox.fence.auditRecordedJobs(recorded);
+  } finally {
+    await api.dispose();
+  }
 }
 
 /**
@@ -87,24 +135,23 @@ export const test = base.extend<HostFixtures>({
         // A failing test is about to be reported; attach what the service was saying.
         await testInfo.attach('host.log', { body: await host.readLog(), contentType: 'text/plain' });
       }
-      liveHosts.delete(host);
-      await host.stop();
+      try {
+        // Layer 3 of the fence, and the last thing that happens while the service still answers.
+        // It hangs off the Host rather than off `api` on purpose: a spec that never asks for the
+        // `api` fixture would otherwise queue work — through the browser, or through an HTTP
+        // client of its own — with nothing reading back where that work was sent.
+        await auditWhatTheServiceRecorded(host, sandbox);
+      } finally {
+        liveHosts.delete(host);
+        await host.stop();
+      }
     }
   },
 
-  api: async ({ host, sandbox }, use) => {
+  api: async ({ host }, use) => {
     const api = await Api.create(host);
     await use(api);
-
-    // Layer 3 of the fence, and the last thing that happens while the Host is still answering:
-    // every job the service recorded is read back and checked for containment. Layers 1 and 2
-    // promise that nothing can leave the sandbox; this is the only one that reads what the engine
-    // was actually told to do, so it runs whatever the test did or did not assert.
-    try {
-      sandbox.fence.auditRecordedJobs(await api.jobs());
-    } finally {
-      await api.dispose();
-    }
+    await api.dispose();
   },
 
   /**
@@ -129,8 +176,22 @@ export const test = base.extend<HostFixtures>({
         return route.abort();
       }
 
-      if (request.method() === 'POST' && ENQUEUE_PATHS.has(url.pathname)) {
-        const violation = enqueueViolation(sandbox.fence, request.postDataJSON());
+      // Only the two POSTs that can reach outside are read: the SPA sends others with no body at
+      // all (a rescan, a notification marked read), and asking those for JSON would throw.
+      if (request.method() === 'POST' && isFencedPath(url.pathname)) {
+        // A body that cannot be parsed is a destination that cannot be read; it is refused by
+        // name rather than left to stall the request until the test times out.
+        let body: unknown;
+        try {
+          body = request.postDataJSON();
+        } catch (error) {
+          sandbox.fence.recordBrowserViolation(
+            `unreadable body on ${url.pathname}: ${String(error)}`,
+          );
+          return route.abort('blockedbyclient');
+        }
+
+        const violation = postViolation(sandbox.fence, url.pathname, body);
         if (violation !== null) {
           sandbox.fence.recordBrowserViolation(violation);
           return route.abort('blockedbyclient');

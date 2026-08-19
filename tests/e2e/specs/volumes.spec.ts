@@ -53,6 +53,10 @@ test.describe('Volumi', () => {
   }) => {
     const volume = await api.volumeForDrive(sandbox.driveRoot);
     await api.setCatalogable(volume.id, true);
+    // This spec puts the folder under watch through the *screen*, so it never goes through
+    // `watchSandbox` — but the fence still has to know which volume is the sandbox's, or it would
+    // refuse the very request the test is here to make.
+    sandbox.fence.bindVolume(volume.id);
 
     await page.goto(`/setup?volume=${volume.id}`);
     await expect(watchedRootRows(page)).toHaveCount(0);

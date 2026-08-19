@@ -70,6 +70,19 @@ test.describe('Recinto della sandbox', () => {
       ),
     ).rejects.toThrow(/SANDBOX FENCE/);
 
+    // A colon anywhere in a path names a drive or an alternate data stream. The product writes
+    // neither, so the fence refuses to interpret one rather than guess where it would land.
+    await expect(
+      api.enqueue(
+        {
+          type: 'CreateFolder',
+          targetVolumeId: volume.id,
+          targetRelativePath: `${sandbox.volumeRelativePath}\\nota.txt:flusso`,
+        },
+        sandbox.fence,
+      ),
+    ).rejects.toThrow(/SANDBOX FENCE/);
+
     // Another volume, with a path that would be perfectly legal on ours.
     await expect(
       api.enqueue(
@@ -91,6 +104,14 @@ test.describe('Recinto della sandbox', () => {
       ),
     ).rejects.toThrow(/SANDBOX FENCE/);
 
+    // And the other way to reach outside: what the scan indexes is what a job may name as a
+    // source, so a watched root pointing elsewhere would put a stranger's files within reach of an
+    // operation whose destination is perfectly legal.
+    await expect(api.addWatchedRoot(volume.id, justOutside, sandbox.fence)).rejects.toThrow(
+      /SANDBOX FENCE.*resolves outside the sandbox/s,
+    );
+    await sandbox.fence.assertPerimeter(api);
+
     // None of it reached the service: refusing after the fact would be an apology, not a fence.
     expect(await api.jobs()).toHaveLength(0);
   });
@@ -104,33 +125,51 @@ test.describe('Recinto della sandbox', () => {
     // The move picker only ever offers catalogued folders, so the SPA cannot ask for this on its
     // own — which is exactly why the attempt has to be made by hand. What is being tested is the
     // interception in the browser context, the layer that covers every request the *screen* sends.
-    const outcome = await page.evaluate(
-      async (input) => {
-        try {
-          const response = await fetch('/api/operations/enqueue', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-FileTracert-Token': input.token },
-            body: JSON.stringify({
-              type: 'CreateFolder',
-              targetVolumeId: input.volumeId,
-              targetRelativePath: input.target,
-            }),
-          });
-          return `sent, service answered ${response.status}`;
-        } catch (error) {
-          return `refused: ${String(error)}`;
-        }
-      },
-      { token: api.token, volumeId: volume.id, target: justOutside },
-    );
+    const send = (body: Record<string, unknown>): Promise<string> =>
+      page.evaluate(
+        async (input) => {
+          try {
+            const response = await fetch('/api/operations/enqueue', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'X-FileTracert-Token': input.token },
+              body: JSON.stringify(input.body),
+            });
+            return `sent, service answered ${response.status}`;
+          } catch (error) {
+            return `refused: ${String(error)}`;
+          }
+        },
+        { token: api.token, body },
+      );
 
-    expect(outcome).toMatch(/^refused:/);
+    expect(
+      await send({
+        type: 'CreateFolder',
+        targetVolumeId: volume.id,
+        targetRelativePath: justOutside,
+      }),
+    ).toMatch(/^refused:/);
 
-    // Drained here so the context teardown does not fail this test over the violation it provoked
-    // on purpose — and asserted, so the refusal names what it stopped.
+    // The same request with one key spelled differently. ASP.NET Core binds a body
+    // case-insensitively, so the service would read `TargetVolumeId` and act on it — while a fence
+    // that only looks for the camelCase key would see nothing there and wave a **cross-volume**
+    // move through, which is the one shape that recycles a file. A body this cannot read is a
+    // destination this cannot check.
+    expect(
+      await send({
+        type: 'MoveFile',
+        sourceFileId: 1,
+        TargetVolumeId: volume.id + 1000,
+        targetRelativePath: sandbox.volumeRelativePath,
+      }),
+    ).toMatch(/^refused:/);
+
+    // Drained here so the context teardown does not fail this test over the violations it provoked
+    // on purpose — and asserted, so each refusal names what it stopped.
     const violations = sandbox.fence.takeBrowserViolations();
-    expect(violations).toHaveLength(1);
+    expect(violations).toHaveLength(2);
     expect(violations[0]).toContain('cartella-fuori-recinto');
+    expect(violations[1]).toContain('TargetVolumeId');
 
     expect(await api.jobs()).toHaveLength(0);
   });
