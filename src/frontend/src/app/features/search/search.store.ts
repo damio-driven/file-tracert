@@ -3,6 +3,7 @@ import { patchState, signalStore, withComputed, withMethods, withState } from '@
 import { firstValueFrom } from 'rxjs';
 
 import { SearchApi } from '../../core/api/search-api.service';
+import { httpErrorMessage } from '../../core/http/http-error';
 import {
   FileCategory, PagedResult, SearchRequest,
   SearchResultDto, SearchScope, SearchSort, SelectedItem,
@@ -121,7 +122,7 @@ export const SearchStore = signalStore(
         patchState(store, { results, loading: false });
       } catch (e) {
         if (request !== latestRequest) return;
-        patchState(store, { error: (e as Error).message, loading: false });
+        patchState(store, { error: httpErrorMessage(e), loading: false });
       }
     }
 

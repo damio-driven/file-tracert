@@ -4,6 +4,7 @@ import { firstValueFrom } from 'rxjs';
 
 import { SetupApi } from '../../core/api/setup-api.service';
 import { VolumesApi } from '../../core/api/volumes-api.service';
+import { httpErrorMessage } from '../../core/http/http-error';
 import {
   FilterOverrideDto,
   FilterSettingsDto,
@@ -44,7 +45,7 @@ export const SetupStore = signalStore(
   withState(initial),
   withMethods((store, api = inject(SetupApi), volumesApi = inject(VolumesApi)) => {
     function fail(e: unknown): void {
-      patchState(store, { error: (e as Error).message, loading: false, busy: false });
+      patchState(store, { error: httpErrorMessage(e), loading: false, busy: false });
     }
 
     return {

@@ -11,7 +11,7 @@ import { VolumesStore } from '../../../features/volumes/volumes.store';
 import { BytesPipe } from '../../pipes/bytes.pipe';
 import { RelativeTimePipe } from '../../pipes/relative-time.pipe';
 import { FtPill } from '../ft-pill/ft-pill';
-import { operationErrorMessage } from '../../api/operation-error';
+import { httpErrorMessage } from '../../../core/http/http-error';
 import {
   CatalogDirDto, CreateJobRequest, FeasibilityResult, SelectedItem, VolumeDto,
 } from '../../../core/models/catalog.models';
@@ -162,7 +162,7 @@ export class OperationPicker implements OnInit {
       const result = await firstValueFrom(this.catalogApi.children(this.targetVolumeId, dirId));
       this.dirChildren.set(result.directories);
     } catch (e) {
-      this.error.set((e as Error).message);
+      this.error.set(httpErrorMessage(e));
       this.dirChildren.set([]);
     } finally {
       this.loadingDirs.set(false);
@@ -185,7 +185,7 @@ export class OperationPicker implements OnInit {
       ));
       this.preview.set(result);
     } catch (e) {
-      this.error.set(operationErrorMessage(e));
+      this.error.set(httpErrorMessage(e));
     } finally {
       this.previewing.set(false);
     }
@@ -214,7 +214,7 @@ export class OperationPicker implements OnInit {
       this.enqueued.set(true);
       this.completed.emit();
     } catch (e) {
-      this.error.set(operationErrorMessage(e));
+      this.error.set(httpErrorMessage(e));
     } finally {
       this.enqueueing.set(false);
     }

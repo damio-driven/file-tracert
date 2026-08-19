@@ -3,6 +3,7 @@ import { patchState, signalStore, withComputed, withMethods, withState } from '@
 import { firstValueFrom } from 'rxjs';
 
 import { LogsApi } from '../../core/api/logs-api.service';
+import { httpErrorMessage } from '../../core/http/http-error';
 import { LogEntryDto } from '../../core/models/catalog.models';
 
 const PAGE_SIZE = 50;
@@ -65,7 +66,7 @@ export const LogsStore = signalStore(
           loading: false,
         });
       } catch (e) {
-        patchState(store, { error: (e as Error).message, loading: false });
+        patchState(store, { error: httpErrorMessage(e), loading: false });
       }
     }
 

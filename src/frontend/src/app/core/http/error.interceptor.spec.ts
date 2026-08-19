@@ -1,4 +1,6 @@
-import { HttpClient, HttpContext, provideHttpClient, withInterceptors } from '@angular/common/http';
+import {
+  HttpClient, HttpContext, HttpErrorResponse, provideHttpClient, withInterceptors,
+} from '@angular/common/http';
 import {
   HttpTestingController,
   provideHttpClientTesting,
@@ -43,6 +45,42 @@ describe('errorInterceptor', () => {
     httpMock.expectOne('/api/things').error(new ProgressEvent('error'), { status: 0 });
 
     expect(toast.toasts()[0].message).toBe('Servizio non raggiungibile');
+  });
+
+  // C17 — the interceptor used to replace the failure with a fresh `Error`, which made every
+  // `instanceof HttpErrorResponse` downstream false and the structured handling of a 400 dead
+  // code. What the caller receives has to be the response itself: status and body included.
+  it('rethrows the original HttpErrorResponse, status and body intact', () => {
+    const { http, httpMock } = setup();
+
+    let caught: unknown = null;
+    http.post('/api/operations/enqueue-batch', []).subscribe({
+      next: () => {},
+      error: (e) => (caught = e),
+    });
+    httpMock.expectOne('/api/operations/enqueue-batch').flush(
+      { error: 'Elemento 2 di 3: File 999 not found.' },
+      { status: 400, statusText: 'Bad Request' },
+    );
+
+    expect(caught).toBeInstanceOf(HttpErrorResponse);
+    const err = caught as HttpErrorResponse;
+    expect(err.status).toBe(400);
+    expect(err.error).toEqual({ error: 'Elemento 2 di 3: File 999 not found.' });
+  });
+
+  // The backend answers `{ error: … }`. Reading `err.error.message` instead meant the user
+  // always saw the raw "Http failure response … 400".
+  it('shows the message the backend actually sent, not the transport failure', () => {
+    const { http, httpMock, toast } = setup();
+
+    http.post('/api/operations/enqueue', {}).subscribe({ next: () => {}, error: () => {} });
+    httpMock.expectOne('/api/operations/enqueue').flush(
+      { error: "La cartella 'Foto' si trova già in questa posizione." },
+      { status: 400, statusText: 'Bad Request' },
+    );
+
+    expect(toast.toasts()[0].message).toBe("La cartella 'Foto' si trova già in questa posizione.");
   });
 
   it('suppresses the toast when the request opts out', () => {

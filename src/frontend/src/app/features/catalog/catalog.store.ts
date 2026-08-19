@@ -3,6 +3,7 @@ import { patchState, signalStore, withComputed, withMethods, withState } from '@
 import { firstValueFrom } from 'rxjs';
 
 import { CatalogApi } from '../../core/api/catalog-api.service';
+import { httpErrorMessage } from '../../core/http/http-error';
 import {
   CatalogChildrenDto, CatalogDirDto, CatalogFileDto, SelectedItem, VolumeDto,
 } from '../../core/models/catalog.models';
@@ -93,7 +94,7 @@ export const CatalogStore = signalStore(
         const children = await firstValueFrom(api.children(vol.id, dirId, fileSkip, store.fileTake()));
         patchState(store, { children, fileSkip, loading: false });
       } catch (e) {
-        patchState(store, { error: (e as Error).message, loading: false });
+        patchState(store, { error: httpErrorMessage(e), loading: false });
       }
     }
 

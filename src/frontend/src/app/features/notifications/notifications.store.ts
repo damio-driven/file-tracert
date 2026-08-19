@@ -3,6 +3,7 @@ import { patchState, signalStore, withComputed, withMethods, withState } from '@
 import { firstValueFrom } from 'rxjs';
 
 import { NotificationsApi } from '../../core/api/notifications-api.service';
+import { httpErrorMessage } from '../../core/http/http-error';
 import { NotificationDto } from '../../core/models/catalog.models';
 
 interface NotificationsState {
@@ -51,7 +52,7 @@ export const NotificationsStore = signalStore(
         ]);
         patchState(store, { items: page.items, unread: count.unread, loading: false });
       } catch (e) {
-        patchState(store, { error: (e as Error).message, loading: false });
+        patchState(store, { error: httpErrorMessage(e), loading: false });
       }
     }
 

@@ -6,7 +6,7 @@ import { firstValueFrom } from 'rxjs';
 
 import { QueueApi } from '../../../core/api/queue-api.service';
 import { CreateJobRequest, SelectedItem, SelectedItemKind } from '../../../core/models/catalog.models';
-import { operationErrorMessage } from '../../api/operation-error';
+import { httpErrorMessage } from '../../../core/http/http-error';
 import { validateLeafName } from '../../validation/name.util';
 
 type DialogMode = 'rename' | 'create';
@@ -88,7 +88,7 @@ export class NameDialog {
       await firstValueFrom(this.api.enqueue(request));
       this.completed.emit();
     } catch (e) {
-      this.serverError.set(operationErrorMessage(e));
+      this.serverError.set(httpErrorMessage(e));
     } finally {
       this.busy.set(false);
     }

@@ -3,6 +3,7 @@ import { patchState, signalStore, withComputed, withMethods, withState } from '@
 import { firstValueFrom } from 'rxjs';
 
 import { QueueApi } from '../../core/api/queue-api.service';
+import { httpErrorMessage } from '../../core/http/http-error';
 import { OperationJobDto, PagedResult } from '../../core/models/catalog.models';
 import { JobProgress, JobStateChanged } from '../../core/realtime/realtime.models';
 
@@ -68,7 +69,7 @@ export const QueueStore = signalStore(
         const result = await firstValueFrom(api.list(skip, take));
         patchState(store, { result, loading: false, skip, take });
       } catch (e) {
-        patchState(store, { error: (e as Error).message, loading: false });
+        patchState(store, { error: httpErrorMessage(e), loading: false });
       }
     }
 
@@ -113,7 +114,7 @@ export const QueueStore = signalStore(
           await firstValueFrom(api.cancel(id));
           await doLoad(store.skip(), store.take());
         } catch (e) {
-          patchState(store, { error: (e as Error).message });
+          patchState(store, { error: httpErrorMessage(e) });
         } finally {
           patchState(store, { cancellingIds: store.cancellingIds().filter(x => x !== id) });
         }
@@ -154,7 +155,7 @@ export const QueueStore = signalStore(
           await firstValueFrom(api.retry(id));
           await doLoad(store.skip(), store.take());
         } catch (e) {
-          patchState(store, { error: (e as Error).message });
+          patchState(store, { error: httpErrorMessage(e) });
         } finally {
           patchState(store, { retryingIds: store.retryingIds().filter(x => x !== id) });
         }

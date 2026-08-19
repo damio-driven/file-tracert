@@ -3,6 +3,7 @@ import { patchState, signalStore, withComputed, withMethods, withState } from '@
 import { firstValueFrom } from 'rxjs';
 
 import { VolumesApi } from '../../core/api/volumes-api.service';
+import { httpErrorMessage } from '../../core/http/http-error';
 import { VolumeDetailDto, VolumeDto } from '../../core/models/catalog.models';
 import { VolumeStatusChanged } from '../../core/realtime/realtime.models';
 
@@ -47,7 +48,7 @@ export const VolumesStore = signalStore(
         const volumes = await firstValueFrom(api.list());
         patchState(store, { volumes, loading: false });
       } catch (e) {
-        patchState(store, { error: (e as Error).message, loading: false });
+        patchState(store, { error: httpErrorMessage(e), loading: false });
       }
     }
 
@@ -60,7 +61,7 @@ export const VolumesStore = signalStore(
           const selected = await firstValueFrom(api.detail(id));
           patchState(store, { selected, detailLoading: false });
         } catch (e) {
-          patchState(store, { error: (e as Error).message, detailLoading: false });
+          patchState(store, { error: httpErrorMessage(e), detailLoading: false });
         }
       },
 
@@ -100,7 +101,7 @@ export const VolumesStore = signalStore(
         try {
           await firstValueFrom(api.rescan(id));
         } catch (e) {
-          patchState(store, { error: (e as Error).message });
+          patchState(store, { error: httpErrorMessage(e) });
         } finally {
           patchState(store, { rescanningId: null });
         }
@@ -113,7 +114,7 @@ export const VolumesStore = signalStore(
         try {
           await firstValueFrom(api.setCatalogable(id, isCatalogable));
         } catch (e) {
-          patchState(store, { error: (e as Error).message });
+          patchState(store, { error: httpErrorMessage(e) });
         } finally {
           patchState(store, { togglingId: null });
         }

@@ -3,6 +3,7 @@ import { patchState, signalStore, withMethods, withState } from '@ngrx/signals';
 import { firstValueFrom } from 'rxjs';
 
 import { DashboardApi } from '../../core/api/dashboard-api.service';
+import { httpErrorMessage } from '../../core/http/http-error';
 import { DashboardStatsDto } from '../../core/models/catalog.models';
 
 interface DashboardState {
@@ -27,7 +28,7 @@ export const DashboardStore = signalStore(
         const stats = await firstValueFrom(api.getStats());
         patchState(store, { stats, loading: false });
       } catch (e) {
-        patchState(store, { error: (e as Error).message, loading: false });
+        patchState(store, { error: httpErrorMessage(e), loading: false });
       }
     },
   })),
