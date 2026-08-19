@@ -16,6 +16,12 @@ namespace FileTracert.HardwareSmoke.Scenarios;
 /// not there any more" and "you told me not to look" is the difference between a user hunting for
 /// a file that is sitting on their disk and a user reading the truth.</para>
 ///
+/// <para>Then step 11h, on the same fixture: the type filter is narrowed and widened again through
+/// the real <see cref="FilterSettingsService"/>, and the file under the hidden folder must NOT come
+/// back with it — a wider allow-list says nothing about a folder the scan was told to skip — while
+/// the file the allow-list itself excluded must, and must be findable in Search again, with no scan
+/// in between.</para>
+///
 /// <para>Then both ways back are exercised on the same fixture: un-hiding the folder and scanning
 /// once (the attribute path — nothing in Setup could know), and switching the watched root off and
 /// on through the real <see cref="WatchedRootsService"/> with NO scan in between (§4 — re-widening
@@ -27,6 +33,9 @@ public sealed class ExclusionVsAbsenceScenario : Scenario
     private const string HiddenFile = @"perimeter\secret\secret.dat";
     private const string DeletedFile = @"perimeter\keep\vanish.dat";
     private const string HiddenFolder = @"perimeter\secret";
+
+    /// <summary>The type-filtered one: excluded by the allow-list, so reconciliation owns it.</summary>
+    private const string TypedFile = @"perimeter\keep\ledger.log";
 
     public override string Name => "exclusion-vs-absence";
 
@@ -40,6 +49,7 @@ public sealed class ExclusionVsAbsenceScenario : Scenario
         // ── arrange: three real files, one real scan ──────────────────────────
         ctx.Source.CreateFile(KeptFile, 16 * 1024);
         ctx.Source.CreateFile(HiddenFile, 16 * 1024);
+        ctx.Source.CreateFile(TypedFile, 4 * 1024);
         var deletedFullPath = ctx.Source.CreateFile(DeletedFile, 8 * 1024);
 
         await EnsureWatchedRootAsync(ctx, ctx.Source, ctx.SourceVolumeId);
@@ -55,13 +65,17 @@ public sealed class ExclusionVsAbsenceScenario : Scenario
         if (arranged is null) return;
         ctx.Assert.True(arranged.IsIncluded, "arrange: the file starts inside the perimeter");
 
-        // ── act: narrow the perimeter AND delete one file, then re-scan ───────
+        // ── act: narrow the perimeter AND the type filter, delete one file, re-scan ──
         var folder = new DirectoryInfo(ctx.Source.FullPath(HiddenFolder));
         folder.Attributes |= FileAttributes.Hidden;
         File.Delete(deletedFullPath);
 
+        // Only .dat from here on: ledger.log leaves the index by TYPE, which is the cause
+        // reconciliation owns. The scan that follows prunes its search entry.
+        await SetAllowedExtensionsAsync(ctx, "dat");
+
         var reScan = await ScanVolumeAsync(ctx, ctx.SourceVolumeId);
-        ctx.Log($"re-scan (one folder hidden, one file deleted): {reScan.TotalSeconds:0.00}s");
+        ctx.Log($"re-scan (one folder hidden, one file deleted, types narrowed): {reScan.TotalSeconds:0.00}s");
 
         // ── assert: excluded is not absent ────────────────────────────────────
         var hidden = await AssertCatalogHasFileAsync(ctx, ctx.SourceVolumeId, hiddenPath, "after the re-scan");
@@ -94,6 +108,33 @@ public sealed class ExclusionVsAbsenceScenario : Scenario
             ctx.Assert.True(kept.IsIncluded && kept.IsPresent, "the untouched file must stay included and present");
         }
 
+        // ── assert: widening the TYPE filter undoes only the type exclusion (11h) ──
+        var typedPath = ctx.Source.RelativePath(TypedFile);
+        var narrowed = await FindFileRowAsync(ctx, ctx.SourceVolumeId, typedPath);
+        ctx.Assert.True(narrowed is { IsIncluded: false },
+            $"arrange: the allow-list must have excluded ledger.log; got IsIncluded={narrowed?.IsIncluded}");
+        ctx.Assert.True((await SearchByNameAsync(ctx, "ledger")).Count == 0,
+            "arrange: an excluded file must not be a search hit");
+
+        await SetAllowedExtensionsAsync(ctx); // every type again — and NO scan after it
+
+        var stillHidden = await FindFileRowAsync(ctx, ctx.SourceVolumeId, hiddenPath);
+        ctx.Assert.True(stillHidden is { IsIncluded: false, IsPresent: true },
+            "a wider type filter says nothing about a folder the scan was told to skip: the file " +
+            "under the hidden folder must stay excluded. " +
+            $"Got IsIncluded={stillHidden?.IsIncluded}, IsPresent={stillHidden?.IsPresent}; " +
+            $"hidden on disk right now: {folder.Attributes.HasFlag(FileAttributes.Hidden)}");
+
+        var widened = await FindFileRowAsync(ctx, ctx.SourceVolumeId, typedPath);
+        ctx.Assert.True(widened is { IsIncluded: true, IsPresent: true },
+            "…while the file the ALLOW-LIST excluded must come back, with no scan (§4); " +
+            $"got IsIncluded={widened?.IsIncluded}, IsPresent={widened?.IsPresent}");
+
+        var foundAgain = await SearchByNameAsync(ctx, "ledger");
+        ctx.Assert.True(foundAgain.Count == 1 && widened is not null && foundAgain[0] == widened.Id,
+            "…and Search must agree with the Catalog without waiting for a scan: the reconciliation " +
+            $"has to put the pruned FTS entry back. Got {foundAgain.Count} hit(s).");
+
         // ── assert: un-hiding costs one scan (no Setup event could know) ──────
         folder.Attributes &= ~FileAttributes.Hidden;
         await ScanVolumeAsync(ctx, ctx.SourceVolumeId);
@@ -123,6 +164,18 @@ public sealed class ExclusionVsAbsenceScenario : Scenario
             "switching it back on must re-include them, again without a scan; " +
             $"got IsIncluded={afterOn?.IsIncluded}, IsPresent={afterOn?.IsPresent}");
     }
+
+    /// <summary>
+    /// Sets the global type allow-list through the real service, exactly as the Setup screen does.
+    /// No arguments = every type allowed, which is the harness default.
+    /// </summary>
+    private static Task SetAllowedExtensionsAsync(ScenarioContext ctx, params string[] extensions) =>
+        ctx.Env.WithScopeAsync<object?>(async sp =>
+        {
+            await sp.GetRequiredService<FilterSettingsService>().UpdateAsync(
+                new FilterSettingsDto([.. extensions], []), ctx.Ct);
+            return null;
+        });
 
     /// <summary>Toggles a watched root through the real service, exactly as the API does.</summary>
     private static Task UpdateRootAsync(ScenarioContext ctx, int rootId, bool isActive) =>
