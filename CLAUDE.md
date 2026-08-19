@@ -92,13 +92,22 @@ Tests      → Contracts, Data, Platform, Business, Host
 - `Contracts` è lo **shared kernel**: DTO, enum, request/response, messaggi
   SignalR **e le port interface verso la piattaforma** (`IVolumeProbe`,
   `IUsnReader`, `IFileMover`, `IDeviceWatcher`) con i loro DTO di scambio.
-  Non dipende da nulla.
+  Ci stanno anche gli **helper di dominio puri** che più layer devono spellare
+  allo stesso modo — oggi `ScanPath` (path relativi al volume: normalize, join,
+  parent, contenimento), usato da `Business`, `Host` e `Platform`. Non dipende
+  da nulla: solo tipi BCL, mai un'entità.
 - **Tutta** la P/Invoke vive in `Platform`, che **implementa** le port interface
   definite in `Contracts`. `Business` dipende solo da `Contracts` + `Data`
   (mai da `Platform`): resta `net10.0` puro, non vede chiamate native, è
   testabile con mock. `Host` wira le implementazioni `Platform` in DI.
 - I pezzi legati a SQLite (FTS5, quirk UPSERT del bulk) sono isolati dietro
-  `IFileSearchIndex` e `IBulkIndexWriter` (in `Contracts`, implementati in `Data`).
+  `IFileSearchIndex` e `IBulkIndexWriter`, **implementati in `Data`**.
+  *Dove vive l'interfaccia lo decide la sua firma* (chiuso allo step 11f):
+  `IFileSearchIndex` parla in **id e DTO** e sta in `Contracts/Search`;
+  `IBulkIndexWriter` parla in **entità EF** (`FileEntry`, `DirectoryNode`) e sta
+  in `Data/Indexing` — portarlo in `Contracts` ci trascinerebbe il modello, cioè
+  romperebbe la regola «Contracts non dipende da nulla» per rispettarne la
+  lettera. Nessun consumatore ci perde: `Business` referenzia `Data` comunque.
   **Data layer provider-agnostic**: un domani il passaggio a SQL Server/Express
   deve essere connection string + swap di un paio di adapter, non un rewrite.
 - **TFM**: `Contracts`, `Data`, `Business` = `net10.0`; `Platform`, `Host`,
@@ -573,24 +582,132 @@ Stato: WP3 (perdita dati), WP1 (crash-safe), WP2 (offline gate), **fix UX date/U
 unificato, WP4 intero), **step 10a** (device watcher: il remount è un push, non un poll),
 **step 10b** (hub SignalR + messaggi tipizzati, lato server), **step 10c** (il frontend
 ascolta invece di pollare) — **fatti**. Gli **step 9 e 10 sono chiusi**.
+~~**Work package minori**~~ — **CHIUSI**: indice/ricerca (WP5, step 11a), spazio (WP6,
+step 11b), logging/shutdown (WP8, step 11c), frontend/UX (WP7, step 11d), efficienza
+(WP9, step 11e), cleanup e discrepanze di layering (WP10, step 11f). Le due discrepanze
+§3 sono chiuse **con codice e brief concordi**: `ScanPath` è stato **spostato** in
+`Contracts/Scanning`; `IBulkIndexWriter` **resta** in `Data/Indexing` e il brief è stato
+corretto (parla in entità EF: portarlo in `Contracts` ci trascinerebbe il modello).
 Prossimo, in ordine:
-1. **Work package minori rimanenti** (dalla code review): ~~indice/ricerca (WP5)~~ —
-   **fatto allo step 11a**; ~~spazio (WP6)~~ — **fatto allo step 11b**;
-   ~~logging/shutdown (WP8)~~ — **fatto allo step 11c**; ~~frontend/UX (WP7)~~ —
-   **fatto allo step 11d**; ~~efficienza (WP9)~~ — **fatto allo step 11e**; resta
-   **cleanup** (11f, incl. eventuale
-   spostamento di `ScanPath` in `Contracts` come da review, e la discrepanza §3:
-   `IBulkIndexWriter` sta in `Data/Indexing` e `IFileSearchIndex` in
-   `Contracts/Search`, mentre §3 li dà entrambi in `Contracts` — segnalata allo
-   step 9a, non spostata).
-   Da valutare lì anche: **`IsPresent=false` usato come «escluso dal filtro»**. Un file
-   **fuori** dai watched root attivi lo era già; dallo step 11a lo è anche un file dentro
-   una cartella **esclusa per attributi**. §6 riserva `IsPresent` a «non c'è più sul
-   disco», e il flag onesto per una decisione di *filtro* è `IsIncluded=false` (§4).
+1. **Decisione di prodotto in sospeso — `IsPresent=false` usato come «escluso dal filtro»**
+   *(posta allo step 11f, non decisa dall'agente: è §«Cosa resta all'umano»)*. Un file
+   **fuori** dai watched root attivi viene marcato `IsPresent=false` al primo scan del
+   volume; dallo step 11a lo è anche un file dentro una cartella **esclusa per attributi**
+   (System/Hidden) o dentro un sottoalbero escluso. §6 riserva `IsPresent` a «non c'è più
+   sul disco», e il flag onesto per una decisione di *filtro* è `IsIncluded=false` (§4).
    Nessuna riga viene mai cancellata e uno scan con il filtro riallargato la ripristina,
-   ma chiuderlo vuol dire portare l'insieme escluso dentro il merge e il pass degli
-   assenti di `IBulkIndexWriter`. C'è un test che **fissa** il comportamento attuale.
+   ma nel Catalogo l'utente oggi legge «assente» dove il fatto è «fuori dal perimetro che
+   hai scelto». **Le opzioni differiscono per significato, non per costo**, ed è ciò che
+   l'utente vede: (a) lasciare com'è e cambiare solo la parola in UI; (b) usare
+   `IsIncluded=false` per le esclusioni di filtro e tenere `IsPresent` per il disco — è la
+   lettura di §4/§6, e costa portare l'insieme escluso dentro il merge e il pass degli
+   assenti di `IBulkIndexWriter`; (c) un terzo stato «non ancora guardato», che è un
+   cambio di schema. C'è un test che **fissa** il comportamento attuale, quindi nulla si
+   muove finché non si decide.
 2. **Step 12 — Test UI end-to-end (Playwright).**
+
+### Fatto nello step 11f (2026-08-19, commit `20791fd`…`e8176ce`)
+**WP10 chiuso**, e con esso i **work package minori**: il prossimo è lo **step 12 (Playwright)**.
+Doveva essere il giro meccanico; due unificazioni su dieci hanno scoperchiato un bug vero, che è
+esattamente il motivo per cui il task chiedeva di partire dalle **due** copie e di decidere quale
+sopravvive invece di prendere la prima.
+- **K1 — una sola cascata per rename e move di cartella** (`CascadeDirMoveAsync`). Le due copie
+  erano divergenti in **tre** punti: quella del rename scriveva il `Name` nuovo e non toccava mai
+  `ParentId`, quella del move ri-genitorializzava e non scriveva mai il `Name`, e si comportavano
+  in modo diverso quando la riga radice del sottoalbero mancava. **Il bug**: la copia del move
+  scriveva `ParentId = null` per una destinazione **alla radice del volume**, ma `null` non è la
+  radice in questo schema — la radice è una riga vera con `MaterializedPath` vuoto, quella a cui
+  `DirectoryMerger` lega ogni cartella di primo livello e quella di cui il Catalogo elenca i figli.
+  Una cartella spostata lì restava impeccabile nella tabella e **spariva dall'albero** fino alla
+  scansione successiva. Ora la riga in cima prende sempre il nome nuovo e prende un parent nuovo
+  **solo quando il path del parent è davvero cambiato**, risolto da `DirectoryResolver` (che alla
+  radice risponde con la RIGA radice). La condizione non è un'ottimizzazione: risolvere sempre
+  scriverebbe — e dove manca, creerebbe — una relazione che un rename non ha chiesto di spostare.
+  Il ramo «riga in cima assente» tiene la versione del rename (prosegue): con un catalogo coerente
+  le due sono indistinguibili, e con dei discendenti orfani riscrivere i loro path li lascia almeno
+  d'accordo con il disco. Test RED→GREEN; il primo tentativo (risolvere sempre il parent) è stato
+  bocciato da `DirectoryCollationTests`, che aveva ragione: è cambiato il codice, non il test.
+- **K2 — una sola pulizia dei partial** (`PartialCleanup.RemoveAsync`, sei call site). Le copie
+  divergevano su **chi persiste il puntatore azzerato**: il motore salvava da sé con
+  `CancellationToken.None`, `QueueService` lasciava il save al chiamante. Vince il motore, perché
+  il delete non è annullabile: una volta che i byte sono nel cestino, una riga che li nomina ancora
+  è falsa — e con la copia di `QueueService` quella riga falsa sopravviveva alla richiesta che
+  l'aveva prodotta (un retry che perde la corsa sullo stato cancella il partial, lancia, e
+  `ChangeTracker.Clear()` si porta via il `TempPath` azzerato). Test RED→GREEN che inietta la
+  cancellazione rivale nell'istante esatto.
+- **K3 — `NormalizeReservationAsync` sul ledger.** Una sola guardia (`SpaceLedger.ReservationFor`,
+  che coincide con i casi che `SpaceCheck.EvaluateHardAsync` lascia passare senza toccare il
+  device: una definizione sola di «questo job ha bisogno di spazio») e tre entry point per una
+  regola sola — scope proprio (retry), metà durevole nella transazione del chiamante (E8) e
+  specchio in memoria dopo il commit. La differenza fra le copie era il **token**: il retry passava
+  quello della richiesta. Ora i membri non ne prendono uno affatto, ed è la firma a dirlo: quando
+  girano, lo stato `Pending` è già committato, quindi rinunciare a metà lascia un job eseguibile la
+  cui domanda il ledger non conosce.
+- **K4 — una sola stanza cross-volume** (`ApplyCrossVolumeDemandAsync`). Divergevano sul caso
+  **zero byte**: il verdetto è identico (una domanda di zero non può essere infattibile — l'available
+  è clampato a 0), ma MoveFile **sondava il device** e timbrava `EstimateIsLive` con la risposta.
+  Su un drive dichiarato online che non risponde, i due producevano job visibilmente diversi: uno
+  con la bandierina «stima non live» su un job che non ha alcun numero da qualificare, l'altro no.
+  Vince MoveFolder, e la syscall sparisce con lui.
+- **K6/K7 — `ScanPath` nel shared kernel** (`FileTracert.Contracts/Scanning`). Tre layer avevano
+  bisogno delle stesse regole sui path relativi al volume; viveva in `Business`, quindi `Platform`
+  non lo raggiungeva e si era riscritto normalize + join a mano, e `Host` attraversava un confine
+  per un helper di stringhe. `WatchedRootPath.Conflicts` ora chiama `ScanPath.Overlaps`: le due
+  copie erano **identiche**, ed è il punto — coincidevano per fortuna, e un fix a una avrebbe
+  mancato l'altra (che è come è nato K5).
+- **K11 — not-found tipizzato al posto dello string-sniffing.** `EntityNotFoundException` (in
+  `Contracts/Errors`; deliberatamente **non** `KeyNotFoundException`, che il BCL lancia anche per
+  una chiave di dizionario mancante, e la coda di lookup su dizionario ne fa parecchi) +
+  `QueueExceptionFilter` sul controller al posto di sei try/catch. §9 voleva due cose e solo due
+  action su sei le facevano: adesso tutte loggano per intero ciò che convertono. Mappatura
+  preservata alla lettera, incluso il confine che sembra un'incoerenza e non lo è — ciò che manca
+  nella **route** è 404, ciò che manca nel **body** è 400 — con un test che lo fissa.
+- **K12 — il probe FTS dietro la sua interfaccia** (`IFileSearchIndex.IsEmptyAsync`). Il cast a
+  `SqliteConnection` e la query a mano su una tabella virtuale stavano in `Host`.
+- **K13 — solo ciò che è davvero morto.** `ScanPhase.Done`/`Failed` **non** lo sono più (10b) e
+  restano; `ScanPhase.ResolvingPaths` non è prodotto da nessun `SetPhase` e se ne va. `IsStale` era
+  un terzo campo per il bit già in `IsOnline`, e **non lo leggeva nessuno**: resta `DataIsLive`,
+  che è nominato per ciò che descrive e che può onestamente smettere di rispecchiare `IsOnline`
+  (`SpaceCheck` già distingue «il catalogo lo crede collegato» da «ha risposto alla sonda»).
+  `completedCount` non aveva lettori.
+- **K10 era già chiuso da 11d** (il chrome modale è `.ft-modal*` nel design system da quando i
+  nuovi stati del picker hanno superato la soglia di *errore* del budget SCSS). Restava la barra
+  azioni, ora `.ft-modal-footer`.
+- **I tre lasciti di 11e**: il vero duplicato di `GroupBy(_ => 1)` era `VolumesController`, che
+  ricontava file e byte con lo stesso filtro di `CatalogTotals` (le altre tre occorrenze aggregano
+  tabelle diverse: astrarre *quello* sarebbe astrarre `GroupBy`); il DDL FTS5 era copiato in
+  **sette** file di test e ora viene da `FileSearchIndexSchema`, che è ciò che esegue la migration;
+  e una `DbUpdateException` non abortisce più l'intera passata di rivalutazione. Quest'ultimo ha
+  richiesto più di un `continue`: il tentativo annullato lascia entità tracciate (le righe di
+  ledger in staging, le directory dell'overlay) e il save del job successivo se le trascina dietro
+  — un primo tentativo con `continue` trasformava il fallimento di un job in quello del job dopo.
+  Quindi la passata segnala di essere stata interrotta, il chiamante scarta il change tracker e
+  rilegge i candidati non ancora esaminati. Una query in più, solo quando qualcosa è fallito.
+- **Discrepanze di layering, chiuse con codice e brief concordi**: `ScanPath` **spostato** in
+  `Contracts`; `IBulkIndexWriter` **lasciato** in `Data/Indexing` e §3 corretto — le sue firme
+  parlano in entità EF, portarlo in `Contracts` ci trascinerebbe il modello, cioè romperebbe
+  «Contracts non dipende da nulla» per rispettarne la lettera. Ora §3 dice che *dove vive
+  l'interfaccia lo decide la sua firma*.
+- **Verifica**: xUnit **750 verdi** (+8), Vitest **242 verdi**, build backend pulita
+  (warnings-as-errors), `ng build` ok (restano i 4 warning di budget SCSS, pre-esistenti).
+  Harness sul ferro (`D:\Collaudo\A` → `C:\Collaudo\B`): **44 scenari, 44 PASS, 0 FAIL**, identico
+  alla baseline di 11e. `appsettings.json` dell'harness rimesso byte-identico (sha256 verificato).
+**Limiti noti e accettati:**
+- **Il retry normalizza la riserva DOPO il suo commit**, il revaluator dentro la transazione.
+  Allinearli è E8 applicato a un secondo call site, cioè una modifica di crash-safety al file più
+  caldo della coda: non è roba da commit di dedup. La finestra è quella pre-esistente (un crash fra
+  il commit e le chiamate al ledger lascia un `Pending` sotto-riservato).
+- **`QueueExceptionFilter` cattura lo stesso insieme di prima**, `ArgumentException` e
+  `InvalidOperationException`. Il che conserva un difetto noto: `ObjectDisposedException` deriva da
+  `InvalidOperationException` e viene letta come 400. Lo era anche prima; allargare o restringere
+  l'insieme è un cambio di comportamento e non appartiene a un giro di dedup.
+- **La flakiness della suite sotto carico concorrente documentata da 11e è stata incontrata**
+  (un test diverso a ogni giro — `DomainApiTests`, `SetupApiTests`, `RootsBySpecificityTests`,
+  `Win32FileMoverTests` — sempre verde in isolamento e su una passata pulita, 750/750). Non è di
+  questo giro: le passate incriminate non toccano i file modificati qui. Resta aperta.
+- **La domanda di prodotto su `IsPresent=false` come «escluso dal filtro» è stata posta e NON
+  decisa** (è §«Cosa resta all'umano»): vedi il punto 1 della roadmap. Nulla è stato mosso, e il
+  test che fissa il comportamento attuale è ancora lì.
 
 ### Fatto nello step 11e (2026-08-19, commit `ec725c3`…`d7f7748`)
 **WP9 chiuso** (E1, E3, E4, E5, E6, E7, E8; E2 era già chiuso allo step 9a). La radice è sempre la
