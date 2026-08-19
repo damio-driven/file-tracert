@@ -263,6 +263,60 @@ public sealed class QueueServiceTests : IDisposable
         dto.Id.Should().BeGreaterThan(0);
     }
 
+    /// <summary>
+    /// K4 — the divergence between the two copies of the cross-volume stanza, made visible.
+    ///
+    /// <para>MoveFolder skipped the space check when the subtree held no bytes; MoveFile ran it
+    /// whatever the size. The VERDICT is the same either way — a demand of zero can never be
+    /// infeasible, because the ledger clamps available space at zero — so what actually differed
+    /// is what the two did on the way to the same answer: MoveFile probed the DEVICE for free
+    /// space, and then stamped the job's <c>EstimateIsLive</c> with whether the drive answered.</para>
+    ///
+    /// <para>A drive that is flagged online and does not answer is exactly where they part: the
+    /// zero-byte MoveFile came out marked "estimate not live", the identical MoveFolder did not,
+    /// and the Coda would put a staleness flag on a job that has no number to qualify. MoveFolder's
+    /// reading survives — no estimate was made, so none is described — and the syscall (plus its
+    /// Warning) disappears with it. "Needs space" is <c>SpaceLedger.ReservationFor</c> now, one
+    /// predicate, and it says no here as it does everywhere else.</para>
+    /// </summary>
+    [Fact]
+    public async Task A_zero_byte_cross_volume_move_neither_probes_the_drive_nor_claims_an_estimate()
+    {
+        int emptyFileId;
+        using (var db = _harness.CreateContext())
+        {
+            var empty = new FileEntry
+            {
+                VolumeId = Vol1Id, DirectoryId = Dir1Id,
+                Name = "empty.txt", Extension = "txt", Category = FileCategory.Document,
+                SizeBytes = 0, IsPresent = true, IsIncluded = true,
+                FileCreatedUtc = DateTime.UtcNow, FileModifiedUtc = DateTime.UtcNow,
+                LastIndexedUtc = DateTime.UtcNow,
+            };
+            db.Files.Add(empty);
+            db.SaveChanges();
+            emptyFileId = empty.Id;
+        }
+
+        // A target the catalog believes is connected and that does not answer the probe.
+        var probe = new StubFreeSpaceProbe(null);
+
+        var dto = await Svc(probe).EnqueueAsync(new CreateJobRequest
+        {
+            Type = JobType.MoveFile,
+            SourceFileId = emptyFileId,
+            TargetVolumeId = Vol2Id,
+            TargetRelativePath = "Backup",
+        }, None);
+
+        dto.State.Should().Be("Pending", "a move that asks for no bytes cannot fail to fit");
+        dto.BlockReason.Should().Be("None");
+        dto.EstimateIsLive.Should().BeTrue(
+            "no estimate was made, so nothing here may be described as stale — same as MoveFolder");
+        probe.Probes.Should().Be(0,
+            "asking the device about a verdict that is decided in advance costs a syscall for nothing");
+    }
+
     // ── C3: enqueue + reserve are atomic (no overcommit window) ───────────────
 
     [Fact]

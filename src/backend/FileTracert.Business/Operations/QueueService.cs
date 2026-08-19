@@ -917,27 +917,8 @@ public sealed class QueueService : IQueueService
         job.TargetRelativePath = dstPath;
         job.IsIntraVolume = intra;
 
-        if (!intra)
-        {
-            job.TotalBytes = file.SizeBytes;
-            job.RequiredBytesTarget = file.SizeBytes;
-            job.FreedBytesSource = file.SizeBytes;
-
-            // Weighed together with everything this batch has already promised to the same
-            // volume (0 for a lone enqueue): the batch is one demand, and judging its last file
-            // against free space that ignores its first forty-nine would declare a selection
-            // feasible that plainly is not.
-            var f = await _spaceCheck.PlanAsync(
-                targetVol, committedDemandOnTarget + file.SizeBytes,
-                excludeJobId: null, sequenceOrder: null, ct);
-
-            job.EstimateIsLive = f.EstimateIsLive;
-            if (!f.Feasible)
-            {
-                job.State = JobState.Blocked;
-                job.BlockReason = JobBlockReason.InsufficientSpace;
-            }
-        }
+        bool shouldReserve = !intra && await ApplyCrossVolumeDemandAsync(
+            job, targetVol, file.SizeBytes, committedDemandOnTarget, ct);
 
         items.Add(new OperationJobItem
         {
@@ -948,7 +929,53 @@ public sealed class QueueService : IQueueService
             State = JobItemState.Pending
         });
 
-        return !intra && job.State == JobState.Pending;
+        return shouldReserve;
+    }
+
+    /// <summary>
+    /// Records what a cross-volume job demands, judges whether it fits, and answers whether the
+    /// enqueue must reserve for it. K4 — one routine for MoveFile and MoveFolder, which held two
+    /// copies of the same decision.
+    ///
+    /// <para>The demand is weighed together with everything this batch has already promised to the
+    /// same volume (0 for a lone enqueue): the batch is one demand, and judging its last file
+    /// against free space that ignores its first forty-nine would declare a selection feasible that
+    /// plainly is not.</para>
+    ///
+    /// <para>The copies differed over a demand of ZERO bytes: MoveFolder skipped the check,
+    /// MoveFile ran it — so an empty file moved to a full volume was born
+    /// <c>Blocked(InsufficientSpace)</c> for a demand of nothing, and was released again by the
+    /// very next revaluation, because <see cref="SpaceCheck.EvaluateHardAsync"/> waves a zero-byte
+    /// demand through without touching the device. MoveFolder's reading survives: "needs space" is
+    /// <see cref="SpaceLedger.ReservationFor"/>, one predicate, and it says no here too — which is
+    /// also why the reservation verdict is read from it rather than recomputed.</para>
+    ///
+    /// <para>§4 is respected either way: an infeasible answer parks the job <c>Blocked</c>, it
+    /// never refuses it.</para>
+    /// </summary>
+    private async Task<bool> ApplyCrossVolumeDemandAsync(
+        OperationJob job, Volume targetVolume, long totalBytes,
+        long committedDemandOnTarget, CancellationToken ct)
+    {
+        job.TotalBytes = totalBytes;
+        job.RequiredBytesTarget = totalBytes;
+        job.FreedBytesSource = totalBytes;
+
+        if (totalBytes > 0)
+        {
+            var feasibility = await _spaceCheck.PlanAsync(
+                targetVolume, committedDemandOnTarget + totalBytes,
+                excludeJobId: null, sequenceOrder: null, ct);
+
+            job.EstimateIsLive = feasibility.EstimateIsLive;
+            if (!feasibility.Feasible)
+            {
+                job.State = JobState.Blocked;
+                job.BlockReason = JobBlockReason.InsufficientSpace;
+            }
+        }
+
+        return job.State == JobState.Pending && SpaceLedger.ReservationFor(job) is not null;
     }
 
     private async Task<bool> BuildMoveFolderAsync(CreateJobRequest req, OperationJob job,
@@ -1018,26 +1045,8 @@ public sealed class QueueService : IQueueService
         var expanded = await ExpandSubtreeAsync(dir, dstDirPath, ct);
         items.AddRange(expanded);
 
-        long total = expanded.Sum(i => i.SizeBytes);
-        job.TotalBytes = total;
-        job.RequiredBytesTarget = total;
-        job.FreedBytesSource = total;
-
-        if (total > 0)
-        {
-            // Same rule as MoveFile: the verdict is taken on the batch's cumulative demand.
-            var f = await _spaceCheck.PlanAsync(
-                targetVol, committedDemandOnTarget + total, excludeJobId: null, sequenceOrder: null, ct);
-
-            job.EstimateIsLive = f.EstimateIsLive;
-            if (!f.Feasible)
-            {
-                job.State = JobState.Blocked;
-                job.BlockReason = JobBlockReason.InsufficientSpace;
-            }
-        }
-
-        return job.State == JobState.Pending && total > 0;
+        return await ApplyCrossVolumeDemandAsync(
+            job, targetVol, expanded.Sum(i => i.SizeBytes), committedDemandOnTarget, ct);
     }
 
     // ── private: subtree expansion ────────────────────────────────────────────
