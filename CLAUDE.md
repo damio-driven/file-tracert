@@ -606,7 +606,7 @@ Prossimo, in ordine:
    muove finché non si decide.
 2. **Step 12 — Test UI end-to-end (Playwright).**
 
-### Fatto nello step 11f (2026-08-19, commit `20791fd`…`e8176ce`)
+### Fatto nello step 11f (2026-08-19, commit `20791fd`…`1fca8c3`)
 **WP10 chiuso**, e con esso i **work package minori**: il prossimo è lo **step 12 (Playwright)**.
 Doveva essere il giro meccanico; due unificazioni su dieci hanno scoperchiato un bug vero, che è
 esattamente il motivo per cui il task chiedeva di partire dalle **due** copie e di decidere quale
