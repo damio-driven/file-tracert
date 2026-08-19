@@ -487,7 +487,11 @@ public sealed class QueueService : IQueueService
         foreach (var job in jobs)
         {
             FeasibilityResult? feasibility = null;
-            if (job.State == JobState.Blocked && job.TargetVolumeId.HasValue && job.TargetVolume is not null)
+            // Only for a job that has a space question at all: an intra-volume op or one with
+            // nothing to reserve would get the "feasible by construction" placeholder, and a
+            // placeholder on the wire is a number someone will eventually read as real.
+            if (job.State == JobState.Blocked && job.TargetVolume is not null &&
+                !job.IsIntraVolume && job.RequiredBytesTarget > 0)
             {
                 // Hard view: the deficit shown for a Blocked job must explain the block, i.e.
                 // match the engine's execution-time re-check — same object, same live figure,

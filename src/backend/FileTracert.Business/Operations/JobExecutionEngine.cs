@@ -226,19 +226,18 @@ public sealed class JobExecutionEngine
             var tgtVol = job.TargetVolume!;
             var verdict = await _spaceCheck.EvaluateHardAsync(job, ct);
 
-            // The probed figure is fresher than the stored one, so it replaces it (an absolute
-            // overwrite, never a delta — see CompleteJobAsync, whose estimate fold this
-            // supersedes as soon as the next probe lands). Persisted by the transition below,
-            // or by SetBlockedAsync on the other branch.
-            var space = _spaceCheck.ReadFreeSpace(tgtVol);
-            if (space.IsLive)
-                tgtVol.FreeBytesLastKnown = space.FreeBytes;
+            // The figure the verdict was taken on is fresher than the stored one, so it replaces
+            // it — an absolute overwrite, the only kind that column ever gets (see
+            // CompleteJobAsync: nothing folds arithmetic into it any more). Persisted by the
+            // transition below, or by SetBlockedAsync on the other branch.
+            StoreMeasuredFreeSpace(tgtVol, verdict.Space);
 
             if (!verdict.Ok)
             {
                 _logger.LogWarning(
                     "Job {Id}: hard space re-check refused it ({Reason}). Deficit={D}, free={Free} (live={Live}).",
-                    job.Id, verdict.Reason, verdict.Feasibility.DeficitBytes, space.FreeBytes, space.IsLive);
+                    job.Id, verdict.Reason, verdict.Feasibility.DeficitBytes,
+                    verdict.Space.FreeBytes, verdict.Space.IsLive);
                 await SetBlockedAsync(job, verdict.Reason, verdict.Message, ct);
                 return;
             }
@@ -674,6 +673,32 @@ public sealed class JobExecutionEngine
 
     // ── state machine helpers ─────────────────────────────────────────────────
 
+    /// <summary>
+    /// Stores a free-space figure on the volume row, and ONLY when it was really measured: the
+    /// column is a measurement or it is nothing (§4). Written on the caller's tracked entity, so
+    /// it commits with whatever transition the caller is about to persist.
+    /// </summary>
+    private static void StoreMeasuredFreeSpace(Volume volume, VolumeFreeSpace space)
+    {
+        if (space.IsLive)
+            volume.FreeBytesLastKnown = space.FreeBytes;
+    }
+
+    /// <summary>
+    /// Re-measures both volumes of a finished cross-volume job. The probe is the only writer of
+    /// this column, so after the biggest change a job can make to a drive the honest move is to
+    /// look again — not to guess by how much it changed.
+    /// </summary>
+    private void RefreshMeasuredFreeSpace(OperationJob job)
+    {
+        if (job.IsIntraVolume) return;
+
+        if (job.TargetVolume is not null)
+            StoreMeasuredFreeSpace(job.TargetVolume, _spaceCheck.Measure(job.TargetVolume));
+        if (job.SourceVolume is not null && job.SourceVolumeId != job.TargetVolumeId)
+            StoreMeasuredFreeSpace(job.SourceVolume, _spaceCheck.Measure(job.SourceVolume));
+    }
+
     private void MarkStarted(OperationJob job)
     {
         if (job.StartedUtc is null)
@@ -740,14 +765,16 @@ public sealed class JobExecutionEngine
         job.State = JobState.Completed;
         job.CompletedUtc = DateTime.UtcNow;
 
-        // No space fold here. Until step 11b the completion subtracted the job's bytes from the
-        // target's FreeBytesLastKnown and credited the source's, to keep the estimate usable
-        // between two volume probes. Now that the hard re-check reads the DEVICE — and writes
-        // what it read — that arithmetic runs on top of a figure which already includes the
-        // bytes just written, and the estimate ends up one job size too pessimistic until the
-        // next probe corrects it. The source half was never true anyway: the files went to the
-        // recycle bin, so those bytes are not free until the bin is emptied. FreeBytesLastKnown
-        // is now written by measurements only — the volume sync, and the hard check's refresh.
+        // No space fold here — but a measurement. Until step 11b the completion SUBTRACTED the
+        // job's bytes from the target's FreeBytesLastKnown and credited the source's, to keep the
+        // estimate usable between two volume probes. That arithmetic is wrong on both halves now:
+        // on the target it runs on top of a figure the hard re-check already read from the device,
+        // and on the source it credits bytes that went to the recycle bin and are not free until
+        // the bin is emptied. So the column is re-READ instead: the copy has just moved the most
+        // it will ever move, and leaving the pre-copy figure there would hand the Dashboard — and
+        // the fallback of the next job's planning, if the drive stops answering — a number one
+        // whole job out of date. Two syscalls at most, and never arithmetic.
+        RefreshMeasuredFreeSpace(job);
 
         // One atomic completion commit:
         // - catalog/FTS update INSIDE it (finding #7): a failure rolls the whole completion
@@ -800,8 +827,8 @@ public sealed class JobExecutionEngine
     private async Task HandleCompletionCommitFailureAsync(OperationJob job, Exception failure, CancellationToken ct)
     {
         // The tracker still holds every pending mutation of the rolled-back completion
-        // (Completed state, index re-points). Drop them all — only the committed
-        // checkpoint may reach the DB from here on.
+        // (Completed state, refreshed free-space measurements, index re-points). Drop them all —
+        // only the committed checkpoint may reach the DB from here on.
         _db.ChangeTracker.Clear();
 
         var attempts = await _db.OperationJobs.AsNoTracking()

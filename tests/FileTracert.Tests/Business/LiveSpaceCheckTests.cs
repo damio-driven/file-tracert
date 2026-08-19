@@ -128,15 +128,53 @@ public sealed class LiveSpaceCheckTests : IDisposable
     }
 
     [Fact]
-    public async Task One_probe_per_volume_per_unit_of_work()
+    public async Task A_completed_job_re_measures_instead_of_guessing_what_it_consumed()
     {
-        var probe = new StubFreeSpaceProbe(5_000_000);
+        // The drive shrinks while the job runs, exactly as the landing bytes make it shrink.
+        var probe = new StubFreeSpaceProbe(900_000);
+        probe.AfterProbe = () => probe.FreeBytes = 800_000;
         int jobId = SeedCrossVolumeJob();
 
         await MakeEngine(FeasibleMover(), probe).ExecuteJobAsync(jobId, CancellationToken.None);
 
+        await using var db = _harness.CreateContext();
+        var target = await db.Volumes.SingleAsync(v => v.Id == TargetVolumeId);
+        target.FreeBytesLastKnown.Should().Be(800_000,
+            "after the copy the column must hold a NEW reading, not the one taken before it");
+    }
+
+    [Fact]
+    public async Task The_decision_is_taken_on_one_snapshot_of_the_drive()
+    {
+        // Blocked: nothing was copied, so nothing changed and there is nothing to re-measure.
+        var probe = new StubFreeSpaceProbe(1_000);
+        int jobId = SeedCrossVolumeJob();
+
+        await MakeEngine(FeasibleMover(), probe).ExecuteJobAsync(jobId, CancellationToken.None);
+
+        (await ReadJobAsync(jobId)).State.Should().Be(JobState.Blocked);
         probe.Probes.Should().Be(1,
-            "the verdict and the refreshed estimate must come from ONE snapshot of the drive");
+            "the verdict and the stored figure must come from ONE reading, not two that disagree");
+    }
+
+    [Fact]
+    public void A_volume_the_catalog_knows_is_gone_is_not_asked()
+    {
+        var probe = new StubFreeSpaceProbe(5_000_000);
+        var volume = new Volume
+        {
+            Id = 99, VolumeGuid = @"\\?\Volume{ccc-3}\", FileSystem = "NTFS",
+            FreeBytesLastKnown = 4_242, IsOnline = false,
+        };
+
+        using var db = _harness.CreateContext();
+        var space = TestProjection.Space(db, _ledger, probe).ReadFreeSpace(volume);
+
+        probe.Probes.Should().Be(0,
+            "asking a device the catalog already knows is disconnected costs a syscall that can " +
+            "stall, and a warning line, for an answer nobody disputes");
+        space.FreeBytes.Should().Be(4_242);
+        space.IsLive.Should().BeFalse();
     }
 
     // ── the safety margin (§4: "free space + margin") ─────────────────────────

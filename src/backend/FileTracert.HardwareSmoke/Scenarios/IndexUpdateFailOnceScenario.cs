@@ -55,10 +55,6 @@ public sealed class IndexUpdateFailOnceScenario : Scenario
         // The indexing arrange above must not consume the injected failure.
         _latch.Arm();
 
-        // What the device holds just before the job runs — which is what the hard re-check is
-        // about to measure and store. Nothing after that point may change the column.
-        long freeBeforeRun = LiveFreeBytes(ctx, ctx.Target.Volume);
-
         // ── act ───────────────────────────────────────────────────────────────
         await ctx.Queue.StartWorkerAsync(ctx.Ct);
         var finished = await ctx.Queue.WaitForTerminalAsync(job.Id, ctx.Timeout, ctx.Ct);
@@ -76,20 +72,21 @@ public sealed class IndexUpdateFailOnceScenario : Scenario
         ctx.Assert.FileMissing(sourceAbsolute, "source after the completed move");
         AssertNoPartialsAnywhere(ctx);
 
-        // The stored estimate is a measurement, never a running total: the completion — and the
-        // retry it went through — must leave it where the re-check's probe put it, i.e. at what
-        // the drive held when the job started. A tolerance, because a real drive keeps moving
-        // under other processes; a fold applied once (let alone twice) would be off by the job
-        // size, far outside it.
+        // The stored figure is a measurement, never a running total: the completion — and the
+        // retry it went through — must leave the column holding what the drive REALLY has now,
+        // because completion re-measures instead of subtracting what it thinks it consumed. A
+        // tolerance, because a real drive keeps moving under other processes; the job size is far
+        // outside it, so a fold (once, let alone twice) would still be caught.
         var freeAfter = await ctx.Env.WithDbAsync(db =>
             db.Volumes.Where(v => v.Id == ctx.TargetVolumeId)
                 .Select(v => v.FreeBytesLastKnown).SingleAsync(ctx.Ct));
+        long freeNow = LiveFreeBytes(ctx, ctx.Target.Volume);
         long tolerance = 16L * 1024 * 1024;
         ctx.Assert.True(
-            Math.Abs(freeBeforeRun - freeAfter) <= tolerance,
-            $"target FreeBytesLastKnown must hold the figure measured when the job started, not " +
-            $"one with the job's {finished.RequiredBytesTarget:N0} B folded into it (device held " +
-            $"{freeBeforeRun:N0} B, row says {freeAfter:N0} B)");
+            Math.Abs(freeNow - freeAfter) <= tolerance,
+            $"target FreeBytesLastKnown must hold a figure measured after the copy, not one with " +
+            $"the job's {finished.RequiredBytesTarget:N0} B folded into it (device says " +
+            $"{freeNow:N0} B, row says {freeAfter:N0} B)");
 
         // The index update did land on the successful attempt.
         await AssertCatalogHasFileAsync(ctx, ctx.TargetVolumeId,

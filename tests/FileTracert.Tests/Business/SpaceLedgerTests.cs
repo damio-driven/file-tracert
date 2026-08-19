@@ -487,4 +487,15 @@ public sealed class SpaceLedgerTests : IDisposable
         with.MarginBytes.Should().Be(30, "the cushion is reported apart so the UI can explain it");
     }
 
+    [Fact]
+    public async Task An_absurd_requirement_plus_margin_fails_closed()
+    {
+        // A corrupted RequiredBytesTarget must not become feasible by overflowing to a negative
+        // demand — the arithmetic saturates instead of wrapping.
+        var r = await Compute(volId: 1, free: 1_000, required: long.MaxValue - 10, marginBytes: 1_000);
+
+        r.Feasible.Should().BeFalse("an impossible demand can only ever be infeasible");
+        r.DeficitBytes.Should().BeGreaterThan(0);
+    }
+
 }

@@ -2,14 +2,15 @@ namespace FileTracert.Contracts.Operations;
 
 /// <summary>
 /// Thread-safe singleton that tracks planned space reservations and liberations
-/// across all queued jobs. Business layer never reads FreeBytesLastKnown directly —
-/// the caller (QueueService) fetches the volume row and passes the values in.
+/// across all queued jobs. It knows nothing about volumes or settings: the caller
+/// (Business.SpaceCheck) brings the free bytes — measured on the device, or the volume row's
+/// last-known figure when the device does not answer — and the margin to demand on top.
 ///
 /// DeltaBytes sign convention (persisted in SpaceLedgerEntries):
 ///   +bytes → reservation on target (space that will be consumed)
 ///   −bytes → liberation on source  (space that will be freed after delete)
 ///
-/// Available space for volume V = FreeBytesLastKnown(V) − Σ(active DeltaBytes for V).
+/// Available space for volume V = free(V) − Σ(active DeltaBytes for V).
 /// </summary>
 public interface ISpaceLedger
 {

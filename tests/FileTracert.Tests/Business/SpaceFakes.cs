@@ -40,6 +40,12 @@ internal sealed class StubFreeSpaceProbe(long? freeBytes) : IVolumeProbe
     /// <summary>How many times the device was actually asked.</summary>
     public int Probes { get; private set; }
 
+    /// <summary>
+    /// Runs after each answer is captured, so a test can model a drive that changes under the
+    /// app — bytes landing during a copy, for instance.
+    /// </summary>
+    public Action? AfterProbe { get; set; }
+
     public StubFreeSpaceProbe SetVolume(string volumeGuid, long free)
     {
         _byVolume[volumeGuid] = free;
@@ -60,6 +66,8 @@ internal sealed class StubFreeSpaceProbe(long? freeBytes) : IVolumeProbe
     public long? TryGetFreeBytes(string volumeGuid)
     {
         Probes++;
-        return _byVolume.TryGetValue(volumeGuid, out var free) ? free : FreeBytes;
+        var answer = _byVolume.TryGetValue(volumeGuid, out var free) ? free : FreeBytes;
+        AfterProbe?.Invoke();
+        return answer;
     }
 }

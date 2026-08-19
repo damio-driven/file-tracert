@@ -47,8 +47,12 @@ public static class VolumeOfflineGate
         _ => throw new ArgumentOutOfRangeException(nameof(reason), reason, "Not an offline block reason."),
     };
 
-    /// <summary>Label if the volume has one, else its last drive letter, else its GUID path.</summary>
-    private static string Name(Volume? volume) =>
+    /// <summary>
+    /// Label if the volume has one, else its last drive letter, else its GUID path. Internal
+    /// rather than private since step 11b: the space check parks jobs on the same reason and has
+    /// to name the volume the same way, or the two messages describe different drives.
+    /// </summary>
+    internal static string Name(Volume? volume) =>
         volume is null
             ? "(sconosciuto)"
             : $"'{volume.Label ?? volume.LastDriveLetter ?? volume.VolumeGuid}'";

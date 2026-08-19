@@ -221,7 +221,13 @@ public sealed class SpaceLedger : ISpaceLedger
         // §4: the demand to beat is required + margin. The margin is the caller's policy — the
         // ledger only owes it consistency between the deficit and the Feasible flag, so that a
         // job reported feasible here cannot be refused by the very next check.
-        long deficit = Math.Max(0, requiredBytes + marginBytes - available);
+        // Saturating instead of wrapping: an absurd RequiredBytesTarget (a corrupted row) must
+        // fail CLOSED. Plain addition would overflow to a negative demand, clamp the deficit to
+        // zero and declare the impossible job feasible.
+        long demand = requiredBytes > long.MaxValue - marginBytes
+            ? long.MaxValue
+            : requiredBytes + marginBytes;
+        long deficit = Math.Max(0, demand - available);
         bool feasible = deficit == 0;
 
         return new FeasibilityResult(

@@ -23,11 +23,16 @@ public readonly record struct VolumeFreeSpace(long FreeBytes, bool IsLive);
 /// <param name="Feasibility">
 /// Always present, so the UI can explain the block with the same numbers the engine used.
 /// </param>
+/// <param name="Space">
+/// The figure the verdict was taken on. <c>IsLive</c> false also covers the job that needed no
+/// check at all: the caller must not store a measurement that was never made.
+/// </param>
 public sealed record HardSpaceVerdict(
     bool Ok,
     JobBlockReason Reason,
     string Message,
-    FeasibilityResult Feasibility);
+    FeasibilityResult Feasibility,
+    VolumeFreeSpace Space);
 
 /// <summary>
 /// The single place that answers "does this fit?" with fresh numbers.
@@ -80,29 +85,47 @@ public sealed class SpaceCheck
     /// <summary>
     /// Free bytes on the volume, read from the device when it answers and from
     /// <see cref="Volume.FreeBytesLastKnown"/> when it does not. Memoized for the scope.
+    ///
+    /// A volume the catalog already knows is disconnected is NOT probed: the answer is known,
+    /// and asking anyway would cost a syscall that can stall on a half-removed device and a
+    /// Warning per call — on a read path like the queue list, one per screen refresh, for a fact
+    /// nobody disputes.
     /// </summary>
     public VolumeFreeSpace ReadFreeSpace(Volume volume)
     {
         if (_freeSpaceByVolume.TryGetValue(volume.Id, out var cached))
             return cached;
 
-        var probed = _probe.TryGetFreeBytes(volume.VolumeGuid);
+        var probed = volume.IsOnline ? _probe.TryGetFreeBytes(volume.VolumeGuid) : null;
         var space = probed is { } live
             ? new VolumeFreeSpace(live, IsLive: true)
             : new VolumeFreeSpace(volume.FreeBytesLastKnown, IsLive: false);
 
-        if (probed is null)
+        if (probed is null && volume.IsOnline)
         {
             // Resilience, not silence (§9): the port already logged the Win32 cause; this line
-            // says what the queue is going to do about it.
+            // says what the queue is going to do about it. Only for a volume that is SUPPOSED to
+            // be there — a known-offline one is not news.
             _logger.LogWarning(
-                "Volume {Id} ({Guid}) did not answer the free-space probe — falling back to the " +
-                "last known {Bytes} bytes, which is planning-only.",
+                "Volume {Id} ({Guid}) is flagged online but did not answer the free-space probe — " +
+                "falling back to the last known {Bytes} bytes, which is planning-only.",
                 volume.Id, volume.VolumeGuid, volume.FreeBytesLastKnown);
         }
 
         _freeSpaceByVolume[volume.Id] = space;
         return space;
+    }
+
+    /// <summary>
+    /// A FRESH reading: drops the memo for this volume and asks again. For the one moment where
+    /// the memoized snapshot is knowingly out of date — after a job has physically moved bytes —
+    /// and never on the decision path, which must judge every candidate of a pass against one
+    /// and the same picture of the drive.
+    /// </summary>
+    public VolumeFreeSpace Measure(Volume volume)
+    {
+        _freeSpaceByVolume.Remove(volume.Id);
+        return ReadFreeSpace(volume);
     }
 
     /// <summary>
@@ -182,14 +205,18 @@ public sealed class SpaceCheck
 
         if (!space.IsLive)
         {
-            // The offline gate normally answers first; a volume that is flagged online yet cannot
-            // be measured is the same situation seen one layer down, and it is recoverable.
+            // The offline gate normally answers first; this is the volume the catalog believes is
+            // connected and that the device layer cannot measure anyway. It is parked on the same
+            // reason and in the same language as the gate — the Coda labels that reason "volume
+            // di destinazione offline", so the sentence beside it must not contradict the label.
             return new HardSpaceVerdict(
                 Ok: false,
                 JobBlockReason.TargetVolumeOffline,
-                $"Target volume {volume.Id} did not answer the free-space probe: the operation " +
-                $"waits instead of copying on an estimate.",
-                feasibility);
+                $"Il volume di destinazione {VolumeOfflineGate.Name(volume)} non risponde alla " +
+                "lettura dello spazio libero: l'operazione resta in coda invece di copiare su una " +
+                "stima, e riparte da sola quando il volume risponde.",
+                feasibility,
+                space);
         }
 
         if (!feasibility.Feasible)
@@ -199,14 +226,19 @@ public sealed class SpaceCheck
                 JobBlockReason.InsufficientSpace,
                 $"Insufficient space: {feasibility.DeficitBytes} bytes short on volume {volume.Id} " +
                 $"(required {job.RequiredBytesTarget}, safety margin {margin}).",
-                feasibility);
+                feasibility,
+                space);
         }
 
-        return new HardSpaceVerdict(Ok: true, JobBlockReason.None, string.Empty, feasibility);
+        return new HardSpaceVerdict(Ok: true, JobBlockReason.None, string.Empty, feasibility, space);
     }
 
-    /// <summary>A job with nothing to reserve: feasible by construction, no device touched.</summary>
+    /// <summary>
+    /// A job with nothing to reserve: feasible by construction, no device touched — hence a space
+    /// that is explicitly NOT live, so no caller mistakes it for a reading.
+    /// </summary>
     private static readonly HardSpaceVerdict NothingToCheck = new(
         Ok: true, JobBlockReason.None, string.Empty,
-        new FeasibilityResult(0, 0, long.MaxValue, 0, EstimateIsLive: true, null, Feasible: true));
+        new FeasibilityResult(0, 0, long.MaxValue, 0, EstimateIsLive: false, null, Feasible: true),
+        new VolumeFreeSpace(0, IsLive: false));
 }

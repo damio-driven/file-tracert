@@ -85,9 +85,16 @@ internal sealed class Win32VolumeProbe : IVolumeProbe
 
         // One syscall against the volume itself. It doubles as a presence check: an unmounted
         // or removed volume fails here instead of returning a stale number.
-        if (NativeMethods.GetDiskFreeSpaceEx(volumeGuid, out _, out _, out var totalFree))
+        //
+        // The figure returned is lpFreeBytesAvailableToCaller, NOT lpTotalNumberOfFreeBytes: the
+        // caller of this method is about to commit a copy to it, and under an NTFS disk quota the
+        // volume-wide free space is room this process may not write to. The two differ only when
+        // a quota is in force, and exactly there the larger number would pass the check and let
+        // the copy die out of space. Math.Min because a quota can also be reported the other way
+        // round on some filesystems: the smaller of the two is the one that can actually be used.
+        if (NativeMethods.GetDiskFreeSpaceEx(volumeGuid, out var availableToCaller, out _, out var totalFree))
         {
-            return (long)totalFree;
+            return (long)Math.Min(availableToCaller, totalFree);
         }
 
         // Not silent (§9): the caller turns this into a Blocked job, and the reason why the

@@ -111,7 +111,7 @@ public sealed class QueueWorkerLoopE2ETests : IDisposable
         new(db, _ledger, TestProjection.Space(db, _ledger, _probe), _cancellation, _mover, new QueueSignal(),
             TestProjection.Index(db), TestProjection.Overlay(db),
             TestProjection.Unblocker(db),
-            TestProjection.Revaluator(db, _ledger),
+            TestProjection.Revaluator(db, _ledger, fts: null, _probe),
             TestProjection.Realtime(), NullLogger<QueueService>.Instance);
 
     private JobExecutionEngine MakeEngine(FileTracertDbContext db)

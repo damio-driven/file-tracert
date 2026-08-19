@@ -65,6 +65,8 @@ public sealed class ScenarioEnvironment : IAsyncDisposable
             await db.Database.MigrateAsync(ct);
             await db.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;", ct);
 
+            await EnsureSettingsAsync(db, ct);
+
             var probe = scope.ServiceProvider.GetRequiredService<IVolumeProbe>();
             var sourceVolumeId = await EnsureVolumeAsync(db, probe, pair.Source, ct);
             var targetVolumeId = pair.IsCrossVolume
@@ -79,6 +81,26 @@ public sealed class ScenarioEnvironment : IAsyncDisposable
             await provider.DisposeAsync();
             throw;
         }
+    }
+
+    /// <summary>
+    /// Seeds the singleton <see cref="AppSettings"/> row with the production defaults. The
+    /// harness only migrates, so without this the settings-driven behaviour would silently run at
+    /// zero on the metal — in particular the space margin, whose whole point is that it is not
+    /// zero (see DatabaseInitializer, which does the same for the service).
+    /// </summary>
+    private static async Task EnsureSettingsAsync(FileTracertDbContext db, CancellationToken ct)
+    {
+        if (await db.AppSettings.AnyAsync(ct)) return;
+
+        db.AppSettings.Add(new AppSettings
+        {
+            DefaultExtensionFilter = [],
+            ExcludedPaths = [],
+            ApiToken = "harness",
+            SpaceMarginPercent = 3,
+        });
+        await db.SaveChangesAsync(ct);
     }
 
     /// <summary>
