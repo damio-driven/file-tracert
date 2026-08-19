@@ -576,8 +576,9 @@ ascolta invece di pollare) — **fatti**. Gli **step 9 e 10 sono chiusi**.
 Prossimo, in ordine:
 1. **Work package minori rimanenti** (dalla code review): ~~indice/ricerca (WP5)~~ —
    **fatto allo step 11a**; ~~spazio (WP6)~~ — **fatto allo step 11b**;
-   ~~logging/shutdown (WP8)~~ — **fatto allo step 11c**; restano
-   **frontend/UX** (11d), **efficienza** (11e), **cleanup** (11f, incl. eventuale
+   ~~logging/shutdown (WP8)~~ — **fatto allo step 11c**; ~~frontend/UX (WP7)~~ —
+   **fatto allo step 11d**; restano
+   **efficienza** (11e), **cleanup** (11f, incl. eventuale
    spostamento di `ScanPath` in `Contracts` come da review, e la discrepanza §3:
    `IBulkIndexWriter` sta in `Data/Indexing` e `IFileSearchIndex` in
    `Contracts/Search`, mentre §3 li dà entrambi in `Contracts` — segnalata allo
@@ -590,6 +591,155 @@ Prossimo, in ordine:
    ma chiuderlo vuol dire portare l'insieme escluso dentro il merge e il pass degli
    assenti di `IBulkIndexWriter`. C'è un test che **fissa** il comportamento attuale.
 2. **Step 12 — Test UI end-to-end (Playwright).**
+
+### Fatto nello step 11d (2026-08-19, commit `63a846d`…`af4196f`)
+**WP7 chiuso** (C17, C25, C27, C29, C30, K8, K9, K14): i difetti che l'utente incontra
+*mentre lavora* — un errore che non dice cosa è successo, un accodamento che si rompe a metà,
+un dialog che si apre vuoto, una dashboard che dice zero mentre la Coda mostra job veri.
+- **C25 — un gesto, una richiesta, una transazione.** Nuovo `POST /api/operations/enqueue-batch`
+  e `IQueueService.EnqueueBatchAsync`. **Decisione: tutto o niente.** Il picker faceva un POST per
+  file: un fallimento all'elemento N lasciava 1..N−1 in coda senza che nulla a schermo lo dicesse,
+  e la reazione ovvia — ripremere «Accoda» — li riaccodava come dipendenti di sé stessi. O l'intera
+  selezione entra in coda o non entra niente: allora l'errore è leggibile, il retry è **lo stesso
+  gesto**, e non resta uno stato intermedio da spiegare. Il prezzo — un elemento sbagliato ferma
+  gli altri quarantanove — è pagato consapevolmente: il parziale è onesto **solo** se la risposta
+  enumera quali sono passati, e una coda che l'utente deve riconciliare riga per riga è proprio ciò
+  che stiamo togliendo. In caso di fallimento il 400 dice **quale** elemento («Elemento 2 di 50»)
+  e che **nulla** è stato accodato. Tutto ciò che l'enqueue singolo fa per job continua a farlo per
+  ogni job: il guard è interrogato per ogni elemento (e gli elementi dello stesso batch **si vedono
+  a vicenda**, perché sono inseriti sulla stessa connessione prima della domanda), `SequenceOrder`
+  resta assegnato dentro la transazione contro l'indice unico (C26/9c), overlay e righe di ledger
+  sono nella stessa unità di lavoro. `EnqueueAsync` è ora un batch da uno: un solo percorso di
+  accodamento. In più il verdetto di spazio porta avanti **il peso del batch stesso**: il mirror
+  in memoria del ledger conosce questi job solo dopo il commit, quindi senza accumulo cinquanta
+  move da 1 GB su un drive da 10 GB sarebbero pesati tutti contro lo stesso spazio libero intatto
+  e nascerebbero tutti `Pending`.
+- **C17 — l'errore arriva intero a chi lo sa leggere.** L'interceptor rilanciava
+  `new Error(message)`: status e body sparivano un livello sopra il codice che ne aveva bisogno,
+  quindi ogni `instanceof HttpErrorResponse` a valle era falso e la gestione strutturata dei 400
+  era codice morto **che non sembrava morto**. Leggeva anche `err.error.message` mentre il backend
+  risponde `{ error: … }`, così a video finiva il raw «Http failure response … 400». Ora rilancia
+  l'errore originale e **una sola** funzione (`core/http/http-error.ts`) lo traduce: prima la nostra
+  forma `{ error }`, poi ProblemDetails, poi un'etichetta per status, e **mai** la riga di trasporto
+  (l'URL resta nel log, dov'è utile). La usano l'interceptor per il toast e tutti gli store per il
+  proprio signal `error`, quindi toast e schermata non possono divergere.
+  `shared/api/operation-error.ts` era la stessa funzione con un secondo nome ed è stata eliminata.
+- **C27 — il dialog si apre quando ha i dati.** Il picker lanciava `loadList()` e leggeva
+  `catalogable()` alla riga dopo. Ora **aspetta**, e dice in quale dei tre casi si trova: in lettura
+  (skeleton della forma del select, così nulla salta quando arriva il vero), fallita (messaggio +
+  «Riprova»), oppure nessun volume catalogabile (avviso neutro che rimanda a Volumi — non è un
+  errore, è un vicolo cieco con una via d'uscita). Store già caldo = si sceglie subito e si aggiorna
+  sotto: un caricamento mostrato sopra dati che abbiamo sarebbe un flicker che non significa niente.
+  La lista cartelle non dice più «Cartella vuota» quando la verità è che manca il volume.
+- **C29 — il timer muore con la vista.** Il debounce da 300 ms della Ricerca log sopravviveva alla
+  navigazione: riscriveva i filtri di uno store applicativo e spendeva una richiesta per una vista
+  morta. `DestroyRef.onDestroy` lo azzera. Gli altri timer del client (`RealtimeService`,
+  `RealtimeBridge`, `ToastService`, `QueueStore`) sono di singleton applicativi: non hanno questa
+  forma, e sono stati controllati uno per uno.
+- **C30 — la Dashboard conta i job veri.** `QueueTotals.ComputeAsync` produce i quattro numeri in
+  **un solo** aggregato (quattro conteggi sarebbero quattro scansioni della stessa tabella per una
+  striscia di card letta a ogni caricamento). Le definizioni sono scritte accanto, perché ogni card
+  afferma qualcosa di preciso: *in coda* = ogni job non terminale (le altre due sono il suo
+  dettaglio); *in corso* = solo gli stati che muovono byte davvero; *bloccate* = per qualunque
+  motivo; `PendingBytes` = byte ancora da scrivere dei job fermi su una **risorsa** (spazio o volume
+  scollegato), che è esattamente ciò che dice l'etichetta sopra — un job in attesa di un altro job è
+  bloccato ma non sta aspettando spazio su un disco.
+  **Decisione realtime: sì, con rilettura coalescata.** `JobStateChanged` porta un id e uno stato,
+  mai i byte: non c'è niente da patchare in memoria, quindi la scelta era tra rileggere e mostrare
+  una card sbagliata in silenzio. Rileggiamo, al massimo una volta al secondo qualunque sia la
+  raffica, e **non** si rilegge finché lo store non ha statistiche (la prima lettura non è ancora
+  avvenuta o è fallita: martellare un servizio giù una volta per transizione non aiuta nessuno).
+  Chiude il limite noto dello step 10c.
+- **K8, K9, K14 — la stessa verità in un posto solo.** Gli stati job diventano un unico
+  `Record<JobState, JobStateKind>` accanto al tipo, **esaustivo per costruzione**: un nuovo stato
+  nell'union non compila finché non viene classificato, che è la proprietà che i due `Set` scritti a
+  mano non avevano (uno era `Set<string>`, dove un refuso era invisibile). `Blocked` è un genere a
+  sé e non una sfumatura di «in coda». Le categorie file diventano una mappa sola, con etichette
+  **singolari** ovunque: la stessa stringa nomina la categoria su un chip di filtro e marca **un**
+  file in entrambe le liste, dove il plurale sarebbe semplicemente sbagliato; `Other` guadagna un
+  tag proprio (`ALT`) invece di prendere in prestito `???`, che torna a essere ciò per cui esiste —
+  il marchio di un valore che questa build non conosce — e diventa finalmente filtrabile in Ricerca.
+  Il campo «nuova cartella» inline usa `validateLeafName` come l'altro dialog, con lo stesso
+  messaggio: `foo\bar` non è più accettato in un posto e rifiutato nell'altro.
+- **Fuori elenco, dal brief del task: il margine ha finalmente un consumatore.** Lo step 11b ha
+  separato `RequiredBytes` da `MarginBytes` sul server, ma nessuna schermata leggeva il secondo — e
+  il deficit che entrambe mostrano **contiene** il margine. Spostare 40 GB su un drive con 40,8 GB
+  liberi diceva «mancano 1,2 GB»: un numero che l'utente non trova da nessuna parte nelle dimensioni
+  dei propri file, e che si legge come un difetto dell'app invece che come una politica dell'app.
+  Ora il picker dice «mancano X · richiesto Y + Z di margine di sicurezza · disponibile W», e nomina
+  il margine accanto al richiesto anche quando il batch ci sta; la riga della Coda aggiunge
+  «· margine Z» al deficit. Nello stesso giro la bandierina «il dato non è live» smette di essere un
+  `~` spiegato solo da un `title` (niente su touch, niente per uno screen reader) e diventa le parole
+  «ultimo dato noto» nello stile ambra che il design system usa già per questo.
+- **Design system**: la shell dei modali (backdrop, pannello, header, body) era identica
+  byte-per-byte nei due dialog sotto due insiemi di nomi ed è diventata `.ft-modal*`; lo shimmer
+  dello skeleton è `.ft-skel` invece di una seconda copia. Stessa logica di `_data-views.scss` (C8).
+- **Verifica**: xUnit **663 verdi** (+18), Vitest **242 verdi** (+35), build backend pulita
+  (warnings-as-errors), `ng build` ok con i **4 soli warning di budget SCSS pre-esistenti** (le
+  aggiunte del picker lo avevano spinto oltre la soglia di **errore**: rientrato togliendo CSS morto
+  e hoistando la shell condivisa, non alzando il budget). RED dimostrato rompendo il prodotto
+  apposta, non solo per costruzione: threading della domanda di batch tolto → il secondo move nasce
+  `Pending` invece che `Blocked`; picker rimesso al loop → **5** rossi; interceptor riportato a
+  `new Error` → **3** rossi; `await` sul caricamento volumi tolto → **2** rossi; `DestroyRef` tolto →
+  **1** rosso; contatori Dashboard e patch realtime tolti → **2** rossi; `validateLeafName` sostituito
+  dal controllo di non-vuoto → **3** rossi. Harness sul ferro (`D:\Collaudo\A` ↔ `C:\Collaudo\B`,
+  coppie intra ×2 + cross): **44 scenari, 44 PASS, 0 FAIL** — incluso `job-dependencies` cross, che
+  allo step 10b era l'unico FAIL ed è stato chiuso allo step 11a. Rieseguito 44/44 anche dopo le
+  correzioni della review. *(Nota: `DatabaseInitializerTests` WAL è caduto una volta con due
+  `ng build` in parallelo sulla stessa macchina, poi verde in isolamento e verde sulla suite
+  completa senza carico concorrente: è la flakiness già documentata, non una regressione.)*
+La **code review finale** (indipendente, sulle sole modifiche di questo giro) non ha trovato
+BLOCKER e ha trovato **due MAJOR reali**, entrambi corretti in `af4196f`. Il primo è il più serio
+del giro: tutto ciò che segue il **commit** del batch prendeva ancora il token della richiesta, e
+`RegisterReservationInMemoryAsync` comincia aspettando un semaforo — che su un token già annullato
+lancia subito. Un abort in quella finestra (l'utente chiude il dialog; la transazione di un batch
+può essere lunga) lasciava N prenotazioni **nel database e nessuna in memoria**: da lì ogni
+fattibilità **sotto-conta** la domanda su quel volume, cioè la direzione che *sovra-impegna* un
+disco, e il mirror si ricostruisce dal DB solo all'avvio. Dopo il commit non c'è più nulla da
+annullare, quindi il post-commit gira con `CancellationToken.None`. Il secondo: il batch era
+**illimitato** e il guard è quadratico dentro un'unica transazione di scrittura esclusiva — la
+selezione del Catalogo si accumula tra le pagine, quindi un «seleziona tutto» su una cartella
+grande era una strada reale per tenere il write lock oltre il busy timeout e far fallire i
+checkpoint del processor **su un job che stava copiando**. Ora c'è un tetto di **500** con un 400
+che lo nomina. Corretti anche tre rilievi minori: il wrapper «elemento N, e nulla è stato
+accodato» copre l'intero elemento e non solo la sua costruzione; il change tracker viene azzerato
+sul percorso di fallimento; e la schermata di conferma conta anche le operazioni parcheggiate per
+**spazio o volume** — che pesare il batch come una domanda sola rende raggiungibili — invece di
+annunciare un successo liscio. Verificati e dichiarati puliti dalla review: rollback su ogni
+percorso di fallimento, eventi realtime e `_signal` solo **dopo** il commit, guard interrogato per
+ogni elemento con gli elementi dello stesso batch che si vedono, accumulo della domanda coerente
+con la semantica del ledger e `EnqueueAsync` invariato, retry di `SequenceOrder` ancora valido in
+batch, `QueueTotals` davvero tradotto in SQL, nessun chiamante rimasto ad assumere il vecchio
+contratto dell'interceptor, e nessuna perdita visiva nella de-duplicazione SCSS.
+**Limiti noti e accettati:**
+- **Nessun fallimento parziale, per costruzione.** Chi un giorno preferisse il parziale dovrà
+  cambiare *anche* la forma della risposta (quali elementi sono passati), non solo il servizio.
+- **Il tetto di 500 è una scelta di prodotto travestita da numero.** Una selezione più grande viene
+  rifiutata con un messaggio che dice di dividerla; l'alternativa era una transazione di minuti che
+  può far fallire i checkpoint di un job in copia. Da rivalutare se qualcuno accoda davvero
+  decine di migliaia di file in un gesto.
+- **Un batch resta 2N messaggi hub** (uno `JobStateChanged` e uno `ProjectionChanged` per job)
+  mentre `_signal` è uno solo. Il client li coalesce dallo step 10c, quindi è costo, non
+  correttezza; accorparli è materia di 11e.
+- **Dashboard e Coda contano popolazioni diverse**: la Dashboard aggrega **tutta** la tabella, i
+  chip della Coda contano la **pagina** corrente (50 righe). Sopra i 50 job i due numeri
+  divergono. I chip pagina-locali sono pre-esistenti; è la Dashboard che diventa vera a renderlo
+  visibile. Da chiudere con i contatori lato server (11e/E6 tocca lo stesso controller).
+- **`SourceVolumeLabel`/`TargetVolumeLabel` sono null nella risposta di enqueue**, batch incluso
+  (C32, pre-esistente): il picker non li legge.
+- **La rilettura della Dashboard è una richiesta, non una patch**: su una coda molto attiva sono al
+  massimo 60 aggregati al minuto finché la schermata resta aperta. L'efficienza dell'endpoint è
+  materia di 11e.
+- **`volumesError` del picker legge il signal `error` di uno store condiviso**: in linea di
+  principio un fallimento sollevato in quell'istante dalla schermata Volumi verrebbe letto come
+  proprio. È il prezzo di non dare al dialog una seconda copia della lista, ed è scritto accanto
+  al codice.
+- **Nessuna prova in browser**: la copertura è Vitest (render inclusi) più l'harness sul ferro per
+  l'accodamento reale. La prova end-to-end vera resta lo **step 12** (Playwright).
+- **Deviazione dallo split dei commit del task**: la shell condivisa dei modali e lo skeleton
+  condiviso non erano nel piano. Sono entrati perché gli stati nuovi del picker avevano spinto il
+  suo SCSS oltre la soglia di **errore** del budget, e la scelta era tra togliere duplicazione
+  reale o alzare il budget. Segnalato qui invece di essere nascosto in un commit di refactor.
 
 ### Fatto nello step 11c (2026-08-19, commit `7a14786`…`5f3a0fb`)
 **WP8 chiuso** (C18, C23, C24, C28): i quattro difetti che si notano solo quando serve la
