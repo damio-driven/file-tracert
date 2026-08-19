@@ -85,7 +85,7 @@ public sealed class ExclusionCauseTests
         SqliteInMemoryContext harness, params string[] extensions)
     {
         await using var ctx = harness.CreateContext();
-        var service = new FilterSettingsService(ctx, new FilterReconciler(ctx));
+        var service = new FilterSettingsService(ctx, new FilterReconciler(ctx, new FileSearchIndex(ctx)));
         return await service.UpdateAsync(
             new FilterSettingsDto(extensions.ToList(), []), CancellationToken.None);
     }
@@ -201,6 +201,84 @@ public sealed class ExclusionCauseTests
     }
 
     /// <summary>
+    /// Second gap step 11g documented: reconciliation moves <c>IsIncluded</c> and never touched
+    /// FTS5. The Catalog reads the flag, so it recovers on its own; Search reads the INDEX, and the
+    /// scan closure had already pruned the entry away. Re-widening the filter therefore produced a
+    /// file you can navigate to and cannot find — until some later scan happened to pass.
+    /// </summary>
+    [Fact]
+    public async Task Reconciliation_puts_back_the_search_entries_a_scan_pruned()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, ["jpg", "png"]);
+
+        ScanEntry[] entries =
+        [
+            Dir("Photos", "Photos"),
+            File(@"Photos\alpha.jpg", "alpha.jpg"),
+            File(@"Photos\beta.png", "beta.png"),
+        ];
+
+        await ScanAsync(harness, volumeId, entries);
+        (await SearchAsync(harness, "beta")).Should().HaveCount(1, "arrange: it starts findable");
+
+        // Narrow, then let a scan close over it: that is what drops the entry from the index.
+        await SetAllowedExtensionsAsync(harness, "jpg");
+        await ScanAsync(harness, volumeId, entries);
+        (await SearchAsync(harness, "beta")).Should()
+            .BeEmpty("arrange: an excluded file is not a search hit");
+
+        // Widen again — and this time NO scan follows. The two screens must agree anyway.
+        await SetAllowedExtensionsAsync(harness, "jpg", "png");
+
+        await using (var catalog = harness.CreateContext())
+        {
+            (await catalog.Files.SingleAsync(f => f.Name == "beta.png")).IsIncluded
+                .Should().BeTrue("arrange: the Catalog has it back");
+        }
+
+        (await SearchAsync(harness, "beta")).Should()
+            .HaveCount(1, "back in the Catalog means back in Search, without waiting for a scan");
+        (await SearchAsync(harness, "alpha")).Should()
+            .HaveCount(1, "and the untouched row is neither lost nor duplicated");
+    }
+
+    /// <summary>The same, for the perimeter half: a root switched off, scanned over, then back on.</summary>
+    [Fact]
+    public async Task Switching_a_root_back_on_puts_back_the_search_entries_a_scan_pruned()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, ["jpg"], rootPath: "Photos");
+
+        // A second root keeps the scan alive once the first is switched off — with no active root
+        // at all the scan has nothing to do and returns early.
+        await using (var ctx = harness.CreateContext())
+        {
+            ctx.WatchedRoots.Add(new WatchedRoot { VolumeId = volumeId, RelativePath = "Other", IsActive = true });
+            await ctx.SaveChangesAsync();
+        }
+
+        ScanEntry[] entries =
+        [
+            Dir("Photos", "Photos"),
+            File(@"Photos\alpha.jpg", "alpha.jpg"),
+            Dir("Other", "Other"),
+            File(@"Other\gamma.jpg", "gamma.jpg"),
+        ];
+
+        await ScanAsync(harness, volumeId, entries);
+        (await SearchAsync(harness, "alpha")).Should().HaveCount(1, "arrange: it starts findable");
+
+        var rootId = await RootIdAsync(harness, volumeId, "Photos");
+        await ToggleRootAsync(harness, rootId, isActive: false);
+        await ScanAsync(harness, volumeId, entries);
+        (await SearchAsync(harness, "alpha")).Should().BeEmpty("arrange: outside the perimeter, outside Search");
+
+        await ToggleRootAsync(harness, rootId, isActive: true);
+        (await SearchAsync(harness, "alpha")).Should().HaveCount(1, "and back in, with no scan in between");
+    }
+
+    /// <summary>
     /// A <c>.txt</c> inside a hidden folder is excluded TWICE over. Undoing one cause must not
     /// undo the other — which is the whole reason the causes are flags and not a single value.
     /// </summary>
@@ -241,6 +319,10 @@ public sealed class ExclusionCauseTests
     /// (the same unit step 11g used, and the only one a test can assert): ten times the files, the
     /// same statements.
     ///
+    /// <para>What it does NOT prove: the search-index half is chunked by DIRECTORY (500 ids per
+    /// pair of statements), so a volume with tens of thousands of folders does grow — by
+    /// directories, never by files, which is the trade
+    /// <see cref="IFileSearchIndex.SyncDirectoriesAsync"/> exists to make.</para>
     /// </summary>
     [Fact]
     public async Task Reconciliation_costs_the_same_whatever_the_number_of_rows()
@@ -249,7 +331,9 @@ public sealed class ExclusionCauseTests
         var many = await ReconcileCostAsync(files: 500);
 
         many.Should().Be(few, "reconciliation is set-based: ten times the rows, the same statements");
-        few.Should().Be(3, "one UPDATE per partition of the allow-list, and nothing else");
+        few.Should().Be(6,
+            "three UPDATEs for the causes, the SELECT that names the subtree's directories, and " +
+            "the FTS DELETE + INSERT pair that follows them");
     }
 
     private static async Task<int> ReconcileCostAsync(int files)
@@ -267,7 +351,7 @@ public sealed class ExclusionCauseTests
 
         await using var ctx = harness.CreateContext();
         var root = await ctx.WatchedRoots.FirstAsync(r => r.VolumeId == volumeId);
-        var reconciler = new FilterReconciler(ctx);
+        var reconciler = new FilterReconciler(ctx, new FileSearchIndex(ctx));
 
         // Counted from here: one reconciliation of one root, nothing else.
         connection.Reset();
@@ -288,7 +372,20 @@ public sealed class ExclusionCauseTests
     private static async Task ToggleRootAsync(SqliteInMemoryContext harness, int rootId, bool isActive)
     {
         await using var ctx = harness.CreateContext();
-        var service = new WatchedRootsService(ctx, new FilterReconciler(ctx));
+        var service = new WatchedRootsService(ctx, new FilterReconciler(ctx, new FileSearchIndex(ctx)));
         await service.UpdateAsync(rootId, new UpdateWatchedRootRequest(isActive, null), CancellationToken.None);
+    }
+
+    private static async Task<IReadOnlyList<int>> SearchAsync(SqliteInMemoryContext harness, string text)
+    {
+        await using var ctx = harness.CreateContext();
+        var result = await new FileSearchIndex(ctx).SearchAsync(
+            new FileSearchQuery(
+                Text: text, Scope: SearchScope.Name, Category: null, Extensions: null,
+                SizeBytesMin: null, SizeBytesMax: null, ModifiedFrom: null, ModifiedTo: null,
+                VolumeId: null, OnlineOnly: false, Sort: SearchSort.Relevance, Desc: false,
+                Skip: 0, Take: 50),
+            CancellationToken.None);
+        return result.Items;
     }
 }

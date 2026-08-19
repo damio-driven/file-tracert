@@ -1,5 +1,7 @@
 using FileTracert.Business.Filtering;
+using FileTracert.Business.Scanning;
 using FileTracert.Contracts.Scanning;
+using FileTracert.Contracts.Search;
 using FileTracert.Data;
 using FileTracert.Data.Entities;
 using Microsoft.EntityFrameworkCore;
@@ -24,8 +26,13 @@ namespace FileTracert.Business.Setup;
 public sealed class FilterReconciler
 {
     private readonly FileTracertDbContext _db;
+    private readonly IFileSearchIndex _searchIndex;
 
-    public FilterReconciler(FileTracertDbContext db) => _db = db;
+    public FilterReconciler(FileTracertDbContext db, IFileSearchIndex searchIndex)
+    {
+        _db = db;
+        _searchIndex = searchIndex;
+    }
 
     /// <summary>
     /// True when <paramref name="next"/> lets through something <paramref name="previous"/> did
@@ -110,6 +117,7 @@ public sealed class FilterReconciler
                 .ExecuteUpdateAsync(SettingsCauses(excludedByType: true, included: false), ct);
         }
 
+        await SyncSearchIndexAsync(root, ct);
         return (included, stillSkipped + wrongType);
     }
 
@@ -118,12 +126,17 @@ public sealed class FilterReconciler
     /// switched off, or removed altogether. <c>ExcludedByRoot</c> is the cause, and it is the one
     /// that comes undone the moment the root is active again, with no scan.
     /// </summary>
-    public Task<int> ExcludeAllUnderAsync(WatchedRoot root, CancellationToken ct) =>
-        FilesUnder(root).ExecuteUpdateAsync(
+    public async Task<int> ExcludeAllUnderAsync(WatchedRoot root, CancellationToken ct)
+    {
+        var excluded = await FilesUnder(root).ExecuteUpdateAsync(
             s => s
                 .SetProperty(f => f.ExcludedByRoot, true)
                 .SetProperty(f => f.IsIncluded, false),
             ct);
+
+        await SyncSearchIndexAsync(root, ct);
+        return excluded;
+    }
 
     /// <summary>
     /// The two causes reconciliation owns, written together with the <c>IsIncluded</c> they imply.
@@ -136,6 +149,23 @@ public sealed class FilterReconciler
             .SetProperty(f => f.ExcludedByType, excludedByType)
             .SetProperty(f => f.ExcludedByRoot, false)
             .SetProperty(f => f.IsIncluded, included);
+
+    /// <summary>
+    /// Brings the FTS5 index back in step with the flags just written — the gap step 11g left open:
+    /// the Catalog reads <c>IsIncluded</c> and recovers on its own, while Search reads the index,
+    /// which a scan closure had already pruned. Re-widening a filter therefore produced files you
+    /// could navigate to and could not find.
+    ///
+    /// <para>Expressed by DIRECTORY, through the existing set-based
+    /// <see cref="IFileSearchIndex.SyncDirectoriesAsync"/>: the row set never leaves the database,
+    /// so a root holding a million rows costs the same statements as one holding a hundred. What
+    /// crosses the boundary is one int per directory — the reason that method exists.</para>
+    /// </summary>
+    private async Task SyncSearchIndexAsync(WatchedRoot root, CancellationToken ct)
+    {
+        var directoryIds = await DirectoriesUnder(root).Select(d => d.Id).ToListAsync(ct);
+        await _searchIndex.SyncDirectoriesAsync(directoryIds, ct);
+    }
 
     private IQueryable<FileEntry> FilesUnder(WatchedRoot root)
     {
@@ -151,5 +181,18 @@ public sealed class FilterReconciler
         return query.Where(f =>
             f.Directory.MaterializedPath == prefix ||
             f.Directory.MaterializedPath.StartsWith(prefixWithSep));
+    }
+
+    /// <summary>
+    /// The directory rows the same subtree covers. Spelled through <see cref="DirectoryQueries"/>
+    /// so the two halves cannot drift; the volume-root case is the one that has to be said here,
+    /// because an empty path is not a prefix of anything.
+    /// </summary>
+    private IQueryable<DirectoryNode> DirectoriesUnder(WatchedRoot root)
+    {
+        var prefix = WatchedRootPath.Normalize(root.RelativePath);
+        return prefix.Length == 0
+            ? _db.Directories.Where(d => d.VolumeId == root.VolumeId)
+            : _db.Directories.InSubtree(root.VolumeId, prefix);
     }
 }

@@ -3,6 +3,7 @@ using FileTracert.Contracts.Dtos;
 using FileTracert.Contracts.Enums;
 using FileTracert.Data;
 using FileTracert.Data.Entities;
+using FileTracert.Data.Search;
 using FileTracert.Tests.Data;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
@@ -23,11 +24,17 @@ public sealed class WatchedRootPerimeterTests : IDisposable
 
     private const string Guid = @"\\?\Volume{44444444-4444-4444-4444-444444444444}\";
 
-    private WatchedRootsService NewService(FileTracertDbContext db) => new(db, new FilterReconciler(db));
+    private static WatchedRootsService NewService(FileTracertDbContext db) =>
+        new(db, new FilterReconciler(db, new FileSearchIndex(db)));
 
     private async Task<(int RootId, int JpgId, int PngId)> SeedAsync()
     {
         await using var db = _harness.CreateContext();
+
+        // Reconciliation now keeps the search index in step, so the FTS5 virtual table has to
+        // exist — EnsureCreated does not build it.
+        SqliteFts.Create(db);
+
         db.AppSettings.RemoveRange(db.AppSettings);
         db.AppSettings.Add(new AppSettings
         {
