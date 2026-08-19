@@ -1,4 +1,4 @@
-using FileTracert.Data.Entities;
+﻿using FileTracert.Data.Entities;
 
 namespace FileTracert.Business.Scanning;
 
@@ -8,10 +8,11 @@ namespace FileTracert.Business.Scanning;
 /// volume — and each hand-written variant is a chance for the semantics to drift.
 ///
 /// Note on collation: this runs in SQL, where <c>StartsWith</c> becomes a SQLite <c>LIKE</c>
-/// (ASCII case-insensitive) while <c>==</c> uses the column's BINARY collation. That mismatch
-/// is tolerable here — the paths compared come from the catalog itself, so their casing is the
-/// casing the scanner recorded. Where the answer must be exact, callers use the single
-/// in-memory predicate <see cref="ScanPath.Overlaps"/> instead.
+/// (ASCII case-insensitive). <c>==</c> used to disagree with it — the column defaulted to BINARY
+/// — which is P2; the column now carries <c>NOCASE</c>, so both halves of this predicate fold
+/// case the same way and agree with the in-memory <see cref="ScanPath.Overlaps"/>. Both fold
+/// ASCII only: a non-ASCII case variant still reads as a different path, in SQL and in memory
+/// alike. Where the answer must be exact, callers still use the single in-memory predicate.
 /// </summary>
 public static class DirectoryQueries
 {

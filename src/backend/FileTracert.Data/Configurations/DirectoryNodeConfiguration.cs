@@ -12,7 +12,17 @@ public sealed class DirectoryNodeConfiguration : IEntityTypeConfiguration<Direct
         builder.HasKey(x => x.Id);
 
         builder.Property(x => x.Name).IsRequired();
-        builder.Property(x => x.MaterializedPath).IsRequired();
+        // P2 — ONE collation for the path. Every in-memory cache and predicate that touches
+        // MaterializedPath is OrdinalIgnoreCase (Windows paths are case-insensitive), while SQL
+        // equality used the column's default BINARY collation. The two disagreed on a case
+        // variant, and the find-or-create walk, finding nothing, inserted a second row for a
+        // folder that was already there. Fixed at the column so every caller inherits it —
+        // including the ones nobody audits.
+        //
+        // Known limit, same one recorded for the scan merge at step 9a: SQLite's NOCASE folds
+        // ASCII only. A path whose only difference is the case of a NON-ASCII character still
+        // compares as two different paths. That costs an extra row, never a lost one.
+        builder.Property(x => x.MaterializedPath).IsRequired().UseCollation("NOCASE");
         builder.Property(x => x.PendingState).HasConversion<string>();
 
         // Volume FK configured on the Volume side (Restrict).
