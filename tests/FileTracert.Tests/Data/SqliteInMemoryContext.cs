@@ -22,10 +22,14 @@ public sealed class SqliteInMemoryContext : IDisposable
         SQLitePCL.Batteries.Init();
     }
 
-    public SqliteInMemoryContext(bool withAuditing = true, bool ensureCreated = true)
+    /// <param name="connection">An already-built connection to use instead of a plain one —
+    /// how a test observes what the raw-SQL paths do, since their commands never reach EF's
+    /// interceptors. It must not be open yet; this type owns its lifetime.</param>
+    public SqliteInMemoryContext(
+        bool withAuditing = true, bool ensureCreated = true, SqliteConnection? connection = null)
     {
         _withAuditing = withAuditing;
-        _connection = new SqliteConnection("Data Source=:memory:");
+        _connection = connection ?? new SqliteConnection("Data Source=:memory:");
         _connection.Open();
 
         if (ensureCreated)

@@ -186,7 +186,8 @@ public sealed class ScanLockContentionTests
             return await _inner.MergeScannedFilesAsync(volumeId, batch, indexedUtc, ct);
         }
 
-        public Task<int> MarkAbsentFilesAsync(int volumeId, DateTime scanStartedUtc, CancellationToken ct) =>
-            _inner.MarkAbsentFilesAsync(volumeId, scanStartedUtc, ct);
+        public Task<ScanClosureResult> ReconcileUnseenFilesAsync(
+            int volumeId, DateTime scanStartedUtc, IReadOnlyCollection<SkippedScanArea> skipped, CancellationToken ct) =>
+            _inner.ReconcileUnseenFilesAsync(volumeId, scanStartedUtc, skipped, ct);
     }
 }

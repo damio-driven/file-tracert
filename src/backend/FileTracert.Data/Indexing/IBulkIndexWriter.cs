@@ -40,14 +40,41 @@ public interface IBulkIndexWriter
         int volumeId, IReadOnlyCollection<FileEntry> batch, DateTime indexedUtc, CancellationToken ct);
 
     /// <summary>
-    /// Closes a scan: every included file of the volume not touched since
-    /// <paramref name="scanStartedUtc"/> is flagged <c>IsPresent = false</c> (soft, §6).
-    /// Rows excluded by the filter are left alone — the scan never sees them, so "not
-    /// touched" says nothing about whether they are still on disk.
+    /// Closes a scan by telling the two reasons a row can be missing from it apart (§4/§6):
+    /// a row inside one of the <paramref name="skipped"/> areas is one the scan deliberately
+    /// did not look at, so it is flagged <c>IsIncluded = false</c> and its
+    /// <see cref="FileEntry.IsPresent"/> is left exactly as it was; every other included row
+    /// not touched since <paramref name="scanStartedUtc"/> is one the scan looked for and did
+    /// not find, so it is flagged <c>IsPresent = false</c>. Soft both ways — never a delete.
+    /// <para>Rows already excluded by the file-type filter are left alone in both passes: the
+    /// scan never sees them, so "not touched" says nothing about whether they are still on
+    /// disk.</para>
     /// </summary>
-    /// <returns>How many rows were flagged.</returns>
-    Task<int> MarkAbsentFilesAsync(int volumeId, DateTime scanStartedUtc, CancellationToken ct);
+    Task<ScanClosureResult> ReconcileUnseenFilesAsync(
+        int volumeId,
+        DateTime scanStartedUtc,
+        IReadOnlyCollection<SkippedScanArea> skipped,
+        CancellationToken ct);
 }
+
+/// <summary>
+/// One place a scan deliberately did not look at, addressed the way the file rows are:
+/// a whole directory (<paramref name="FileName"/> null — it sits outside the active watched
+/// roots, or under a folder the filter excluded) or a single file inside a directory the scan
+/// did visit (its own attributes or its path excluded it).
+/// </summary>
+/// <remarks>
+/// Directory ids, not path prefixes. The catalog only ever contains what was once inside the
+/// perimeter, so "which catalog directories are now outside it" is normally the empty set and at
+/// worst the subtree that just left — while the set of excluded PATHS is large by construction
+/// (on a system volume every folder under <c>Windows\</c> fails the filter on its own).
+/// </remarks>
+public readonly record struct SkippedScanArea(int DirectoryId, string? FileName);
+
+/// <summary>What closing a scan changed.</summary>
+/// <param name="Excluded">Rows the scan skipped on purpose → <c>IsIncluded = false</c>.</param>
+/// <param name="Absent">Rows the scan looked for and did not find → <c>IsPresent = false</c>.</param>
+public readonly record struct ScanClosureResult(int Excluded, int Absent);
 
 /// <summary>Outcome of one merged batch.</summary>
 /// <param name="Inserted">Rows the batch added to the catalog.</param>

@@ -504,7 +504,10 @@ public sealed class ScanService
         // deleted (§6), so a queued operation still finds the row it references.
         await using (var tx = await _db.Database.BeginTransactionAsync(ct))
         {
-            var absent = await _bulkWriter.MarkAbsentFilesAsync(volume.Id, scanStartedUtc, ct);
+            // The skipped areas arrive in the next commit; today the scan still tells the writer
+            // nothing about where it did not look, so every unseen row is read as absent.
+            var absent = (await _bulkWriter.ReconcileUnseenFilesAsync(
+                volume.Id, scanStartedUtc, [], ct)).Absent;
 
             // …and out of the search index with them, in the same transaction: a file that is
             // no longer on disk must stop being a search hit.

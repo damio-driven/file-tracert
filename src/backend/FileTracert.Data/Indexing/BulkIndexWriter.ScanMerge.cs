@@ -7,9 +7,10 @@ namespace FileTracert.Data.Indexing;
 
 /// <summary>
 /// The scan merge, SQLite side. A re-scan reconciles instead of replacing: matched rows
-/// are updated in place, unseen ones inserted, missing ones flagged absent. Everything is
-/// set-based through a per-batch staging table — no volume-wide dictionary in memory (a
-/// system drive holds millions of rows) and no per-row round-trip from Business.
+/// are updated in place, unseen ones inserted, and the rows left over are split by WHY the scan
+/// did not touch them — deliberately skipped (excluded) or looked for and not found (absent).
+/// Everything is set-based through per-connection staging tables — no volume-wide dictionary in
+/// memory (a system drive holds millions of rows) and no per-row round-trip from Business.
 /// </summary>
 /// <remarks>
 /// <para><b>Staging is TEMP and per batch.</b> A <c>TEMP</c> table lives in the connection's
@@ -68,38 +69,105 @@ public sealed partial class BulkIndexWriter
         }
     }
 
-    public async Task<int> MarkAbsentFilesAsync(int volumeId, DateTime scanStartedUtc, CancellationToken ct)
+    public async Task<ScanClosureResult> ReconcileUnseenFilesAsync(
+        int volumeId,
+        DateTime scanStartedUtc,
+        IReadOnlyCollection<SkippedScanArea> skipped,
+        CancellationToken ct)
     {
         var conn = (SqliteConnection)_db.Database.GetDbConnection();
         await _db.Database.OpenConnectionAsync(ct);
         try
         {
             var tx = _db.Database.CurrentTransaction?.GetDbTransaction() as SqliteTransaction;
+            var now = DateTime.UtcNow;
 
-            // Only rows the filter includes: an excluded file is never handed to the merge,
-            // so "not touched by this scan" says nothing about whether it is still on disk.
-            // The bound is passed as a DateTime, not as an ISO string — the provider then
-            // writes it in the same TEXT layout as the column, which is what makes the "<"
-            // comparison mean what it reads (review finding #11).
-            await using var cmd = conn.CreateCommand();
-            cmd.Transaction = tx;
-            cmd.CommandText =
-                """
-                UPDATE Files
-                   SET IsPresent = 0, RowUpdatedUtc = $now
-                 WHERE VolumeId = $vol AND IsIncluded = 1 AND IsPresent = 1
-                   AND LastIndexedUtc < $scanStart
-                """;
-            cmd.Parameters.AddWithValue("$vol", volumeId);
-            cmd.Parameters.AddWithValue("$scanStart", scanStartedUtc);
-            cmd.Parameters.AddWithValue("$now", DateTime.UtcNow);
-            return await cmd.ExecuteNonQueryAsync(ct);
+            // Exclusion runs FIRST, and that ordering is the whole trick: the rows it flags
+            // IsIncluded = 0 drop out of the absence pass by themselves, so that pass keeps the
+            // one statement and the exact predicate it has always had — no negated subquery on
+            // the hot path, and nothing to keep in step between the two.
+            var excluded = skipped.Count == 0
+                ? 0
+                : await ExcludeSkippedAsync(conn, tx, volumeId, scanStartedUtc, now, skipped, ct);
+
+            var absent = await MarkAbsentAsync(conn, tx, volumeId, scanStartedUtc, now, ct);
+            return new ScanClosureResult(excluded, absent);
         }
         finally
         {
             _db.Database.CloseConnection();
         }
     }
+
+    /// <summary>
+    /// Flags what the scan deliberately skipped as excluded, leaving <c>IsPresent</c> untouched:
+    /// the file is on disk, it is simply outside the perimeter the user asked for (§4). The areas
+    /// are staged the same way the merge stages its batch — a per-connection TEMP table — so the
+    /// pass stays one UPDATE whatever the number of rows behind those areas.
+    /// </summary>
+    private static async Task<int> ExcludeSkippedAsync(
+        SqliteConnection conn, SqliteTransaction? tx, int volumeId,
+        DateTime scanStartedUtc, DateTime now, IReadOnlyCollection<SkippedScanArea> skipped, CancellationToken ct)
+    {
+        await ExecuteAsync(conn, tx,
+            """
+            CREATE TEMP TABLE IF NOT EXISTS ScanSkipAreas (
+                DirectoryId INTEGER NOT NULL,
+                Name        TEXT    NULL
+            );
+            """, ct);
+        await ExecuteAsync(conn, tx,
+            "CREATE INDEX IF NOT EXISTS IX_ScanSkipAreas_DirectoryId ON ScanSkipAreas(DirectoryId);", ct);
+        await ExecuteAsync(conn, tx, "DELETE FROM ScanSkipAreas;", ct);
+
+        await using (var insert = conn.CreateCommand())
+        {
+            insert.Transaction = tx;
+            insert.CommandText = "INSERT INTO ScanSkipAreas (DirectoryId, Name) VALUES ($dir, $name);";
+            var dir = insert.Parameters.Add("$dir", SqliteType.Integer);
+            var name = insert.Parameters.Add("$name", SqliteType.Text);
+
+            foreach (var area in skipped)
+            {
+                dir.Value = area.DirectoryId;
+                name.Value = area.FileName is null ? DBNull.Value : area.FileName;
+                await insert.ExecuteNonQueryAsync(ct);
+            }
+        }
+
+        // A NULL Name means the whole directory. Name comparison is COLLATE NOCASE for the same
+        // reason the merge matches that way: Windows does not distinguish case, SQLite's default
+        // BINARY collation does.
+        return await ExecuteAsync(conn, tx,
+            """
+            UPDATE Files
+               SET IsIncluded = 0, RowUpdatedUtc = $now
+             WHERE VolumeId = $vol AND IsIncluded = 1
+               AND LastIndexedUtc < $scanStart
+               AND EXISTS (SELECT 1 FROM ScanSkipAreas s
+                            WHERE s.DirectoryId = Files.DirectoryId
+                              AND (s.Name IS NULL OR s.Name = Files.Name COLLATE NOCASE));
+            """, ct, ("$vol", volumeId), ("$scanStart", scanStartedUtc), ("$now", now));
+    }
+
+    /// <summary>
+    /// Flags what the scan looked for and did not find. Only rows the filter includes: an excluded
+    /// file is never handed to the merge, so "not touched by this scan" says nothing about whether
+    /// it is still on disk.
+    /// </summary>
+    private static Task<int> MarkAbsentAsync(
+        SqliteConnection conn, SqliteTransaction? tx, int volumeId,
+        DateTime scanStartedUtc, DateTime now, CancellationToken ct) =>
+        // The bound is passed as a DateTime, not as an ISO string — the provider then writes it in
+        // the same TEXT layout as the column, which is what makes the "<" comparison mean what it
+        // reads (review finding #11).
+        ExecuteAsync(conn, tx,
+            """
+            UPDATE Files
+               SET IsPresent = 0, RowUpdatedUtc = $now
+             WHERE VolumeId = $vol AND IsIncluded = 1 AND IsPresent = 1
+               AND LastIndexedUtc < $scanStart
+            """, ct, ("$vol", volumeId), ("$scanStart", scanStartedUtc), ("$now", now));
 
     // ── staging ───────────────────────────────────────────────────────────────
 
@@ -226,9 +294,14 @@ public sealed partial class BulkIndexWriter
     private static async Task<int> UpdateMatchedAsync(
         SqliteConnection conn, SqliteTransaction? tx, DateTime indexedUtc, CancellationToken ct)
     {
-        // Only the physical facts a scan can observe. Id, IsIncluded (the filter's decision),
-        // QuickHash/Hash (never re-derived by a scan) and every Pending* field — the queue's
-        // projection (§5) — are deliberately absent from the SET list.
+        // Only the physical facts a scan can observe. Id, QuickHash/Hash (never re-derived by a
+        // scan) and every Pending* field — the queue's projection (§5) — are deliberately absent
+        // from the SET list.
+        //
+        // IsIncluded IS set, because a row in this batch is a row the pipeline's filter let
+        // through: the scan IS the filter's decision (§4), and it is the only one that can undo an
+        // exclusion nobody asked for through Setup — a folder that stops being hidden raises no
+        // event, so without this its content would stay invisible for ever.
         return await ExecuteAsync(conn, tx,
             """
             UPDATE Files
@@ -241,6 +314,7 @@ public sealed partial class BulkIndexWriter
                    ModifiedUtc    = s.ModifiedUtc,
                    Attributes     = s.Attributes,
                    UsnFileRef     = COALESCE(s.UsnFileRef, Files.UsnFileRef),
+                   IsIncluded     = 1,
                    IsPresent      = 1,
                    LastIndexedUtc = $now,
                    RowUpdatedUtc  = $now

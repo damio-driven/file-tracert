@@ -244,7 +244,8 @@ public sealed class ScanMergeTests
             await writer.MergeScannedFilesAsync(
                 fx.VolumeId, [Scanned(fx.VolumeId, fx.RootDirId, "stays.jpg")], scanStart.AddMinutes(1), CancellationToken.None);
 
-            (await writer.MarkAbsentFilesAsync(fx.VolumeId, scanStart, CancellationToken.None)).Should().Be(1);
+            (await writer.ReconcileUnseenFilesAsync(fx.VolumeId, scanStart, [], CancellationToken.None))
+                .Should().Be(new ScanClosureResult(Excluded: 0, Absent: 1));
         }
 
         await using var read = harness.CreateContext();
@@ -267,7 +268,7 @@ public sealed class ScanMergeTests
                 fx.VolumeId, [Scanned(fx.VolumeId, fx.RootDirId, "blink.jpg")], T0, CancellationToken.None);
             fileId = await ctx.Files.Select(f => f.Id).SingleAsync();
 
-            await writer.MarkAbsentFilesAsync(fx.VolumeId, T0.AddHours(1), CancellationToken.None);
+            await writer.ReconcileUnseenFilesAsync(fx.VolumeId, T0.AddHours(1), [], CancellationToken.None);
         }
 
         await using (var ctx = harness.CreateContext())
@@ -280,6 +281,175 @@ public sealed class ScanMergeTests
         var back = await read.Files.SingleAsync();
         back.Id.Should().Be(fileId);
         back.IsPresent.Should().BeTrue();
+    }
+
+    // ── step 11g: what the scan skipped is excluded, what it missed is absent ──
+
+    [Fact]
+    public async Task A_row_inside_a_skipped_directory_is_excluded_and_keeps_its_presence()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var fx = await SeedAsync(harness);
+
+        await using (var ctx = harness.CreateContext())
+        {
+            await new BulkIndexWriter(ctx).MergeScannedFilesAsync(
+                fx.VolumeId,
+                [
+                    Scanned(fx.VolumeId, fx.RootDirId, "seen.jpg"),
+                    Scanned(fx.VolumeId, fx.SubDirId, "skipped.jpg"),
+                    Scanned(fx.VolumeId, fx.RootDirId, "gone.jpg"),
+                ],
+                T0, CancellationToken.None);
+        }
+
+        // The next scan re-indexes only "seen.jpg": "Sub" is outside the perimeter it walked, and
+        // "gone.jpg" is inside it but no longer on disk.
+        var scanStart = T0.AddHours(1);
+        await using (var ctx = harness.CreateContext())
+        {
+            var writer = new BulkIndexWriter(ctx);
+            await writer.MergeScannedFilesAsync(
+                fx.VolumeId, [Scanned(fx.VolumeId, fx.RootDirId, "seen.jpg")], scanStart.AddMinutes(1),
+                CancellationToken.None);
+
+            var closure = await writer.ReconcileUnseenFilesAsync(
+                fx.VolumeId, scanStart, [new SkippedScanArea(fx.SubDirId, FileName: null)], CancellationToken.None);
+
+            closure.Should().Be(new ScanClosureResult(Excluded: 1, Absent: 1));
+        }
+
+        await using var read = harness.CreateContext();
+        var skipped = await read.Files.SingleAsync(f => f.Name == "skipped.jpg");
+        skipped.IsIncluded.Should().BeFalse();
+        skipped.IsPresent.Should().BeTrue("the scan never looked there, so it says nothing about the disk");
+
+        var gone = await read.Files.SingleAsync(f => f.Name == "gone.jpg");
+        gone.IsPresent.Should().BeFalse();
+        gone.IsIncluded.Should().BeTrue("absence is not a filter decision");
+
+        var seen = await read.Files.SingleAsync(f => f.Name == "seen.jpg");
+        seen.IsIncluded.Should().BeTrue();
+        seen.IsPresent.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task A_single_skipped_file_is_excluded_without_touching_its_neighbours()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var fx = await SeedAsync(harness);
+
+        await using (var ctx = harness.CreateContext())
+        {
+            await new BulkIndexWriter(ctx).MergeScannedFilesAsync(
+                fx.VolumeId,
+                [Scanned(fx.VolumeId, fx.RootDirId, "Hidden.jpg"), Scanned(fx.VolumeId, fx.RootDirId, "next.jpg")],
+                T0, CancellationToken.None);
+        }
+
+        var scanStart = T0.AddHours(1);
+        await using (var ctx = harness.CreateContext())
+        {
+            var writer = new BulkIndexWriter(ctx);
+            await writer.MergeScannedFilesAsync(
+                fx.VolumeId, [Scanned(fx.VolumeId, fx.RootDirId, "next.jpg")], scanStart.AddMinutes(1),
+                CancellationToken.None);
+
+            // Spelled in the other case on purpose: Windows does not distinguish it, and SQLite's
+            // default BINARY collation does.
+            var closure = await writer.ReconcileUnseenFilesAsync(
+                fx.VolumeId, scanStart, [new SkippedScanArea(fx.RootDirId, "hidden.JPG")], CancellationToken.None);
+
+            closure.Should().Be(new ScanClosureResult(Excluded: 1, Absent: 0));
+        }
+
+        await using var read = harness.CreateContext();
+        (await read.Files.SingleAsync(f => f.Name == "Hidden.jpg")).IsIncluded.Should().BeFalse();
+        (await read.Files.SingleAsync(f => f.Name == "Hidden.jpg")).IsPresent.Should().BeTrue();
+        (await read.Files.SingleAsync(f => f.Name == "next.jpg")).IsIncluded.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Merge_records_that_a_row_it_saw_again_is_included()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var fx = await SeedAsync(harness);
+
+        await using (var ctx = harness.CreateContext())
+        {
+            // A row the perimeter excluded on an earlier scan — nothing in Setup can un-exclude it
+            // when the reason was an attribute on disk, so the scan that sees it again must.
+            var excluded = Scanned(fx.VolumeId, fx.RootDirId, "back.jpg");
+            excluded.IsIncluded = false;
+            excluded.IsPresent = true;
+            ctx.Files.Add(excluded);
+            await ctx.SaveChangesAsync();
+        }
+
+        await using (var ctx = harness.CreateContext())
+        {
+            var result = await new BulkIndexWriter(ctx).MergeScannedFilesAsync(
+                fx.VolumeId, [Scanned(fx.VolumeId, fx.RootDirId, "back.jpg")], T0.AddHours(1),
+                CancellationToken.None);
+            result.Updated.Should().Be(1, "the row is matched, not duplicated");
+        }
+
+        await using var read = harness.CreateContext();
+        (await read.Files.SingleAsync()).IsIncluded.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// The cost of closing a scan follows the areas the pipeline skipped, never the rows behind
+    /// them — and when it skipped nothing (the ordinary case: the perimeter has not moved) the
+    /// pass is the single UPDATE it has always been.
+    /// </summary>
+    [Fact]
+    public async Task Closing_a_scan_costs_the_same_whatever_the_number_of_rows_behind_the_skipped_areas()
+    {
+        var (fewStatements, fewExcluded) = await ClosureCostAsync(rowsInSkippedDirectory: 50);
+        var (manyStatements, manyExcluded) = await ClosureCostAsync(rowsInSkippedDirectory: 500);
+
+        fewExcluded.Should().Be(50);
+        manyExcluded.Should().Be(500);
+        manyStatements.Should().Be(fewStatements,
+            "the pass is set-based: ten times the rows, the same statements");
+
+        // And with nothing skipped it is exactly one statement — the absence UPDATE, unchanged.
+        var (baseline, _) = await ClosureCostAsync(rowsInSkippedDirectory: 500, skipTheDirectory: false);
+        baseline.Should().Be(1);
+        fewStatements.Should().Be(6,
+            "one skipped area costs the staging table, its index, the DELETE that empties it, one " +
+            "INSERT, the exclusion UPDATE and the absence UPDATE — and nothing per row");
+    }
+
+    private static async Task<(int Statements, int Excluded)> ClosureCostAsync(
+        int rowsInSkippedDirectory, bool skipTheDirectory = true)
+    {
+        var connection = new CountingSqliteConnection("Data Source=:memory:");
+        using var harness = new SqliteInMemoryContext(connection: connection);
+        var fx = await SeedAsync(harness);
+
+        await using (var ctx = harness.CreateContext())
+        {
+            await new BulkIndexWriter(ctx).MergeScannedFilesAsync(
+                fx.VolumeId,
+                [.. Enumerable.Range(0, rowsInSkippedDirectory)
+                    .Select(i => Scanned(fx.VolumeId, fx.SubDirId, $"f{i:D4}.jpg"))],
+                T0, CancellationToken.None);
+        }
+
+        await using var run = harness.CreateContext();
+        var writer = new BulkIndexWriter(run);
+
+        // Counted from here: the closure pass only, not the arrange.
+        connection.Reset();
+        var closure = await writer.ReconcileUnseenFilesAsync(
+            fx.VolumeId,
+            T0.AddHours(1),
+            skipTheDirectory ? [new SkippedScanArea(fx.SubDirId, FileName: null)] : [],
+            CancellationToken.None);
+
+        return (connection.Statements, closure.Excluded);
     }
 
     [Fact]

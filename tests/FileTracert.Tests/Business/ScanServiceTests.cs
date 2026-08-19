@@ -613,8 +613,9 @@ public sealed class ScanServiceTests
             }
         }
 
-        public Task<int> MarkAbsentFilesAsync(int volumeId, DateTime scanStartedUtc, CancellationToken ct) =>
-            _inner.MarkAbsentFilesAsync(volumeId, scanStartedUtc, ct);
+        public Task<ScanClosureResult> ReconcileUnseenFilesAsync(
+            int volumeId, DateTime scanStartedUtc, IReadOnlyCollection<SkippedScanArea> skipped, CancellationToken ct) =>
+            _inner.ReconcileUnseenFilesAsync(volumeId, scanStartedUtc, skipped, ct);
     }
 
     [Fact]
