@@ -55,13 +55,21 @@ public sealed class JobSnapshotRefresher
     {
         var moves = await LoadFolderMovesSinceAsync(job, ct);
 
+        // Where the files this job owns actually live now. A path is only half of "where": the
+        // other half is the volume, and a job released after a CROSS-volume move used to keep
+        // naming the drive its file had left (see FollowSourceVolumeAsync).
+        var volumes = new HashSet<int>();
+
         // Only items that have not started: a job parked mid-flight (space, collision) keeps
         // copies already on the target, and their paths are history, not a plan.
         foreach (var item in job.Items.Where(i => i.State == JobItemState.Pending))
         {
-            var problem = await RefreshItemAsync(job, item, moves, ct);
+            var problem = await RefreshItemAsync(job, item, moves, volumes, ct);
             if (problem is not null) return problem;
         }
+
+        var moved = await FollowSourceVolumeAsync(job, volumes, ct);
+        if (moved is not null) return moved;
 
         // The job-level destination is what the engine uses to create the target folder; it must
         // follow the same rewrites, or a completed rename resurrects the old folder name.
@@ -74,8 +82,70 @@ public sealed class JobSnapshotRefresher
         return null;
     }
 
+    /// <summary>
+    /// Re-points the job at the volume its files are on NOW.
+    ///
+    /// <para>The harness FAIL of step 9c on a cross-volume pair. Resolving an item by identity
+    /// gives the right PATH however many jobs ran in between, but the job's own
+    /// <c>SourceVolumeId</c> was left at the drive the file was queued from. After a cross-volume
+    /// move the engine then looked for the file on the wrong drive, threw a plain IOException and
+    /// the job went <c>Failed</c> — terminal, for an operation that is perfectly runnable one
+    /// drive over. The dependent has to follow its file, which is also what the user expects.</para>
+    ///
+    /// <para>The job's SHAPE is never changed here, only the drive it names:</para>
+    /// <list type="bullet">
+    ///   <item>an intra-volume job (a rename, an intra move) moves both ends together and stays
+    ///     intra — it needs no reservation either way;</item>
+    ///   <item>a cross-volume job whose new source is still not the destination stays cross; the
+    ///     callers (<c>BlockedJobRevaluator.UnblockAsync</c>, <c>QueueService.RetryAsync</c>)
+    ///     re-run release-then-reserve straight after this, so the ledger's liberation entry
+    ///     follows the new source volume by itself;</item>
+    ///   <item>a cross-volume job whose source has landed ON its destination would stop being a
+    ///     copy at all — a different operation, with a reservation that no longer means anything.
+    ///     That one is reported as a problem, so the job stays <c>Blocked</c> with a message the
+    ///     user can act on rather than being silently rewritten into a job they never asked for.</item>
+    /// </list>
+    /// </summary>
+    private async Task<string?> FollowSourceVolumeAsync(
+        OperationJob job, HashSet<int> resolvedVolumes, CancellationToken ct)
+    {
+        // Nothing resolved by identity (folder items, CreateFolder): the replay is the only tool
+        // available, and it deliberately does not cross volumes.
+        if (resolvedVolumes.Count == 0) return null;
+
+        if (resolvedVolumes.Count > 1)
+            return "I file dell'operazione risultano ora su volumi diversi: l'operazione resta " +
+                   "in attesa finché non tornano insieme o non viene annullata.";
+
+        var volumeId = resolvedVolumes.Single();
+        if (job.SourceVolumeId == volumeId) return null;
+
+        if (!job.IsIntraVolume && job.TargetVolumeId == volumeId)
+            return $"Il file è stato spostato sul volume di destinazione ({volumeId}) da " +
+                   "un'altra operazione: lo spostamento richiesto non ha più senso. " +
+                   "Annullare l'operazione o riprovarla verso un'altra destinazione.";
+
+        _logger.LogInformation(
+            "Job {Id}: its file(s) now live on volume {New} instead of {Old} — following them.",
+            job.Id, volumeId, job.SourceVolumeId);
+
+        job.SourceVolumeId = volumeId;
+        // Loaded rather than left stale: the FK and the navigation must agree, or a caller that
+        // reads job.SourceVolume after this (a label, a log line) describes the old drive.
+        job.SourceVolume = await _db.Volumes.FirstOrDefaultAsync(v => v.Id == volumeId, ct);
+
+        if (job.IsIntraVolume)
+        {
+            job.TargetVolumeId = volumeId;
+            job.TargetVolume = job.SourceVolume;
+        }
+
+        return null;
+    }
+
     private async Task<string?> RefreshItemAsync(
-        OperationJob job, OperationJobItem item, List<FolderMove> moves, CancellationToken ct)
+        OperationJob job, OperationJobItem item, List<FolderMove> moves,
+        HashSet<int> resolvedVolumes, CancellationToken ct)
     {
         if (item.FileId is { } fileId)
         {
@@ -92,6 +162,7 @@ public sealed class JobSnapshotRefresher
                     "anyway and the engine will report if it really is gone.", job.Id, fileId);
 
             item.SourceRelativePath = ScanPath.Join(file.Directory.MaterializedPath, file.Name);
+            resolvedVolumes.Add(file.VolumeId);
         }
         else
         {

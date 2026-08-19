@@ -30,6 +30,8 @@ public sealed class JobDependencyTests : IDisposable
 {
     private const int Vol1Id = 1;
     private const int Vol2Id = 2;
+    private const string Vol1Guid = @"\\?\Volume{aaa-1}\";
+    private const string Vol2Guid = @"\\?\Volume{bbb-2}\";
     private const int DocsId = 1;       // "Docs"
     private const int SubId = 2;        // "Docs\Sub"
     private const int OtherCaseId = 3;  // "DOCS\Other"  — same tree, different casing
@@ -645,6 +647,87 @@ public sealed class JobDependencyTests : IDisposable
 
             return base.SavingChangesAsync(eventData, result, cancellationToken);
         }
+    }
+
+    // ── the dependent follows its file across volumes ─────────────────────────
+
+    /// <summary>
+    /// The harness FAIL of step 9c on a CROSS-volume pair. A rename queued behind a cross-volume
+    /// move was released with a correctly refreshed path — the file is re-resolved by identity —
+    /// but the job still named the volume the file had LEFT. The engine then looked for it on the
+    /// wrong drive, threw a plain IOException and the job went Failed: terminal, for an operation
+    /// that is perfectly runnable one drive over.
+    /// </summary>
+    [Fact]
+    public async Task A_dependent_rename_follows_its_file_to_another_volume()
+    {
+        var move = await MoveFileAsync(ReportId, "Backup", Vol2Id);   // cross-volume
+        var rename = await RenameFileAsync(ReportId, "report-2.txt");
+        ShouldDependOn(rename, move);
+
+        await EngineWith(WorkingMover()).ExecuteJobAsync(move.Id, None);
+        (await ReloadJobAsync(move.Id)).State.Should().Be(JobState.Completed);
+
+        (await Revaluator().RevaluateAsync(None)).Should().Be(1);
+
+        var released = await ReloadJobAsync(rename.Id);
+        released.State.Should().Be(JobState.Pending);
+        released.SourceVolumeId.Should().Be(Vol2Id, "the file lives on the target volume now");
+        released.TargetVolumeId.Should().Be(Vol2Id, "a rename happens where the file is");
+        released.IsIntraVolume.Should().BeTrue();
+
+        using (var db = _harness.CreateContext())
+        {
+            var item = await db.OperationJobItems.AsNoTracking().FirstAsync(i => i.JobId == rename.Id, None);
+            item.SourceRelativePath.Should().Be(@"Backup\report.txt");
+        }
+
+        // …and it actually runs, on the right drive.
+        var mover = WorkingMover();
+        await EngineWith(mover).ExecuteJobAsync(rename.Id, None);
+        (await ReloadJobAsync(rename.Id)).State.Should().Be(JobState.Completed);
+        mover.Received(1).RenameIntraVolume(Vol2Guid, @"Backup\report.txt", "report-2.txt");
+    }
+
+    /// <summary>
+    /// The one shape change that is NOT followed silently: a cross-volume move whose source has
+    /// meanwhile landed ON the destination volume is no longer the operation the user asked for
+    /// (no copy, no reservation), so it is parked with an explicit message instead of being
+    /// quietly rewritten into a different job. Blocked, never Failed — §4, a recoverable
+    /// condition.
+    /// </summary>
+    [Fact]
+    public async Task A_cross_move_whose_source_landed_on_the_destination_is_parked_not_rewritten()
+    {
+        var first = await MoveFileAsync(ReportId, "Backup", Vol2Id);      // Vol1 → Vol2
+        var second = await MoveFileAsync(ReportId, "Archive", Vol2Id);    // queued behind it
+        ShouldDependOn(second, first);
+
+        await EngineWith(WorkingMover()).ExecuteJobAsync(first.Id, None);
+        (await ReloadJobAsync(first.Id)).State.Should().Be(JobState.Completed);
+
+        (await Revaluator().RevaluateAsync(None)).Should().Be(0);
+
+        var parked = await ReloadJobAsync(second.Id);
+        parked.State.Should().Be(JobState.Blocked);
+        parked.SourceVolumeId.Should().Be(Vol1Id, "nothing is rewritten while the job stays parked");
+        parked.ErrorMessage.Should().Contain("volume");
+    }
+
+    /// <summary>A mover that behaves like a healthy NTFS pair, so the cross-volume machine can run.</summary>
+    private static IFileMover WorkingMover()
+    {
+        var mover = Substitute.For<IFileMover>();
+        mover.CopyFileAsync(
+                Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(),
+                Arg.Any<Func<long, CancellationToken, Task>>(), Arg.Any<CancellationToken>())
+             .Returns(Task.CompletedTask);
+        mover.Verify(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<bool>())
+             .Returns(true);
+        mover.Exists(Arg.Any<string>(), Arg.Any<string>()).Returns(true);
+        mover.IsDirectoryEmpty(Arg.Any<string>(), Arg.Any<string>()).Returns(true);
+        mover.CanRecycle(Arg.Any<string>()).Returns(true);
+        return mover;
     }
 
     // ── still refused: the requests that are wrong, not merely queued behind ──
