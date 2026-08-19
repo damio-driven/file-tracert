@@ -402,6 +402,13 @@ public sealed class ScanMergeTests
     /// The cost of closing a scan follows the areas the pipeline skipped, never the rows behind
     /// them — and when it skipped nothing (the ordinary case: the perimeter has not moved) the
     /// pass is the single UPDATE it has always been.
+    ///
+    /// <para>What this does NOT prove, said out loud so nobody reads more into the number: the
+    /// staging fill re-executes one prepared INSERT per AREA, and the counter cannot see those
+    /// (it counts commands, and that one is built once). The area count is the pipeline's input,
+    /// not a function of the catalog, and what keeps it small is upstream — <c>ScanService</c>
+    /// only records a skipped file whose type the allow-list would have admitted, so the hidden
+    /// files nobody indexes never become areas.</para>
     /// </summary>
     [Fact]
     public async Task Closing_a_scan_costs_the_same_whatever_the_number_of_rows_behind_the_skipped_areas()

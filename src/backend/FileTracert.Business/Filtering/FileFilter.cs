@@ -66,20 +66,22 @@ public static class FileFilter
     public static bool ShouldIncludeDirectory(string relativePath, FileAttributes attributes, EffectiveFilter filter) =>
         IsInsidePerimeter(relativePath, attributes, filter);
 
+    /// <summary>
+    /// The TYPE half: the extension allow-list, empty meaning "every type". The other half of
+    /// <see cref="ShouldIncludeFile"/>, spelled apart because a caller sometimes needs to know
+    /// WHICH half rejected a file — the scan does, to tell "outside the perimeter" (recorded on
+    /// the row) from "wrong type" (never indexed in the first place).
+    /// </summary>
+    public static bool IsAllowedType(string extension, EffectiveFilter filter) =>
+        filter.AllowedExtensions.Count == 0 || filter.AllowedExtensions.Contains(extension);
+
     /// <summary>Files honor the perimeter rules plus the extension allow-list.</summary>
     public static bool ShouldIncludeFile(
         string relativePath,
         string extension,
         FileAttributes attributes,
-        EffectiveFilter filter)
-    {
-        if (!IsInsidePerimeter(relativePath, attributes, filter))
-        {
-            return false;
-        }
-
-        return filter.AllowedExtensions.Count == 0 || filter.AllowedExtensions.Contains(extension);
-    }
+        EffectiveFilter filter) =>
+        IsInsidePerimeter(relativePath, attributes, filter) && IsAllowedType(extension, filter);
 
     private static bool IsExcludedByAttributes(FileAttributes attributes, EffectiveFilter filter) =>
         (filter.ExcludeSystem && attributes.HasFlag(FileAttributes.System)) ||

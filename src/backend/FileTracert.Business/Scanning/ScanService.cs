@@ -293,16 +293,27 @@ public sealed class ScanService
             }
             else
             {
+                // Both halves of the filter asked once, and kept apart: which one rejected the file
+                // decides whether the closing pass has anything to say about it. Asking through
+                // ShouldIncludeFile and then re-asking the perimeter on the reject branch spent a
+                // second path split on every rejected item of a volume (E7 territory).
                 var extension = FileFilter.GetExtension(item.Name);
-                if (FileFilter.ShouldIncludeFile(item.RelativePath, extension, item.Attributes, filter))
+                var insidePerimeter = FileFilter.IsInsidePerimeter(item.RelativePath, item.Attributes, filter);
+                var allowedType = FileFilter.IsAllowedType(extension, filter);
+
+                if (insidePerimeter && allowedType)
                 {
                     files.Add(item);
                 }
-                else if (!FileFilter.IsInsidePerimeter(item.RelativePath, item.Attributes, filter))
+                else if (!insidePerimeter && allowedType)
                 {
                     // On disk, outside the perimeter: the closing pass must call it excluded, not
-                    // absent. A file rejected only by the TYPE allow-list is not recorded — see
-                    // ScanPerimeter.SkipFile.
+                    // absent. Only if its TYPE is allowed, though — a file the allow-list rejects
+                    // cannot have a row waiting for that verdict (a row exists only because the
+                    // file passed the allow-list when it was indexed, and a narrowing of the
+                    // allow-list is FilterReconciler's job, not the scan's). Without that guard
+                    // every desktop.ini and Thumbs.db of a watched volume would be carried through
+                    // the merge to say nothing.
                     perimeter.SkipFile(item.RelativePath);
                 }
             }
@@ -513,10 +524,16 @@ public sealed class ScanService
         // What the scan did not touch this run splits in two (§4/§6): what it never looked at is
         // excluded, what it looked for and did not find is gone from disk. Flagged either way,
         // never deleted, so a queued operation still finds the row it references.
+        //
+        // The areas are worked out BEFORE the transaction opens: it is a pass over every directory
+        // of the volume, and SQLite has one writer — no reason for the rest of the process to wait
+        // behind an in-memory loop.
+        var skipped = SkippedAreas(volume, perimeter, merge.IdByPath);
+
         await using (var tx = await _db.Database.BeginTransactionAsync(ct))
         {
             var closure = await _bulkWriter.ReconcileUnseenFilesAsync(
-                volume.Id, scanStartedUtc, SkippedAreas(perimeter, merge.IdByPath), ct);
+                volume.Id, scanStartedUtc, skipped, ct);
 
             // …and out of the search index with them, in the same transaction: a file that is no
             // longer on disk — or no longer inside the perimeter — must stop being a search hit.
@@ -531,9 +548,11 @@ public sealed class ScanService
 
             if (closure.Excluded > 0)
             {
+                // Deliberately does NOT claim they are still on disk: the scan did not look there,
+                // which is the whole reason their presence was left alone.
                 _logger.LogInformation(
                     "Volume {VolumeId}: {Count} file(s) outside the scanned perimeter, marked excluded " +
-                    "(still on disk; widening the perimeter brings them back without a re-scan).",
+                    "(their presence is left as it was — this scan did not look there).",
                     volume.Id, closure.Excluded);
             }
         }
@@ -565,8 +584,8 @@ public sealed class ScanService
     /// one whose directory is outside the perimeter is already accounted for by the directory's
     /// own area, and a file row can only exist under a directory row.</para>
     /// </summary>
-    private static List<SkippedScanArea> SkippedAreas(
-        ScanPerimeter perimeter, IReadOnlyDictionary<string, int> idByPath)
+    private List<SkippedScanArea> SkippedAreas(
+        Volume volume, ScanPerimeter perimeter, IReadOnlyDictionary<string, int> idByPath)
     {
         var areas = new List<SkippedScanArea>();
 
@@ -583,7 +602,18 @@ public sealed class ScanService
             if (idByPath.TryGetValue(ScanPath.Parent(file), out var directoryId))
             {
                 areas.Add(new SkippedScanArea(directoryId, ScanPath.Name(file)));
+                continue;
             }
+
+            // Unreachable with a coherent catalog: a file the scan stepped over is inside an
+            // active root, so its directory is either an existing row or one this scan just
+            // inserted. Loud rather than silent (§9) because the consequence is precisely the bug
+            // this pass exists to remove — the row would fall through to the absence pass and be
+            // stamped "no longer on disk" for a file that is sitting there.
+            _logger.LogWarning(
+                "Volume {VolumeId}: skipped file '{Path}' has no directory row for '{Parent}'; " +
+                "if it is in the catalog it will be flagged absent instead of excluded.",
+                volume.Id, file, ScanPath.Parent(file));
         }
 
         return areas;

@@ -46,6 +46,9 @@ public interface IBulkIndexWriter
     /// <see cref="FileEntry.IsPresent"/> is left exactly as it was; every other included row
     /// not touched since <paramref name="scanStartedUtc"/> is one the scan looked for and did
     /// not find, so it is flagged <c>IsPresent = false</c>. Soft both ways — never a delete.
+    /// <para>Note what "left as it was" implies: while a row is excluded, nothing maintains its
+    /// presence either, because no scan looks at it. A file deleted from disk while it sits
+    /// outside the perimeter keeps <c>IsPresent = true</c> until a scan covers it again.</para>
     /// <para>Rows already excluded by the file-type filter are left alone in both passes: the
     /// scan never sees them, so "not touched" says nothing about whether they are still on
     /// disk.</para>

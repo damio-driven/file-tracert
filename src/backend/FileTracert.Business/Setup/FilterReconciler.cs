@@ -18,10 +18,19 @@ public sealed class FilterReconciler
     public FilterReconciler(FileTracertDbContext db) => _db = db;
 
     /// <summary>
-    /// True when <paramref name="next"/> allows extensions <paramref name="previous"/>
-    /// did not (empty allow-list = "all", the widest). Removals/narrowing → false.
+    /// True when <paramref name="next"/> lets through something <paramref name="previous"/> did
+    /// not: an extension it now allows (empty allow-list = "all", the widest), or a path segment
+    /// it no longer excludes. Narrowing on both counts → false.
+    ///
+    /// <para>The answer means "a scan is needed": widening cannot resurrect what was never
+    /// indexed. Dropping an excluded path segment is a widening for exactly that reason — the
+    /// rows under it were never written — and reading only the allow-list said "no scan needed"
+    /// while nothing on disk had been looked at.</para>
     /// </summary>
-    public static bool FilterWidened(EffectiveFilter previous, EffectiveFilter next)
+    public static bool FilterWidened(EffectiveFilter previous, EffectiveFilter next) =>
+        ExtensionsWidened(previous, next) || PathExclusionsRelaxed(previous, next);
+
+    private static bool ExtensionsWidened(EffectiveFilter previous, EffectiveFilter next)
     {
         if (next.AllowedExtensions.Count == 0)
         {
@@ -34,6 +43,17 @@ public sealed class FilterReconciler
         }
 
         return next.AllowedExtensions.Any(e => !previous.AllowedExtensions.Contains(e));
+    }
+
+    private static bool PathExclusionsRelaxed(EffectiveFilter previous, EffectiveFilter next)
+    {
+        if (previous.ExcludedPathSegments.Count == 0)
+        {
+            return false;
+        }
+
+        var kept = new HashSet<string>(next.ExcludedPathSegments, StringComparer.OrdinalIgnoreCase);
+        return previous.ExcludedPathSegments.Any(segment => !kept.Contains(segment));
     }
 
     /// <summary>

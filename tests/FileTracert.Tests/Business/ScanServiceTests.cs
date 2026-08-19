@@ -815,6 +815,69 @@ public sealed class ScanServiceTests
     }
 
     /// <summary>
+    /// The scan carries a file it stepped over only when that file could have a row waiting for
+    /// the verdict — that is, when the TYPE allow-list would have let it through. Every
+    /// <c>desktop.ini</c> and <c>Thumbs.db</c> of a watched volume is Hidden or System AND of a
+    /// type nobody indexes; recording those would stage one row per file, per scan, to say
+    /// nothing about rows that do not exist.
+    /// </summary>
+    [Fact]
+    public async Task A_hidden_file_of_an_unindexed_type_is_not_carried_through_the_merge()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, VolumeScanEngine.Enumeration, "exFAT", ["jpg"]);
+
+        var dir = new ScanEntry(@"Photos", "Photos", true, 0, T, T, FileAttributes.Directory);
+        var shot = new ScanEntry(@"Photos\a.jpg", "a.jpg", false, 20, T, T, FileAttributes.Normal);
+        var junk = new ScanEntry(
+            @"Photos\desktop.ini", "desktop.ini", false, 1, T, T, FileAttributes.Hidden | FileAttributes.System);
+
+        var writer = new RecordingSkipWriter();
+        await ScanWithAsync(harness, volumeId, writer.Wrapping, dir, shot, junk);
+
+        writer.Skipped.Should().BeEmpty(
+            "a file the allow-list rejects cannot have a row, so it is not worth a staged area");
+
+        // The jpg is indexed; the ini never was and still is not — no row, no lie either way.
+        await using var read = harness.CreateContext();
+        (await read.Files.Select(f => f.Name).ToListAsync()).Should().Equal("a.jpg");
+    }
+
+    /// <summary>Captures the skipped areas the scan hands to the writer, delegating the work.</summary>
+    private sealed class RecordingSkipWriter(IBulkIndexWriter? inner = null) : IBulkIndexWriter
+    {
+        private IBulkIndexWriter _inner = inner!;
+
+        public List<SkippedScanArea> Skipped { get; } = [];
+
+        public RecordingSkipWriter Wrapping(IBulkIndexWriter real)
+        {
+            _inner = real;
+            return this;
+        }
+
+        public Task BulkInsertDirectoriesAsync(IReadOnlyCollection<DirectoryNode> nodes, CancellationToken ct) =>
+            _inner.BulkInsertDirectoriesAsync(nodes, ct);
+
+        public Task BulkInsertFilesAsync(IReadOnlyCollection<FileEntry> files, CancellationToken ct) =>
+            _inner.BulkInsertFilesAsync(files, ct);
+
+        public Task BulkUpsertFilesAsync(IReadOnlyCollection<FileEntry> files, CancellationToken ct) =>
+            _inner.BulkUpsertFilesAsync(files, ct);
+
+        public Task<ScanMergeBatchResult> MergeScannedFilesAsync(
+            int volumeId, IReadOnlyCollection<FileEntry> batch, DateTime indexedUtc, CancellationToken ct) =>
+            _inner.MergeScannedFilesAsync(volumeId, batch, indexedUtc, ct);
+
+        public Task<ScanClosureResult> ReconcileUnseenFilesAsync(
+            int volumeId, DateTime scanStartedUtc, IReadOnlyCollection<SkippedScanArea> skipped, CancellationToken ct)
+        {
+            Skipped.AddRange(skipped);
+            return _inner.ReconcileUnseenFilesAsync(volumeId, scanStartedUtc, skipped, ct);
+        }
+    }
+
+    /// <summary>
     /// A watched root switched off: the scan of the volume no longer walks into it, and the rows
     /// underneath are outside the perimeter — not missing. (Switching off the LAST active root is
     /// a different path entirely: the scan has nothing to do and returns early, so the exclusion
@@ -901,15 +964,32 @@ public sealed class ScanServiceTests
     }
 
     /// <summary>Runs one scan over exactly these entries, on the enumeration engine.</summary>
+    private static Task ScanWithAsync(
+        SqliteInMemoryContext harness, int volumeId, params ScanEntry[] entries) =>
+        ScanWithAsync(harness, volumeId, writerOverride: null, entries);
+
+    /// <param name="writerOverride">Wraps the real writer, for a test that has to observe what the
+    /// scan hands it. It is given the real one, never a stand-in for the code under test.</param>
     private static async Task ScanWithAsync(
-        SqliteInMemoryContext harness, int volumeId, params ScanEntry[] entries)
+        SqliteInMemoryContext harness, int volumeId,
+        Func<IBulkIndexWriter, IBulkIndexWriter>? writerOverride, params ScanEntry[] entries)
     {
         await using var ctx = harness.CreateContext();
-        var sut = Build(harness, ctx,
+        var real = new BulkIndexWriter(ctx);
+        var bulk = writerOverride?.Invoke(real) ?? real;
+
+        var sut = new ScanService(ctx,
             new FakeVolumeProbe(ProbedFor("exFAT")),
             new FakeUsnReader([], 0),
             new FakeDirectoryEnumerator([.. entries]),
-            new FakeFileMetadataReader(new Dictionary<string, FileMetadata>()));
+            new FakeFileMetadataReader(new Dictionary<string, FileMetadata>()),
+            bulk,
+            new DirectoryMerger(ctx, real, NullLogger<DirectoryMerger>.Instance),
+            new FakeFileSearchIndex(),
+            new FakeNotificationPublisher(),
+            new ScanStatusTracker(TestProjection.Realtime(), TimeProvider.System),
+            NullLogger<ScanService>.Instance);
+
         await sut.ScanVolumeAsync(volumeId, CancellationToken.None);
     }
 
