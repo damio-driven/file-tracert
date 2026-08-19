@@ -234,9 +234,11 @@ public sealed class SqliteLogProcessor : IAsyncDisposable
         {
             Console.Error.WriteLine(line);
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException)
         {
-            // No console (Windows Service) or a closed stderr: the Trace line above still stands.
+            // No console (Windows Service) or stderr already closed at shutdown. Nothing is lost
+            // in silence: the same line went to Trace above — and a breadcrumb must never become
+            // the reason a stop fails.
         }
     }
 
