@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using FileTracert.Business.Scanning;
 using FileTracert.Data;
 using FileTracert.Data.Entities;
@@ -46,8 +46,13 @@ public sealed class RootFilterResolver
     /// defaults: that is the widest sensible answer, and the alternative — pretending nothing
     /// is allowed — would silently exclude rows the user never asked to exclude.
     ///
-    /// A malformed per-root override is not swallowed (§9): it is logged in full and the root
-    /// falls back to the defaults, exactly as the scan does with the same input.
+    /// A malformed per-root override is not swallowed (§9): it is logged in full, naming the root
+    /// and the volume, and the root falls back to the defaults — the same recovery the scan makes.
+    /// It deliberately does NOT also raise a Notification the way
+    /// <c>ScanService.ResolveRootFiltersAsync</c> does: the scan is the authority on filters and
+    /// has already told the user about that same malformed JSON, while this runs once per renamed
+    /// file, so a second channel here would repeat a message the user cannot act on any
+    /// differently — once per rename.
     /// </summary>
     public async Task<EffectiveFilter> ResolveForPathAsync(
         int volumeId, string relativePath, CancellationToken ct)

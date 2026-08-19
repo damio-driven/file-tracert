@@ -1,4 +1,4 @@
-using FileTracert.Business.Scanning;
+﻿using FileTracert.Business.Scanning;
 
 namespace FileTracert.Business.Filtering;
 
@@ -16,9 +16,16 @@ namespace FileTracert.Business.Filtering;
 /// <see cref="ScanPath.IsWithin"/>.</b> The answer is exactly
 /// <c>roots.Any(r =&gt; ScanPath.IsWithin(path, r))</c> — same case-insensitive, segment-aware
 /// semantics, because walking with <see cref="ScanPath.Parent"/> only ever cuts at a separator.
-/// But a volume can have thousands of excluded folders and millions of items, and the loop is
+/// But a volume can have very many excluded folders and millions of items, and the loop is
 /// O(items × roots) while the walk is O(items × depth). This is not a sixth subtree matcher (K5):
 /// it is set membership over the same predicate, and it is used nowhere but here.</para>
+///
+/// <para>The set holds EVERY excluded directory, not a minimal set of roots: on a system volume
+/// each directory under an excluded segment (<c>Windows</c>, <c>Program Files</c>, …) fails the
+/// filter on its own and lands here, which is one string per directory. Pruning descendants in
+/// <see cref="Add"/> would not be sound — the USN dump gives no parent-before-child guarantee, so
+/// the ancestor may arrive last — and the scan already holds every enumerated item in memory
+/// anyway, so this is a fraction of a cost that is already paid.</para>
 /// </summary>
 public sealed class ExcludedSubtrees
 {

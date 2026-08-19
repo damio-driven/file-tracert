@@ -1,4 +1,4 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using System.Text.Json;
 using FileTracert.Business.Filtering;
 using FileTracert.Business.Volumes;
@@ -239,6 +239,12 @@ public sealed class ScanService
         // two engines walks a tree: the USN snapshot is an MFT dump whose records arrive in no
         // particular order, so the parent may well be seen after its children. One rule, both
         // engines, no assumption about ordering.
+        //
+        // Boundary, deliberate: only directories INSIDE an active watched root can exclude a
+        // subtree — an item outside every root is skipped below before it can be recorded. A
+        // hidden folder that CONTAINS a watched root therefore does not hide it: the user pointed
+        // at that subtree explicitly, and an attribute on an ancestor they never named should not
+        // silently overrule them.
         var excluded = new ExcludedSubtrees();
 
         // Enumeration is the long "blind" phase: report a running count periodically so

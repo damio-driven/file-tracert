@@ -1,4 +1,4 @@
-using FileTracert.Business.Scanning;
+﻿using FileTracert.Business.Scanning;
 using FileTracert.Contracts.Enums;
 using FileTracert.Data;
 using FileTracert.Data.Entities;
@@ -94,16 +94,22 @@ public sealed class JobSnapshotRefresher
     ///
     /// <para>The job's SHAPE is never changed here, only the drive it names:</para>
     /// <list type="bullet">
-    ///   <item>an intra-volume job (a rename, an intra move) moves both ends together and stays
-    ///     intra — it needs no reservation either way;</item>
-    ///   <item>a cross-volume job whose new source is still not the destination stays cross; the
-    ///     callers (<c>BlockedJobRevaluator.UnblockAsync</c>, <c>QueueService.RetryAsync</c>)
-    ///     re-run release-then-reserve straight after this, so the ledger's liberation entry
-    ///     follows the new source volume by itself;</item>
-    ///   <item>a cross-volume job whose source has landed ON its destination would stop being a
-    ///     copy at all — a different operation, with a reservation that no longer means anything.
-    ///     That one is reported as a problem, so the job stays <c>Blocked</c> with a message the
-    ///     user can act on rather than being silently rewritten into a job they never asked for.</item>
+    /// <list type="bullet">
+    ///   <item>a RENAME derives its destination from the refreshed source (see
+    ///     <see cref="RefreshItemAsync"/>), so both ends travel with the file and the operation
+    ///     stays the one the user asked for. It needs no reservation either way;</item>
+    ///   <item>a MOVE's destination is a place the user picked, on a volume they picked — it
+    ///     follows the source nowhere. A cross-volume move whose new source is still not the
+    ///     destination keeps that destination and stays cross; the callers
+    ///     (<c>BlockedJobRevaluator.UnblockAsync</c>, <c>QueueService.RetryAsync</c>) re-run
+    ///     release-then-reserve straight after this, so the ledger's liberation entry follows the
+    ///     new source volume by itself;</item>
+    ///   <item>every other move is reported as a problem instead of being rewritten. A move whose
+    ///     source has landed ON its own destination would stop being a copy at all; an
+    ///     <b>intra-volume</b> move whose file has left that volume would silently land on a drive
+    ///     the user never chose, because its <c>TargetRelativePath</c> is a path they picked on the
+    ///     old volume and nothing in it names a drive. Both stay <c>Blocked</c> with a message the
+    ///     user can act on — §4, a recoverable condition, never <c>Failed</c>.</item>
     /// </list>
     /// </summary>
     private async Task<string?> FollowSourceVolumeAsync(
@@ -120,10 +126,24 @@ public sealed class JobSnapshotRefresher
         var volumeId = resolvedVolumes.Single();
         if (job.SourceVolumeId == volumeId) return null;
 
-        if (!job.IsIntraVolume && job.TargetVolumeId == volumeId)
-            return $"Il file è stato spostato sul volume di destinazione ({volumeId}) da " +
-                   "un'altra operazione: lo spostamento richiesto non ha più senso. " +
-                   "Annullare l'operazione o riprovarla verso un'altra destinazione.";
+        var isRename = job.Type is JobType.RenameFile or JobType.RenameFolder;
+        if (!isRename)
+        {
+            // A move keeps the destination the user chose. If the file is already there, the move
+            // has nothing left to do; if the move was planned WITHIN the volume the file has just
+            // left, its destination path names a place on that old drive and following the file
+            // would drop it somewhere nobody asked for.
+            if (job.TargetVolumeId == volumeId)
+                return $"Il file è stato spostato sul volume di destinazione ({volumeId}) da " +
+                       "un'altra operazione: lo spostamento richiesto non ha più senso. " +
+                       "Annullare l'operazione o riprovarla verso un'altra destinazione.";
+
+            if (job.IsIntraVolume)
+                return $"Il file non si trova più sul volume ({job.SourceVolumeId}) su cui questo " +
+                       $"spostamento era stato pianificato, ma sul volume {volumeId}: la " +
+                       "destinazione scelta non esiste più dove doveva. Annullare l'operazione o " +
+                       "riprovarla scegliendo di nuovo la destinazione.";
+        }
 
         _logger.LogInformation(
             "Job {Id}: its file(s) now live on volume {New} instead of {Old} — following them.",
@@ -134,11 +154,9 @@ public sealed class JobSnapshotRefresher
         // reads job.SourceVolume after this (a label, a log line) describes the old drive.
         job.SourceVolume = await _db.Volumes.FirstOrDefaultAsync(v => v.Id == volumeId, ct);
 
-        if (job.IsIntraVolume)
-        {
-            job.TargetVolumeId = volumeId;
-            job.TargetVolume = job.SourceVolume;
-        }
+        // A rename happens where the file is: both ends of an in-place operation travel together.
+        job.TargetVolumeId = volumeId;
+        job.TargetVolume = job.SourceVolume;
 
         return null;
     }

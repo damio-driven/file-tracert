@@ -1,4 +1,4 @@
-using FileTracert.Business.Scanning;
+﻿using FileTracert.Business.Scanning;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Notifications;
 using FileTracert.Contracts.Platform;
@@ -690,6 +690,55 @@ public sealed class ScanServiceTests
         (await read.Files.Select(f => f.Name).ToListAsync()).Should().BeEquivalentTo("ok.jpg");
         (await read.Directories.Where(d => d.IsMaterialized).Select(d => d.MaterializedPath).ToListAsync())
             .Should().BeEquivalentTo("", "Photos");
+    }
+
+    /// <summary>
+    /// What happens to a row that was ALREADY indexed when the folder becomes hidden. Pinned
+    /// rather than asserted as desirable: the file is dropped from the scan lists, so the absent
+    /// pass stamps it <c>IsPresent = false</c> — which §6 defines as "no longer on disk", while
+    /// this file is very much still there. The honest flag for a FILTER decision is
+    /// <c>IsIncluded = false</c> (§4, reconciliation, never a delete).
+    ///
+    /// Not fixed here: routing filter-driven drops through the inclusion flag means carrying the
+    /// excluded set into the merge and the absent pass, which is <c>IBulkIndexWriter</c> surface.
+    /// It is the same lie already recorded in the roadmap for files outside the watched roots.
+    /// The row is never deleted either way, and re-widening the filter plus one scan restores it —
+    /// so this test exists to make the behaviour deliberate and visible, not to bless it.
+    /// </summary>
+    [Fact]
+    public async Task A_row_indexed_before_the_folder_became_hidden_is_flagged_absent_not_excluded()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, VolumeScanEngine.Enumeration, "exFAT", ["jpg"]);
+
+        ScanEntry Secret(FileAttributes dirAttributes) =>
+            new(@"Secret", "Secret", true, 0, T, T, dirAttributes);
+        var file = new ScanEntry(@"Secret\a.jpg", "a.jpg", false, 20, T, T, FileAttributes.Normal);
+
+        async Task ScanWith(params ScanEntry[] entries)
+        {
+            await using var ctx = harness.CreateContext();
+            var sut = Build(harness, ctx,
+                new FakeVolumeProbe(ProbedFor("exFAT")),
+                new FakeUsnReader([], 0),
+                new FakeDirectoryEnumerator(entries),
+                new FakeFileMetadataReader(new Dictionary<string, FileMetadata>()));
+            await sut.ScanVolumeAsync(volumeId, CancellationToken.None);
+        }
+
+        // First scan: the folder is ordinary, the file is indexed.
+        await ScanWith(Secret(FileAttributes.Directory), file);
+        await using (var read = harness.CreateContext())
+            (await read.Files.SingleAsync()).IsIncluded.Should().BeTrue("arrange");
+
+        // Someone hides the folder; nothing else changes.
+        await ScanWith(Secret(FileAttributes.Directory | FileAttributes.Hidden), file);
+
+        await using var probe = harness.CreateContext();
+        var row = await probe.Files.SingleAsync();
+        row.Should().NotBeNull("no hard-delete, whatever the flag says (§6)");
+        row.IsPresent.Should().BeFalse("today's behaviour — see the known limit");
+        row.IsIncluded.Should().BeTrue("today's behaviour: the filter decision is NOT recorded here");
     }
 
     /// <summary>

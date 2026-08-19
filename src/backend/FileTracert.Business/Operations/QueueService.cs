@@ -314,11 +314,28 @@ public sealed class QueueService : IQueueService
 
         await using var tx = await _db.Database.BeginTransactionAsync(ct);
 
+        var before = JobPathSnapshot.Of(job);
+
         if (conflict is null)
         {
             // Fresh snapshots before anything is committed (finding 8a): the paths this job was
             // queued with may name places the jobs it waited for have since moved.
             problem = await _unblocker.RefreshSnapshotsAsync(job, ct);
+        }
+
+        if (problem is not null)
+        {
+            // The refresh rewrote item paths (and possibly the job's volume) BEFORE it hit the
+            // thing it could not resolve, and this method saves on the same tracked context — so
+            // without this those half-applied edits would be committed alongside the Blocked
+            // state. A job whose items name a path on one volume while the job names another is
+            // exactly what PendingWorkGuard reads: a phantom claim that can park an unrelated,
+            // legitimate job until the next release rewrites it.
+            //
+            // The snapshot is put back by hand rather than by reloading the rows: this method has
+            // already reset item states and cleared TempPath above (the partials are physically
+            // gone), and a reload would resurrect those values along with the paths.
+            before.Restore(job);
         }
 
         if (conflict is not null || problem is not null)
@@ -393,6 +410,37 @@ public sealed class QueueService : IQueueService
         await _realtime.ProjectionChangedAsync(job);
 
         return MapToDto(job, [.. job.Items], null);
+    }
+
+    /// <summary>
+    /// What a refresh is allowed to rewrite: the job's volumes, its destination, and every item's
+    /// source/target path. Captured before <c>RefreshSnapshotsAsync</c> so a refresh that gives up
+    /// halfway can be undone precisely, without disturbing the item states and <c>TempPath</c>s the
+    /// retry has already reset (a blanket row reload would put those back too).
+    /// </summary>
+    private sealed record JobPathSnapshot(
+        int? SourceVolumeId,
+        int? TargetVolumeId,
+        string? TargetRelativePath,
+        IReadOnlyList<(OperationJobItem Item, string Source, string Target)> Items)
+    {
+        public static JobPathSnapshot Of(OperationJob job) => new(
+            job.SourceVolumeId,
+            job.TargetVolumeId,
+            job.TargetRelativePath,
+            [.. job.Items.Select(i => (i, i.SourceRelativePath, i.TargetRelativePath))]);
+
+        public void Restore(OperationJob job)
+        {
+            job.SourceVolumeId = SourceVolumeId;
+            job.TargetVolumeId = TargetVolumeId;
+            job.TargetRelativePath = TargetRelativePath;
+            foreach (var (item, source, target) in Items)
+            {
+                item.SourceRelativePath = source;
+                item.TargetRelativePath = target;
+            }
+        }
     }
 
     private void CleanupPartials(OperationJob job)

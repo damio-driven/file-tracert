@@ -710,8 +710,71 @@ public sealed class JobDependencyTests : IDisposable
 
         var parked = await ReloadJobAsync(second.Id);
         parked.State.Should().Be(JobState.Blocked);
+        parked.BlockReason.Should().Be(JobBlockReason.DependencyPending,
+            "the job keeps the reason it was parked under; the message carries the detail");
         parked.SourceVolumeId.Should().Be(Vol1Id, "nothing is rewritten while the job stays parked");
-        parked.ErrorMessage.Should().Contain("volume");
+        parked.TargetVolumeId.Should().Be(Vol2Id);
+        parked.ErrorMessage.Should().Contain("volume di destinazione");
+    }
+
+    /// <summary>
+    /// The other shape that must NOT be followed. An intra-volume move's
+    /// <c>TargetRelativePath</c> is a path the user picked on THAT volume; nothing in it names a
+    /// drive. Carrying the job to wherever the file went would quietly write real files onto a
+    /// drive nobody chose — so it parks with a message instead.
+    /// </summary>
+    [Fact]
+    public async Task An_intra_move_whose_file_left_the_volume_is_parked_not_redirected()
+    {
+        var cross = await MoveFileAsync(ReportId, "Backup", Vol2Id);      // Vol1 -> Vol2
+        var intra = await MoveFileAsync(ReportId, "Media", Vol1Id);       // stays on Vol1
+        ShouldDependOn(intra, cross);
+        (await ReloadJobAsync(intra.Id)).IsIntraVolume.Should().BeTrue("arrange");
+
+        await EngineWith(WorkingMover()).ExecuteJobAsync(cross.Id, None);
+        (await ReloadJobAsync(cross.Id)).State.Should().Be(JobState.Completed);
+
+        (await Revaluator().RevaluateAsync(None)).Should().Be(0);
+
+        var parked = await ReloadJobAsync(intra.Id);
+        parked.State.Should().Be(JobState.Blocked);
+        parked.SourceVolumeId.Should().Be(Vol1Id, "the destination the user chose is on this volume");
+        parked.TargetVolumeId.Should().Be(Vol1Id);
+        parked.ErrorMessage.Should().Contain("pianificato");
+    }
+
+    /// <summary>
+    /// «Riprova» on a job the refresh cannot resolve must leave NO trace of the half-applied
+    /// rewrite. The refresher rewrites item paths as it goes and only then discovers it cannot
+    /// follow the job's volume; the retry saves on the same tracked context, so without an
+    /// explicit undo the committed row would name a path on one volume while the job names
+    /// another — and that pair is exactly what PendingWorkGuard reads as a claim.
+    /// </summary>
+    [Fact]
+    public async Task A_retry_whose_refresh_gives_up_commits_no_half_rewritten_snapshot()
+    {
+        var cross = await MoveFileAsync(ReportId, "Backup", Vol2Id);
+        var intra = await MoveFileAsync(ReportId, "Media", Vol1Id);
+        ShouldDependOn(intra, cross);
+
+        await EngineWith(WorkingMover()).ExecuteJobAsync(cross.Id, None);
+
+        OperationJobItem itemBefore;
+        using (var db = _harness.CreateContext())
+            itemBefore = await db.OperationJobItems.AsNoTracking().FirstAsync(i => i.JobId == intra.Id, None);
+
+        var retried = await Svc().RetryAsync(intra.Id, None);
+        retried.State.Should().Be(nameof(JobState.Blocked));
+
+        using var probe = _harness.CreateContext();
+        var itemAfter = await probe.OperationJobItems.AsNoTracking().FirstAsync(i => i.JobId == intra.Id, None);
+        itemAfter.SourceRelativePath.Should().Be(itemBefore.SourceRelativePath,
+            "a refresh that gave up must not leave the file's path pointing at another volume");
+        itemAfter.TargetRelativePath.Should().Be(itemBefore.TargetRelativePath);
+
+        var jobAfter = await ReloadJobAsync(intra.Id);
+        jobAfter.SourceVolumeId.Should().Be(Vol1Id);
+        jobAfter.TargetVolumeId.Should().Be(Vol1Id);
     }
 
     /// <summary>A mover that behaves like a healthy NTFS pair, so the cross-volume machine can run.</summary>

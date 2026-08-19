@@ -76,6 +76,12 @@ public sealed class IndexUpdater
     /// leaves the allow-list flips <c>IsIncluded</c> to false — never a delete — and one that
     /// comes back in is re-included. The search index follows in the same direction, because an
     /// excluded row that stayed in FTS would still be a hit.
+    ///
+    /// <para><b>Known gap:</b> <c>ShouldIncludeFile</c> is no longer the WHOLE scan rule — since
+    /// the inherited-exclusion fix a scan also drops anything under an excluded folder. A rename
+    /// of such a file would re-include it here. Narrow, because after that fix no such row is
+    /// written any more; it can only be met in a catalog an older build produced, and the next
+    /// scan puts it back.</para>
     /// </summary>
     private async Task RenameFileIndexAsync(OperationJob job, CancellationToken ct)
     {
@@ -99,7 +105,10 @@ public sealed class IndexUpdater
 
         await _db.SaveChangesAsync(ct);
 
-        if (file.IsIncluded)
+        // Both flags, because both are what the index itself requires (FileSearchIndex's
+        // IndexableSql): a row still flagged absent — the refresher lets those through on purpose
+        // — would otherwise get an entry the next prune immediately deletes.
+        if (file.IsIncluded && file.IsPresent)
             await _fts.UpsertAsync(file.Id, file.Name, item.TargetRelativePath, ct);
         else
             await _fts.RemoveAsync(file.Id, ct);
