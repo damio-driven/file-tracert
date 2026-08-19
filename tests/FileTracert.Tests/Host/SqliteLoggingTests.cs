@@ -3,6 +3,7 @@ using FileTracert.Contracts.Logging;
 using FileTracert.Contracts.Paging;
 using FileTracert.Data.Logging;
 using FileTracert.Host.Logging;
+using FileTracert.Tests.Infrastructure;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
 
@@ -107,19 +108,10 @@ public sealed class SqliteLoggingTests : IDisposable
     private Task<PagedResult<LogEntryDto>> Query() =>
         _store.QueryAsync(new LogQuery(0, 50), CancellationToken.None);
 
-    public void Dispose()
-    {
-        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-        foreach (var suffix in new[] { "", "-wal", "-shm" })
-        {
-            try
-            {
-                File.Delete(_dbPath + suffix);
-            }
-            catch
-            {
-                // best-effort temp cleanup
-            }
-        }
-    }
+    /// <summary>
+    /// Releases only this store's own pool: clearing every pool in the process would dispose
+    /// the native handle of whatever another test class is querying (see
+    /// <see cref="SqliteTestDatabase"/>).
+    /// </summary>
+    public void Dispose() => SqliteTestDatabase.Delete(_dbPath);
 }

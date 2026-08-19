@@ -3,6 +3,7 @@ using FileTracert.Data;
 using FileTracert.Host.Infrastructure;
 using FileTracert.Host.Workers;
 using FileTracert.Tests.Business;
+using FileTracert.Tests.Infrastructure;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
@@ -19,6 +20,17 @@ namespace FileTracert.Tests.Host;
 public sealed class FileTracertAppFactory : WebApplicationFactory<global::Program>
 {
     private readonly string _dbPath = Path.Combine(Path.GetTempPath(), $"ft-test-{Guid.NewGuid():N}.db");
+
+    /// <summary>The temporary main database this host runs on. Deleted on dispose.</summary>
+    public string DatabasePath => _dbPath;
+
+    /// <summary>
+    /// The dedicated log database the host derives from <see cref="DatabasePath"/> — same rule
+    /// as <c>DatabaseLocation.ResolveLogs</c>, so teardown releases the pool the host really used.
+    /// </summary>
+    public string LogDatabasePath => Path.Combine(
+        Path.GetDirectoryName(_dbPath)!,
+        Path.GetFileNameWithoutExtension(_dbPath) + "-logs.db");
 
     public IVolumeProbe Probe { get; set; } = new FakeVolumesProbe([]);
     public IUsnReader UsnReader { get; set; } = new FakeUsnReader([], 0);
@@ -121,26 +133,9 @@ public sealed class FileTracertAppFactory : WebApplicationFactory<global::Progra
         base.Dispose(disposing);
         if (disposing)
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-
-            var logsPath = Path.Combine(
-                Path.GetDirectoryName(_dbPath)!,
-                Path.GetFileNameWithoutExtension(_dbPath) + "-logs.db");
-
-            foreach (var basePath in new[] { _dbPath, logsPath })
-            {
-                foreach (var suffix in new[] { "", "-wal", "-shm" })
-                {
-                    try
-                    {
-                        File.Delete(basePath + suffix);
-                    }
-                    catch
-                    {
-                        // best-effort temp cleanup
-                    }
-                }
-            }
+            // Only this host's two databases: the pool registry is process-wide and other
+            // test classes are querying theirs right now (see SqliteTestDatabase).
+            SqliteTestDatabase.Delete(DatabasePath, LogDatabasePath);
         }
     }
 

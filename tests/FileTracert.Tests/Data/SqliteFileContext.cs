@@ -1,5 +1,6 @@
 using FileTracert.Data;
 using FileTracert.Data.Interceptors;
+using FileTracert.Tests.Infrastructure;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
@@ -45,19 +46,12 @@ public sealed class SqliteFileContext : IDisposable
         return new FileTracertDbContext(builder.Options);
     }
 
-    public void Dispose()
-    {
-        SqliteConnection.ClearAllPools();
-        try
-        {
-            Directory.Delete(_dir, recursive: true);
-        }
-        catch (IOException)
-        {
-            // The file can still be mapped for a moment after the last connection closes;
-            // a leftover temp folder is harmless and must not fail the test.
-        }
-    }
+    /// <summary>
+    /// Releases only this context's own pool — clearing every pool in the process would
+    /// dispose the native handle of whatever another test class is querying (see
+    /// <see cref="SqliteTestDatabase"/>).
+    /// </summary>
+    public void Dispose() => SqliteTestDatabase.DeleteDirectory(_dir, _path);
 
     /// <summary>Same job as <see cref="SqliteBusyTimeoutInterceptor"/>, with a test-sized budget.</summary>
     private sealed class ShortBusyTimeoutInterceptor : Microsoft.EntityFrameworkCore.Diagnostics.DbConnectionInterceptor

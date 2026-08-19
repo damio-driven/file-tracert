@@ -2,6 +2,7 @@ using FileTracert.Business;
 using FileTracert.Data;
 using FileTracert.Host.Configuration;
 using FileTracert.Host.Infrastructure;
+using FileTracert.Tests.Infrastructure;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -100,12 +101,11 @@ public sealed class DatabaseInitializerTests : IDisposable
         return ((string)cmd.ExecuteScalar()!).ToLowerInvariant();
     }
 
-    public void Dispose()
-    {
-        SqliteConnection.ClearAllPools();
-        foreach (var suffix in new[] { "", "-wal", "-shm" })
-        {
-            try { File.Delete(_dbPath + suffix); } catch { /* best effort */ }
-        }
-    }
+    /// <summary>
+    /// Releases only this test's own pool. Clearing every pool in the process would dispose
+    /// the native handle of whatever another test class is querying — and, in the other
+    /// direction, would checkpoint and drop the WAL this class is measuring (see
+    /// <see cref="SqliteTestDatabase"/>).
+    /// </summary>
+    public void Dispose() => SqliteTestDatabase.Delete(_dbPath);
 }
