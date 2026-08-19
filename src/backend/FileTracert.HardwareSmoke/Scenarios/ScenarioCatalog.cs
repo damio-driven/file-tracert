@@ -27,6 +27,8 @@ public static class ScenarioCatalog
         new IndexUpdateFailOnceScenario(),
         new PhantomReservationScenario(),
         new InsufficientSpaceScenario(),
+        new LiveSpaceRecheckScenario(),
+        new SpaceMarginScenario(),
         new FifoAutoRecoveryScenario(),
         new OfflineSimulatedScenario(),
         new OfflineEnqueueBlockedScenario(),

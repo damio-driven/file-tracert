@@ -2,6 +2,7 @@ using FileTracert.Business.Filtering;
 using FileTracert.Business.Scanning;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Operations;
+using FileTracert.Contracts.Platform;
 using FileTracert.Contracts.Search;
 using FileTracert.Data.Entities;
 using FileTracert.HardwareSmoke.Harness;
@@ -165,9 +166,11 @@ public abstract class Scenario
         });
 
     /// <summary>
-    /// Rewrites a volume's last-known free bytes. The queue's feasibility is computed against this
-    /// persisted estimate (exactly as it is in production between two volume probes), so this is
-    /// how the harness puts a volume under space pressure without having to physically fill a disk.
+    /// Rewrites a volume's last-known free bytes — the estimate the catalog carries between two
+    /// volume probes. Since step 11b this is NOT how a volume is put under space pressure: the
+    /// feasibility checks read the drive itself, and this column only survives as the fallback
+    /// for a volume that cannot answer. Scenarios use it the other way round now, to plant a
+    /// stale figure and prove the check ignores it.
     /// </summary>
     protected static async Task SetVolumeFreeBytesAsync(ScenarioContext ctx, int volumeId, long freeBytes)
     {
@@ -178,6 +181,65 @@ public abstract class Scenario
             await db.SaveChangesAsync(ctx.Ct);
         });
     }
+
+    /// <summary>
+    /// Free bytes on a test volume as the DEVICE reports them right now, through the same port
+    /// the queue uses. The scenarios size their demand against this instead of filling the drive:
+    /// a fixture that has to occupy hundreds of gigabytes to be meaningful is not a test, it is
+    /// an outage, and the check under scrutiny compares demand with free space — it cannot tell
+    /// which of the two moved.
+    /// </summary>
+    protected static long LiveFreeBytes(ScenarioContext ctx, TestVolume volume) =>
+        ctx.Env.Services.GetRequiredService<IVolumeProbe>().TryGetFreeBytes(volume.VolumeGuid)
+        ?? throw new InvalidOperationException(
+            $"Test volume '{volume.Name}' ({volume.VolumeGuid}) did not answer the free-space probe.");
+
+    /// <summary>
+    /// Rewrites the indexed size of a catalog row, so the operation queued from it demands more
+    /// room than the target really has. The demand is what the product computes from this column,
+    /// so nothing downstream is faked.
+    /// </summary>
+    protected static Task SetIndexedSizeAsync(ScenarioContext ctx, int fileId, long sizeBytes) =>
+        ctx.Env.WithDbAsync(async db =>
+        {
+            var file = await db.Files.FirstAsync(f => f.Id == fileId, ctx.Ct);
+            file.SizeBytes = sizeBytes;
+            await db.SaveChangesAsync(ctx.Ct);
+        });
+
+    /// <summary>
+    /// Rewrites an already-queued job's demand on the target. This is the harness's stand-in for
+    /// "another process filled the drive after the enqueue": the execution re-check compares a
+    /// demand with the live free space, and moving either side of that comparison exercises the
+    /// same branch — while filling a real 300 GB drive for a few seconds would not.
+    /// </summary>
+    protected static Task SetJobRequiredBytesAsync(ScenarioContext ctx, int jobId, long requiredBytes) =>
+        ctx.Env.WithDbAsync(async db =>
+        {
+            var job = await db.OperationJobs.FirstAsync(j => j.Id == jobId, ctx.Ct);
+            job.RequiredBytesTarget = requiredBytes;
+            await db.SaveChangesAsync(ctx.Ct);
+        });
+
+    /// <summary>Sets the §4 safety margin the hard check adds on top of the demand.</summary>
+    protected static Task SetSpaceMarginPercentAsync(ScenarioContext ctx, int percent) =>
+        ctx.Env.WithDbAsync(async db =>
+        {
+            var settings = await db.AppSettings.FirstOrDefaultAsync(ctx.Ct);
+            if (settings is null)
+            {
+                db.AppSettings.Add(new AppSettings
+                {
+                    ApiToken = "harness", SpaceMarginPercent = percent,
+                    DefaultExtensionFilter = [], ExcludedPaths = [],
+                });
+            }
+            else
+            {
+                settings.SpaceMarginPercent = percent;
+            }
+            await db.SaveChangesAsync(ctx.Ct);
+        });
 
     /// <summary>Flips a volume's online flag, the way the volume sync does when a drive disappears.</summary>
     protected static async Task SetVolumeOnlineAsync(ScenarioContext ctx, int volumeId, bool isOnline)

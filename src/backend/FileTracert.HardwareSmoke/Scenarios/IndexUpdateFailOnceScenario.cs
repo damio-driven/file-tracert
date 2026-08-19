@@ -22,7 +22,7 @@ public sealed class IndexUpdateFailOnceScenario : Scenario
     public override string Name => "index-update-fail-once";
 
     public override string Description =>
-        "FTS upsert fails once during completion: the job still ends Completed, space folded once.";
+        "FTS upsert fails once during completion: the job still ends Completed, the space estimate untouched.";
 
     public override PairRequirement Requires => PairRequirement.Cross;
 
@@ -36,7 +36,10 @@ public sealed class IndexUpdateFailOnceScenario : Scenario
 
         // ── arrange ───────────────────────────────────────────────────────────
         const string relative = @"docs\atomic.bin";
-        var sourceAbsolute = ctx.Source.CreateFile(relative, 128 * 1024);
+        // 64 MB, not a token file: the space assertion below compares the stored estimate with
+        // the device inside a tolerance, and the fixture has to be bigger than the noise a real
+        // drive produces under other processes for a folded job size to be visible at all.
+        var sourceAbsolute = ctx.Source.CreateFile(relative, 64L * 1024 * 1024);
         var expectedHash = ScenarioAssertions.Sha256(sourceAbsolute);
 
         await ctx.IndexSourceAsync(AllowEverything());
@@ -48,12 +51,13 @@ public sealed class IndexUpdateFailOnceScenario : Scenario
         }
 
         var job = await ctx.Queue.EnqueueAsync(MoveFileTo(ctx, fileRow.Id), ctx.Ct);
-        var freeBefore = await ctx.Env.WithDbAsync(db =>
-            db.Volumes.Where(v => v.Id == ctx.TargetVolumeId)
-                .Select(v => v.FreeBytesLastKnown).SingleAsync(ctx.Ct));
 
         // The indexing arrange above must not consume the injected failure.
         _latch.Arm();
+
+        // What the device holds just before the job runs — which is what the hard re-check is
+        // about to measure and store. Nothing after that point may change the column.
+        long freeBeforeRun = LiveFreeBytes(ctx, ctx.Target.Volume);
 
         // ── act ───────────────────────────────────────────────────────────────
         await ctx.Queue.StartWorkerAsync(ctx.Ct);
@@ -72,12 +76,20 @@ public sealed class IndexUpdateFailOnceScenario : Scenario
         ctx.Assert.FileMissing(sourceAbsolute, "source after the completed move");
         AssertNoPartialsAnywhere(ctx);
 
-        // Space fold exactly once across the internal retry.
+        // The stored estimate is a measurement, never a running total: the completion — and the
+        // retry it went through — must leave it where the re-check's probe put it, i.e. at what
+        // the drive held when the job started. A tolerance, because a real drive keeps moving
+        // under other processes; a fold applied once (let alone twice) would be off by the job
+        // size, far outside it.
         var freeAfter = await ctx.Env.WithDbAsync(db =>
             db.Volumes.Where(v => v.Id == ctx.TargetVolumeId)
                 .Select(v => v.FreeBytesLastKnown).SingleAsync(ctx.Ct));
-        ctx.Assert.Equal(freeBefore - finished.RequiredBytesTarget, freeAfter,
-            "target FreeBytesLastKnown folded exactly once");
+        long tolerance = 16L * 1024 * 1024;
+        ctx.Assert.True(
+            Math.Abs(freeBeforeRun - freeAfter) <= tolerance,
+            $"target FreeBytesLastKnown must hold the figure measured when the job started, not " +
+            $"one with the job's {finished.RequiredBytesTarget:N0} B folded into it (device held " +
+            $"{freeBeforeRun:N0} B, row says {freeAfter:N0} B)");
 
         // The index update did land on the successful attempt.
         await AssertCatalogHasFileAsync(ctx, ctx.TargetVolumeId,

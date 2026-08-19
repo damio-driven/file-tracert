@@ -152,11 +152,13 @@ di ogni assert fallito (con i path concreti) e dalle note del run.
 | `rescan-preserves-overlay` | qualsiasi | Seconda scansione completa: `Files.Id`/`Directories.Id` invariati, overlay `Pending*` intatto, file sparito marcato `IsPresent=false` (mai cancellato), FTS aggiornata, job ancora eseguibile sulla riga ri-scansionata. **È l'unico scenario che esegue una scansione vera del volume: il più lento.** |
 | `index-update-fail-once` | cross | Upsert FTS fallisce una volta durante il completamento: il commit atomico fa retry, il job chiude `Completed`, spazio decrementato una sola volta. |
 | `phantom-reservation-rebuild` | cross | Riserva ledger orfana su job terminale (crash footprint): riconciliata al rebuild di startup, la feasibility torna corretta. |
-| `insufficient-space` | cross | Job che non ci sta: `Blocked(InsufficientSpace)`, **non** `Failed`, niente copiato. |
-| `fifo-auto-recovery` | cross | Il job A libera lo spazio che serve a B: B completa **da solo**, senza retry manuale. |
+| `insufficient-space` | cross | Job più grande di quanto il drive abbia **davvero**: `Blocked(InsufficientSpace)`, **non** `Failed`, niente copiato. |
+| `live-space-recheck` | cross | Lo spazio sparisce **dopo** l'enqueue: il ricontrollo di esecuzione parcheggia il job invece di copiare a metà, poi il job riparte da solo. |
+| `space-margin` | cross | `AppSettings.SpaceMarginPercent` muove qualcosa: un job che ci starebbe esatto viene parcheggiato dal margine e parte con margine 0. |
+| `fifo-auto-recovery` | cross | Il job B, bloccato dietro lo spazio che il job A ha già prenotato, completa **da solo** dopo A, senza retry manuale. |
 | `offline-simulated` | cross | Volume di destinazione marcato offline nel catalogo: il job **attende** (mai `Failed`) e parte da solo quando torna online. |
 | `offline-enqueue-blocked` | cross | Enqueue con la destinazione offline: job **nato** `Blocked(TargetVolumeOffline)`, stima non live, **riserva mantenuta**, worker che lo ignora, niente sul target. |
-| `offline-remount-space-recheck` | cross | Il volume torna più pieno della stima: il ricontrollo **hard** lo tiene `Blocked(InsufficientSpace)` invece di copiare; quando lo spazio c'è davvero completa da solo. |
+| `offline-remount-space-recheck` | cross | Il volume torna senza lo spazio che la stima prometteva: il ricontrollo **hard** lo tiene `Blocked(InsufficientSpace)` invece di copiare; quando lo spazio c'è davvero completa da solo. |
 | `offline-unplug` | cross, `SemiAutomatic` | L'operatore stacca fisicamente il drive esterno: il job sopravvive e completa al ricollegamento, anche con lettera diversa (la coda segue il Volume GUID). Dallo step 10a il ricollegamento è **rilevato dal device watcher reale** (nessuna sincronizzazione manuale nella seconda metà) e il tempo *ricollegamento → job terminale* è **asserito**: oltre 25 s è FAIL con il numero in chiaro. |
 
 ### Scenari attesi RED
@@ -189,6 +191,17 @@ interromperlo: lo scenario riporta **SKIP** con la spiegazione e il rimedio (alz
 ---
 
 ## Limiti noti
+
+- **Gli scenari di spazio non riempiono il drive.** Dallo step 11b la fattibilità legge i byte
+  liberi **dal dispositivo**, quindi abbassare `FreeBytesLastKnown` non mette più sotto pressione
+  niente: la scarsità si arrangia sul lato **domanda** (dimensione indicizzata del file, oppure
+  `RequiredBytesTarget` del job già accodato, che è il modo dell'harness di dire «un altro
+  processo ha riempito il disco dopo l'enqueue»). È lo stesso confronto — domanda contro spazio
+  libero reale — visto dall'altro capo, e non richiede di portare a zero un volume da centinaia
+  di GB per qualche secondo: una zavorra del genere non è un test, è un disservizio, e se il
+  processo muore in mezzo il drive resta pieno. La stima memorizzata viene lasciata
+  **deliberatamente ottimista** in questi scenari: con il vecchio codice sarebbe bastata a far
+  partire la copia, quindi il PASS dice anche che quel numero non viene più creduto.
 
 - La verifica "il file è nel cestino" si ferma a *"non è più al suo path"* più il fatto che
   il volume abbia un cestino funzionante (`IFileMover.CanRecycle`): enumerare

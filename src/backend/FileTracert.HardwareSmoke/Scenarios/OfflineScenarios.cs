@@ -213,8 +213,14 @@ public sealed class OfflineRemountSpaceRecheckScenario : Scenario
 
         ctx.Assert.Equal("Blocked", job.State, "state at enqueue against the offline volume");
 
-        // ── act 1: the drive is back, but it came back nearly full ────────────
-        await SetVolumeFreeBytesAsync(ctx, ctx.TargetVolumeId, size / 2);
+        // ── act 1: the drive is back, but it came back without the room ───────
+        // Pressure is arranged on the demand side (step 11b: the check reads the device, so
+        // shrinking the stored estimate would prove nothing), and the estimate is left saying
+        // the opposite — a check that trusted it would copy and run out of disk mid-file.
+        long freeNow = LiveFreeBytes(ctx, ctx.Target.Volume);
+        long impossible = freeNow + (16L * 1024 * 1024 * 1024);
+        await SetJobRequiredBytesAsync(ctx, job.Id, impossible);
+        await SetVolumeFreeBytesAsync(ctx, ctx.TargetVolumeId, impossible * 2);
         await SetVolumeOnlineAsync(ctx, ctx.TargetVolumeId, isOnline: true);
         await OfflineSimulatedScenario.RevaluateAndSignalAsync(ctx);
         await Task.Delay(TimeSpan.FromSeconds(2), ctx.Ct);
@@ -232,7 +238,7 @@ public sealed class OfflineRemountSpaceRecheckScenario : Scenario
         AssertNoPartialsAnywhere(ctx);
 
         // ── act 2: the room is really there → it runs on its own ──────────────
-        await SetVolumeFreeBytesAsync(ctx, ctx.TargetVolumeId, size * 4);
+        await SetJobRequiredBytesAsync(ctx, job.Id, size);
         await OfflineSimulatedScenario.RevaluateAndSignalAsync(ctx);
 
         var finished = await ctx.Queue.WaitForTerminalAsync(job.Id, ctx.Timeout, ctx.Ct);
