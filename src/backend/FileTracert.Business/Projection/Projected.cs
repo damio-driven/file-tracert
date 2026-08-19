@@ -1,4 +1,4 @@
-using FileTracert.Business.Scanning;
+using FileTracert.Contracts.Scanning;
 using FileTracert.Data.Entities;
 
 namespace FileTracert.Business.Projection;

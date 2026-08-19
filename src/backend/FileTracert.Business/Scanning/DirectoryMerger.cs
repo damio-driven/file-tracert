@@ -1,6 +1,7 @@
-using FileTracert.Data;
+using FileTracert.Contracts.Scanning;
 using FileTracert.Data.Entities;
 using FileTracert.Data.Indexing;
+using FileTracert.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 

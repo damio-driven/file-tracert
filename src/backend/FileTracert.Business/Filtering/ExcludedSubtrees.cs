@@ -1,4 +1,4 @@
-﻿using FileTracert.Business.Scanning;
+﻿using FileTracert.Contracts.Scanning;
 
 namespace FileTracert.Business.Filtering;
 

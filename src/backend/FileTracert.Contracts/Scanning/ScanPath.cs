@@ -1,8 +1,15 @@
-namespace FileTracert.Business.Scanning;
+namespace FileTracert.Contracts.Scanning;
 
 /// <summary>
 /// Pure helpers for volume-relative paths (always normalized to backslash, no
 /// leading/trailing separator; the empty string is the volume root).
+///
+/// <para>Lives in the shared kernel (§3) because the rule it owns is not a scan detail: the same
+/// spelling of "normalize", "join" and "does this path sit inside that one" has to hold in
+/// <c>Business</c> (scan, enqueue guard, projection), in <c>Host</c> (the search result paths) and
+/// in <c>Platform</c> (the folder browser). Every layer that reimplemented one of them by hand
+/// drifted — K5 and K6 are the two times it already happened. <c>Contracts</c> depends on nothing,
+/// which is exactly what a string helper everybody needs can afford.</para>
 /// </summary>
 public static class ScanPath
 {

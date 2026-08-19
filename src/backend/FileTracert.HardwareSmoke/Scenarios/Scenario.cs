@@ -3,6 +3,7 @@ using FileTracert.Business.Scanning;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Operations;
 using FileTracert.Contracts.Platform;
+using FileTracert.Contracts.Scanning;
 using FileTracert.Contracts.Search;
 using FileTracert.Data.Entities;
 using FileTracert.HardwareSmoke.Harness;
@@ -94,7 +95,7 @@ public abstract class Scenario
                 .ToListAsync(ctx.Ct);
 
             return rows.FirstOrDefault(f => string.Equals(
-                Business.Scanning.ScanPath.Join(f.Directory.MaterializedPath, f.Name),
+                ScanPath.Join(f.Directory.MaterializedPath, f.Name),
                 volumeRelativePath,
                 StringComparison.OrdinalIgnoreCase));
         });

@@ -1,4 +1,4 @@
-using FileTracert.Business.Scanning;
+using FileTracert.Contracts.Scanning;
 using FluentAssertions;
 
 namespace FileTracert.Tests.Business;

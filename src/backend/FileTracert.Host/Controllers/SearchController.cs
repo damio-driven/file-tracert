@@ -1,7 +1,7 @@
 using FileTracert.Business.Projection;
-using FileTracert.Business.Scanning;
 using FileTracert.Contracts.Dtos;
 using FileTracert.Contracts.Paging;
+using FileTracert.Contracts.Scanning;
 using FileTracert.Contracts.Search;
 using FileTracert.Data;
 using Microsoft.AspNetCore.Mvc;

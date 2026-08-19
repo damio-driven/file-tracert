@@ -1,9 +1,9 @@
 using FileTracert.Business.Operations;
-using FileTracert.Business.Scanning;
 using FileTracert.Contracts.Enums;
+using FileTracert.Contracts.Scanning;
 using FileTracert.Contracts.Search;
-using FileTracert.Data;
 using FileTracert.Data.Entities;
+using FileTracert.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 

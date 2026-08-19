@@ -1,6 +1,6 @@
-using FileTracert.Business.Scanning;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Operations;
+using FileTracert.Contracts.Scanning;
 using FileTracert.Contracts.Search;
 using Microsoft.Extensions.DependencyInjection;
 

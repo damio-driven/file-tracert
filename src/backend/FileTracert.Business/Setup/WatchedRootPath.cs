@@ -1,3 +1,5 @@
+using FileTracert.Contracts.Scanning;
+
 namespace FileTracert.Business.Setup;
 
 /// <summary>
@@ -10,7 +12,12 @@ public static class WatchedRootPath
 {
     private static readonly char[] Separators = ['\\', '/'];
 
-    public static string Normalize(string path) => path.Replace('/', '\\').Trim('\\');
+    /// <summary>
+    /// The normalized form is not a second rule: it is <see cref="ScanPath.Normalize"/>, the one
+    /// the scan, the enqueue and the projection already agree on. The two spellings were
+    /// byte-identical (K6) and only stayed that way by luck.
+    /// </summary>
+    public static string Normalize(string path) => ScanPath.Normalize(path);
 
     /// <summary>
     /// Validates and normalizes a candidate path. Rejects absolute/UNC/drive-qualified
@@ -60,27 +67,11 @@ public static class WatchedRootPath
     /// <summary>
     /// True when two normalized roots cannot coexist: equal, or one is an ancestor
     /// of the other (segment-aware, so "Foto" does not conflict with "Fotografie").
+    ///
+    /// <para>That question is <see cref="ScanPath.Overlaps"/> — the single subtree-overlap
+    /// predicate the enqueue guard already asks (K5/K6). The local copy spelled the same three
+    /// cases by hand; keeping it meant a fix to one of them would have missed the other.</para>
     /// </summary>
-    public static bool Conflicts(string existing, string candidate)
-    {
-        var a = Normalize(existing);
-        var b = Normalize(candidate);
-
-        if (string.Equals(a, b, StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        return IsAncestor(a, b) || IsAncestor(b, a);
-    }
-
-    private static bool IsAncestor(string ancestor, string descendant)
-    {
-        if (ancestor.Length == 0)
-        {
-            return true;
-        }
-
-        return descendant.StartsWith(ancestor + '\\', StringComparison.OrdinalIgnoreCase);
-    }
+    public static bool Conflicts(string existing, string candidate) =>
+        ScanPath.Overlaps(Normalize(existing), Normalize(candidate));
 }

@@ -1,7 +1,7 @@
-using FileTracert.Business.Scanning;
 using FileTracert.Contracts.Enums;
-using FileTracert.Data;
+using FileTracert.Contracts.Scanning;
 using FileTracert.Data.Entities;
+using FileTracert.Data;
 using Microsoft.EntityFrameworkCore;
 
 namespace FileTracert.Business.Projection;

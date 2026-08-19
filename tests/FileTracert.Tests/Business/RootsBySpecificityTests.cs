@@ -1,4 +1,5 @@
 using FileTracert.Business.Filtering;
+using FileTracert.Contracts.Scanning;
 using FluentAssertions;
 
 namespace FileTracert.Tests.Business;
@@ -6,7 +7,7 @@ namespace FileTracert.Tests.Business;
 /// <summary>
 /// E7 — the scan resolves the governing watched root for every enumerated item. The old shape
 /// rebuilt a <c>Where</c> + <c>OrderByDescending</c> + <c>FirstOrDefault</c> chain per item, and
-/// <see cref="FileTracert.Business.Scanning.ScanPath.IsWithin"/> allocated a <c>root + '\'</c>
+/// <see cref="FileTracert.Contracts.Scanning.ScanPath.IsWithin"/> allocated a <c>root + '\'</c>
 /// string per candidate on top of that — on a volume with three million entries that is millions
 /// of enumerators, sort buffers and strings for an answer that never changes shape.
 ///
@@ -26,7 +27,7 @@ public sealed class RootsBySpecificityTests
 
     /// <summary>The shape this replaced, kept here as the oracle the new one must agree with.</summary>
     private static string? FilterAndSort(IEnumerable<string> roots, string path) =>
-        roots.Where(r => FileTracert.Business.Scanning.ScanPath.IsWithin(path, r))
+        roots.Where(r => FileTracert.Contracts.Scanning.ScanPath.IsWithin(path, r))
              .OrderByDescending(r => r.Length)
              .FirstOrDefault();
 

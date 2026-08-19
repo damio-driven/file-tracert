@@ -2,8 +2,9 @@
 using FileTracert.Business.Operations;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Operations;
-using FileTracert.Data;
+using FileTracert.Contracts.Scanning;
 using FileTracert.Data.Entities;
+using FileTracert.Data;
 using FileTracert.Platform;
 using FileTracert.Tests.Data;
 using FluentAssertions;

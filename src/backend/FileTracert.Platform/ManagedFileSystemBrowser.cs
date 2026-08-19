@@ -1,4 +1,5 @@
 using FileTracert.Contracts.Platform;
+using FileTracert.Contracts.Scanning;
 using Microsoft.Extensions.Logging;
 
 namespace FileTracert.Platform;
@@ -27,14 +28,17 @@ internal sealed class ManagedFileSystemBrowser : IFileSystemBrowser
         var mountRoot = probed.MountPoints.FirstOrDefault()
             ?? throw new InvalidOperationException($"Volume {volumeGuid} has no mount point.");
 
-        var normalized = relativePath.Replace('/', '\\').Trim('\\');
+        // K7: normalization and volume-relative join are ScanPath's rules, not a third
+        // hand-written copy — the paths this returns end up in WatchedRoots and are matched
+        // against scan paths, so the two spellings have to be the same one.
+        var normalized = ScanPath.Normalize(relativePath);
         var absolute = normalized.Length == 0 ? mountRoot : Path.Combine(mountRoot, normalized);
 
         var result = new List<FolderNode>();
         foreach (var dir in SafeEnumerateDirectories(absolute))
         {
             var name = Path.GetFileName(dir);
-            var rel = normalized.Length == 0 ? name : $"{normalized}\\{name}";
+            var rel = ScanPath.Join(normalized, name);
             result.Add(new FolderNode(name, rel, HasSubDirectory(dir)));
         }
 

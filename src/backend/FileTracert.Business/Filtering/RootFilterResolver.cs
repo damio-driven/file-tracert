@@ -1,9 +1,9 @@
-﻿using System.Text.Json;
-using FileTracert.Business.Scanning;
-using FileTracert.Data;
+﻿using FileTracert.Contracts.Scanning;
 using FileTracert.Data.Entities;
+using FileTracert.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using System.Text.Json;
 
 namespace FileTracert.Business.Filtering;
 
