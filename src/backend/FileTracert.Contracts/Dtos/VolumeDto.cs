@@ -5,7 +5,9 @@ namespace FileTracert.Contracts.Dtos;
 /// the freshness flags the UI needs to tell live data from a last-known snapshot
 /// of an offline volume: when <see cref="IsOnline"/> is false the free/space
 /// figures are the last values seen (<see cref="LastSeenUtc"/>), not live.
-/// <c>DataIsLive</c> mirrors <see cref="IsOnline"/>; <c>IsStale</c> is its inverse.
+/// <c>DataIsLive</c> is that statement, named for what it describes: whether the numbers on
+/// this row were read live. It mirrors <see cref="IsOnline"/> today (§7 asks for one such flag;
+/// the redundant <c>IsStale</c>, its literal negation, was a third field for the same bit).
 /// </summary>
 public sealed record VolumeDto(
     int Id,
@@ -21,6 +23,5 @@ public sealed record VolumeDto(
     int FileCount,
     DateTime? LastFullScanUtc,
     bool DataIsLive,
-    bool IsStale,
     string Kind,
     bool IsCatalogable);

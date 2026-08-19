@@ -18,10 +18,8 @@ export interface VolumeDto {
   freeBytes: number;
   fileCount: number;
   lastFullScanUtc: string | null;
-  /** = isOnline. Figures are live. */
+  /** Whether the figures on this row were read live. False = a last-known snapshot. */
   dataIsLive: boolean;
-  /** = !isOnline. Free/existence are a last-known snapshot. */
-  isStale: boolean;
   kind: VolumeKind;
   /** Eligible for cataloguing (cloud/system default false; user can override). */
   isCatalogable: boolean;
@@ -49,7 +47,6 @@ export interface VolumeDetailDto {
   freeBytes: number;
   lastFullScanUtc: string | null;
   dataIsLive: boolean;
-  isStale: boolean;
   kind: VolumeKind;
   isCatalogable: boolean;
   serialNumber: string | null;
@@ -63,7 +60,7 @@ export interface VolumeDetailDto {
 }
 
 /** Coarse phase of an in-flight scan (mirrors the backend ScanPhase enum). */
-export type ScanPhase = 'Enumerating' | 'ResolvingPaths' | 'ReadingMetadata' | 'Writing' | 'Done' | 'Failed';
+export type ScanPhase = 'Enumerating' | 'ReadingMetadata' | 'Writing' | 'Done' | 'Failed';
 
 /** Live progress of one volume being scanned, polled from /api/scans/status. */
 export interface ScanStatusDto {

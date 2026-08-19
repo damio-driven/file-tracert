@@ -18,7 +18,6 @@ public sealed record VolumeDetailDto(
     long FreeBytes,
     DateTime? LastFullScanUtc,
     bool DataIsLive,
-    bool IsStale,
     string Kind,
     bool IsCatalogable,
     // --- technical identity ---

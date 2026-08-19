@@ -5,9 +5,10 @@ namespace FileTracert.Business.Volumes;
 
 /// <summary>
 /// Pure <see cref="Volume"/> → DTO mapping for the read API. Keeps the freshness
-/// rule in one place: an online volume reports live figures (<c>DataIsLive</c>),
-/// an offline one reports a last-known snapshot (<c>IsStale</c>) — free/space are
-/// the last values seen at <see cref="Volume.LastSeenUtc"/>. No DB/clock access,
+/// rule in one place: <c>DataIsLive</c> says whether the figures on this volume were read
+/// live; when it is false they are the last values seen at <see cref="Volume.LastSeenUtc"/>.
+/// One flag, not two — the old <c>IsStale</c> was its literal negation, a third field carrying
+/// the same bit as <see cref="Volume.IsOnline"/> and read by nothing (K13). No DB/clock access,
 /// so it is trivially unit-testable.
 /// </summary>
 public static class VolumeFreshnessMapper
@@ -27,7 +28,6 @@ public static class VolumeFreshnessMapper
         fileCount,
         v.LastFullScanUtc,
         DataIsLive: v.IsOnline,
-        IsStale: !v.IsOnline,
         v.Kind.ToString(),
         v.IsCatalogable);
 
@@ -50,7 +50,6 @@ public static class VolumeFreshnessMapper
         v.FreeBytesLastKnown,
         v.LastFullScanUtc,
         DataIsLive: v.IsOnline,
-        IsStale: !v.IsOnline,
         v.Kind.ToString(),
         v.IsCatalogable,
         v.SerialNumber,

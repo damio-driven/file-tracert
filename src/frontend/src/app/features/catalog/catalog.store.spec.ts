@@ -12,8 +12,7 @@ const mockVolume: VolumeDto = {
   id: 1, volumeGuid: '\\\\?\\Volume{x}\\', label: 'SSD', currentLetter: 'D:',
   fileSystem: 'NTFS', isRemovable: false, isOnline: true, lastSeenUtc: '2026-01-01T00:00:00Z',
   capacityBytes: 500_000_000_000, freeBytes: 200_000_000_000, fileCount: 1000,
-  lastFullScanUtc: '2026-01-01T00:00:00Z', dataIsLive: true, isStale: false,
-  kind: 'Fixed', isCatalogable: true,
+  lastFullScanUtc: '2026-01-01T00:00:00Z', dataIsLive: true, kind: 'Fixed', isCatalogable: true,
 };
 
 const rootChildren: CatalogChildrenDto = {

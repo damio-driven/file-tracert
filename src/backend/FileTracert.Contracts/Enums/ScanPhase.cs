@@ -8,7 +8,6 @@ namespace FileTracert.Contracts.Enums;
 public enum ScanPhase
 {
     Enumerating,
-    ResolvingPaths,
     ReadingMetadata,
     Writing,
     Done,

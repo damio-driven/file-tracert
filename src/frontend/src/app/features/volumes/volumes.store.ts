@@ -66,13 +66,13 @@ export const VolumesStore = signalStore(
       },
 
       /**
-       * `VolumeStatusChanged` push: a volume was mounted or unplugged. `dataIsLive` /
-       * `isStale` are the server's derived flags, so they move with `isOnline` here too —
-       * leaving them behind would show a last-known figure as if it were live (§ honesty).
+       * `VolumeStatusChanged` push: a volume was mounted or unplugged. `dataIsLive` is the
+       * server's derived flag, so it moves with `isOnline` here too — leaving it behind would
+       * show a last-known figure as if it were live (§ honesty).
        */
       applyVolumeStatus(message: VolumeStatusChanged): void {
         const apply = <T extends { id: number; isOnline: boolean; freeBytes: number;
-          lastSeenUtc: string; dataIsLive: boolean; isStale: boolean }>(v: T): T =>
+          lastSeenUtc: string; dataIsLive: boolean }>(v: T): T =>
           v.id === message.volumeId
             ? {
                 ...v,
@@ -80,7 +80,6 @@ export const VolumesStore = signalStore(
                 freeBytes: message.freeBytesLastKnown,
                 lastSeenUtc: message.lastSeenUtc,
                 dataIsLive: message.isOnline,
-                isStale: !message.isOnline,
               }
             : v;
 

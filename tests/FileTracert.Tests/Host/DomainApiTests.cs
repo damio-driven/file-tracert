@@ -126,7 +126,7 @@ public sealed class DomainApiTests
         alpha.DataIsLive.Should().BeTrue();
 
         var charlie = volumes.Single(v => v.Label == "Charlie");
-        charlie.IsStale.Should().BeTrue();
+        charlie.DataIsLive.Should().BeFalse();
         charlie.FreeBytes.Should().Be(128);
     }
 

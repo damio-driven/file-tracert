@@ -315,7 +315,7 @@ function volume(id: number, label: string, isOnline = true): VolumeDto {
     id, volumeGuid: '\\\\?\\Volume{' + id + '}\\', label, currentLetter: 'D:', fileSystem: 'NTFS',
     isRemovable: false, isOnline, lastSeenUtc: new Date().toISOString(),
     capacityBytes: 1000, freeBytes: 900, fileCount: 0, lastFullScanUtc: null,
-    dataIsLive: isOnline, isStale: !isOnline, kind: 'Fixed', isCatalogable: true,
+    dataIsLive: isOnline, kind: 'Fixed', isCatalogable: true,
   };
 }
 

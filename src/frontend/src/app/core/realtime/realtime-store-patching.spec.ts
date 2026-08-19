@@ -136,7 +136,6 @@ describe('VolumesStore fed by realtime', () => {
     fileCount: 5,
     lastFullScanUtc: null,
     dataIsLive: false,
-    isStale: true,
     kind: 'Removable',
     isCatalogable: true,
   });
@@ -160,7 +159,6 @@ describe('VolumesStore fed by realtime', () => {
     expect(second.freeBytes).toBe(900);
     expect(second.lastSeenUtc).toBe('2026-08-18T09:00:00Z');
     expect(second.dataIsLive).toBe(true);
-    expect(second.isStale).toBe(false);
     expect(first.isOnline).toBe(false);
   });
 });

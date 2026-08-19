@@ -4,7 +4,6 @@ import { ScanStatusDto } from '../../../core/models/catalog.models';
 
 const PHASE_LABELS: Record<ScanStatusDto['phase'], string> = {
   Enumerating: 'enumerazione',
-  ResolvingPaths: 'risoluzione percorsi',
   ReadingMetadata: 'lettura metadati',
   Writing: 'scrittura indice',
   Done: 'completata',

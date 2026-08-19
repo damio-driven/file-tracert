@@ -34,7 +34,6 @@ public sealed class VolumeFreshnessMapperTests
 
         dto.IsOnline.Should().BeTrue();
         dto.DataIsLive.Should().BeTrue();
-        dto.IsStale.Should().BeFalse();
         dto.FreeBytes.Should().Be(128);
         dto.FileCount.Should().Be(48_054);
         dto.CurrentLetter.Should().Be("H:");
@@ -48,7 +47,6 @@ public sealed class VolumeFreshnessMapperTests
         var dto = VolumeFreshnessMapper.ToDto(Sample(online: false), fileCount: 10);
 
         dto.DataIsLive.Should().BeFalse();
-        dto.IsStale.Should().BeTrue();
         // Free is the last-known snapshot, surfaced as-is for the UI to flag.
         dto.FreeBytes.Should().Be(128);
     }
@@ -66,6 +64,7 @@ public sealed class VolumeFreshnessMapperTests
         dto.WatchedRoots.Should().ContainSingle();
         dto.DirectoryCount.Should().Be(12);
         dto.IndexedBytes.Should().Be(119_000);
-        dto.IsStale.Should().BeTrue();
+        dto.DataIsLive.Should().BeFalse(
+            "the detail projection carries the same freshness statement as the list one");
     }
 }

@@ -33,7 +33,6 @@ const offline: VolumeDto = {
   fileCount: 48_054,
   lastFullScanUtc: null,
   dataIsLive: false,
-  isStale: true,
   kind: 'Removable',
   isCatalogable: true,
 };

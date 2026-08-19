@@ -21,7 +21,6 @@ const volume: VolumeDto = {
   fileCount: 5,
   lastFullScanUtc: null,
   dataIsLive: true,
-  isStale: false,
   kind: 'Fixed',
   isCatalogable: true,
 };

@@ -5,7 +5,7 @@ import { firstValueFrom } from 'rxjs';
 import { QueueApi } from '../../core/api/queue-api.service';
 import { httpErrorMessage } from '../../core/http/http-error';
 import { OperationJobDto, PagedResult } from '../../core/models/catalog.models';
-import { isActiveJobState, isQueuedJobState, isTerminalJobState } from '../../core/models/job-state';
+import { isActiveJobState, isQueuedJobState } from '../../core/models/job-state';
 import { JobProgress, JobStateChanged } from '../../core/realtime/realtime.models';
 
 interface QueueState {
@@ -55,9 +55,6 @@ export const QueueStore = signalStore(
       (store.result()?.items ?? []).filter(
         j => isQueuedJobState(j.state)
       ).length
-    ),
-    completedCount: computed(() =>
-      (store.result()?.items ?? []).filter(j => isTerminalJobState(j.state)).length
     ),
   })),
   withMethods((store, api = inject(QueueApi)) => {
