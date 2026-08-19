@@ -68,50 +68,80 @@ function runPowerShell(script: string, args: string[], logPath: string): Promise
 }
 
 /**
+ * Starts one Host process and returns its pid.
+ *
+ * The pid travels through a file, never through a pipe: `Start-Process` with file redirection
+ * hands the child every inheritable handle the launcher holds, so a pipe here would stay open for
+ * as long as the Host lives — and waiting for it would mean waiting for the service.
+ */
+async function launch(
+  workDir: string,
+  port: number,
+  databasePath: string,
+  logPath: string,
+): Promise<number> {
+  const pidPath = path.join(workDir, 'host.pid');
+  const launcherLog = path.join(workDir, 'launcher.log');
+
+  const exitCode = await runPowerShell(
+    startHostScript,
+    [
+      '-ExePath', hostExePath,
+      '-WorkingDirectory', hostProjectDir,
+      '-LogPath', logPath,
+      '-PidPath', pidPath,
+      '-Port', String(port),
+      '-DatabasePath', databasePath,
+      '-VolumeSyncIntervalSeconds', String(IDLE_INTERVAL_SECONDS),
+      '-ScanPollIntervalSeconds', String(IDLE_INTERVAL_SECONDS),
+    ],
+    launcherLog,
+  );
+
+  const pid = Number.parseInt(await readFile(pidPath, 'utf8').catch(() => ''), 10);
+  if (exitCode !== 0 || !Number.isInteger(pid) || pid <= 0) {
+    const details = await readFile(launcherLog, 'utf8').catch(() => '(no launcher output)');
+    throw new Error(`start-host.ps1 exited with ${exitCode} and no usable pid.\n${details}`);
+  }
+  return pid;
+}
+
+/**
  * One real Host process: the product, serving the built SPA over a database that exists only for
  * the test that started it.
  */
 export class HostProcess {
   private constructor(
-    readonly pid: number,
+    private currentPid: number,
     readonly port: number,
     readonly baseURL: string,
     readonly databasePath: string,
     readonly logPath: string,
+    private readonly workDir: string,
   ) {}
 
   private cachedToken: string | null = null;
   private stopped = false;
 
+  /** The process serving right now: it changes when a test stops and restarts the service. */
+  get pid(): number {
+    return this.currentPid;
+  }
+
   static async start(options: HostOptions): Promise<HostProcess> {
     const port = await reserveHostPort();
     const databasePath = path.join(options.workDir, 'db', 'filetracert.db');
     const logPath = path.join(options.workDir, 'host.log');
-    const pidPath = path.join(options.workDir, 'host.pid');
-    const launcherLog = path.join(options.workDir, 'launcher.log');
 
-    const exitCode = await runPowerShell(
-      startHostScript,
-      [
-        '-ExePath', hostExePath,
-        '-WorkingDirectory', hostProjectDir,
-        '-LogPath', logPath,
-        '-PidPath', pidPath,
-        '-Port', String(port),
-        '-DatabasePath', databasePath,
-        '-VolumeSyncIntervalSeconds', String(IDLE_INTERVAL_SECONDS),
-        '-ScanPollIntervalSeconds', String(IDLE_INTERVAL_SECONDS),
-      ],
-      launcherLog,
+    const pid = await launch(options.workDir, port, databasePath, logPath);
+    const host = new HostProcess(
+      pid,
+      port,
+      `http://127.0.0.1:${port}`,
+      databasePath,
+      logPath,
+      options.workDir,
     );
-
-    const pid = Number.parseInt(await readFile(pidPath, 'utf8').catch(() => ''), 10);
-    if (exitCode !== 0 || !Number.isInteger(pid) || pid <= 0) {
-      const details = await readFile(launcherLog, 'utf8').catch(() => '(no launcher output)');
-      throw new Error(`start-host.ps1 exited with ${exitCode} and no usable pid.\n${details}`);
-    }
-
-    const host = new HostProcess(pid, port, `http://127.0.0.1:${port}`, databasePath, logPath);
     try {
       await host.waitUntilServing();
       await host.assertUsingThrowawayDatabase();
@@ -123,6 +153,28 @@ export class HostProcess {
       throw error;
     }
     return host;
+  }
+
+  /**
+   * Brings the service back up on the same port and the same database, after it has been stopped.
+   *
+   * It exists for one flow: what the app does when the hub goes away and comes back. Cutting the
+   * socket at the browser is not the same event — Chromium's offline emulation leaves an already
+   * open WebSocket alone — so the honest way to take the hub away is to stop the service that
+   * serves it, which is also the case a user actually meets.
+   */
+  async restart(): Promise<void> {
+    if (!this.stopped) {
+      await this.stop();
+    }
+    this.currentPid = await launch(this.workDir, this.port, this.databasePath, this.logPath);
+    this.stopped = false;
+    try {
+      await this.waitUntilServing();
+    } catch (error) {
+      this.forceKill();
+      throw error;
+    }
   }
 
   /**

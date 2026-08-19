@@ -157,6 +157,23 @@ export const jobState = (page: Page, jobId: number): Locator =>
 export const jobBlockDetail = (page: Page, jobId: number): Locator =>
   jobRow(page, jobId).locator('.block-detail');
 
+// ── Shell: campanella e stato della connessione ────────────────────────────────────────────────
+
+/** The unread badge on the notification bell. Absent, not empty, when there is nothing to read. */
+export const bellBadge = (page: Page): Locator => page.locator('.ft-notif-badge');
+
+export const bell = (page: Page): Locator => page.getByRole('button', { name: /^Notifiche/ });
+
+/** The bell's panel. It is portaled to the body, so panel locators are scoped to it, not to the header. */
+export const notificationPanel = (page: Page): Locator =>
+  page.getByRole('dialog', { name: 'Notifiche' });
+
+/**
+ * The shell's connection indicator. It is deliberately absent while the socket is healthy — a
+ * badge that is always on says nothing — so its presence is the assertion, not its text.
+ */
+export const connectionStatus = (page: Page): Locator => page.locator('.titlebar__right .conn');
+
 /** A locator that matches the whole text and nothing more of it. */
 function exact(text: string): RegExp {
   return new RegExp(`^\\s*${text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`);
