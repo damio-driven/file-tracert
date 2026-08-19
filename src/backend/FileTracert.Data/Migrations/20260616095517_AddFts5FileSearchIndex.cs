@@ -1,4 +1,5 @@
-﻿using Microsoft.EntityFrameworkCore.Migrations;
+﻿using FileTracert.Data.Search;
+using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
 
@@ -10,19 +11,16 @@ namespace FileTracert.Data.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.Sql("""
-                CREATE VIRTUAL TABLE IF NOT EXISTS FileSearchIndex USING fts5(
-                    name,
-                    path,
-                    tokenize="unicode61 remove_diacritics 2 separators '\._-'"
-                );
-                """);
+            // The DDL itself lives in FileSearchIndexSchema so the tests that have to create this
+            // table by hand (EnsureCreated does not build virtual tables) cannot drift from it.
+            // The SQL is byte-identical to what this migration shipped with.
+            migrationBuilder.Sql(FileSearchIndexSchema.CreateTableSql);
         }
 
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.Sql("DROP TABLE IF EXISTS FileSearchIndex;");
+            migrationBuilder.Sql(FileSearchIndexSchema.DropTableSql);
         }
     }
 }

@@ -166,11 +166,19 @@ public sealed class UnblockTransactionTests : IDisposable
     /// so a failure after the state has been set leaves neither. Forced with a trigger that
     /// refuses any INSERT into the ledger — the last write of the unit of work, and the one that
     /// used to happen on its own connection AFTER the state had already been committed.
+    ///
+    /// <para>And the failure belongs to ONE job. The exception used to leave
+    /// <c>RevaluateAsync</c> altogether, so a single unlucky job meant the rest of the queue was
+    /// not looked at — on a pass triggered by a volume coming back, every other job waiting for
+    /// that same volume kept waiting for the next event. The intra-volume job behind it is
+    /// released in the same pass, and this test says so.</para>
     /// </summary>
     [Fact]
-    public async Task A_failure_while_writing_the_ledger_leaves_the_job_blocked()
+    public async Task A_failure_while_writing_the_ledger_blocks_that_job_only()
     {
-        var jobId = SeedBlockedJob(hadReservation: true);
+        var failingId = SeedBlockedJob(hadReservation: true);
+        // Behind it, a job that needs no ledger row at all — so the trigger cannot touch it.
+        var innocentId = SeedBlockedJob(hadReservation: false, intraVolume: true, sequenceOrder: 2);
 
         await using (var db = _harness.CreateContext())
         {
@@ -180,20 +188,23 @@ public sealed class UnblockTransactionTests : IDisposable
                 "BEGIN SELECT RAISE(ABORT, 'no'); END");
         }
 
+        int released;
         await using (var db = _harness.CreateContext())
         {
             var revaluator = TestProjection.Revaluator(db, _ledger);
-            var act = async () => await revaluator.RevaluateAsync(CancellationToken.None);
-            await act.Should().ThrowAsync<Exception>();
+            released = await revaluator.RevaluateAsync(CancellationToken.None);
         }
 
         await using (var db = _harness.CreateContext())
             db.Database.ExecuteSqlRaw("DROP TRIGGER refuse_ledger");
 
-        // Nothing committed: the job is still parked, and its old reservation is still standing.
-        var job = await ReadJob(jobId);
-        job.State.Should().Be(JobState.Blocked);
-        (await ActiveLedgerRows(jobId)).Should().HaveCount(2, "the deactivate rolled back too");
+        // Nothing committed for the job that failed: still parked, old reservation still standing.
+        (await ReadJob(failingId)).State.Should().Be(JobState.Blocked);
+        (await ActiveLedgerRows(failingId)).Should().HaveCount(2, "the deactivate rolled back too");
+
+        // …and the pass carried on.
+        released.Should().Be(1);
+        (await ReadJob(innocentId)).State.Should().Be(JobState.Pending);
     }
 
     // ── fixture ───────────────────────────────────────────────────────────────
@@ -204,7 +215,7 @@ public sealed class UnblockTransactionTests : IDisposable
         return await TestProjection.Revaluator(db, _ledger).RevaluateAsync(CancellationToken.None);
     }
 
-    private int SeedBlockedJob(bool hadReservation, bool intraVolume = false)
+    private int SeedBlockedJob(bool hadReservation, bool intraVolume = false, int sequenceOrder = 1)
     {
         using var db = _harness.CreateContext();
 
@@ -220,7 +231,7 @@ public sealed class UnblockTransactionTests : IDisposable
             TotalBytes = FileSize,
             RequiredBytesTarget = intraVolume ? 0 : FileSize,
             FreedBytesSource = intraVolume ? 0 : FileSize,
-            SequenceOrder = 1,
+            SequenceOrder = sequenceOrder,
         };
         job.Items.Add(new OperationJobItem
         {

@@ -92,13 +92,7 @@ public sealed class ScanFtsSyncTests
         // EnsureCreated builds the EF tables but not virtual ones (FTS5 comes from a raw-SQL
         // migration), so the test creates it exactly as the migration does.
         await using var ctx = harness.CreateContext();
-        await ctx.Database.ExecuteSqlRawAsync("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS FileSearchIndex USING fts5(
-                name,
-                path,
-                tokenize="unicode61 remove_diacritics 2 separators '\._-'"
-            );
-            """);
+        SqliteFts.Create(ctx);
     }
 
     private static async Task<int> SeedAsync(SqliteInMemoryContext harness)

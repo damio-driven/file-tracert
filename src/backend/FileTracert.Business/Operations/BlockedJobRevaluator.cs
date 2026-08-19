@@ -66,23 +66,73 @@ public sealed class BlockedJobRevaluator
         _logger = logger;
     }
 
-    /// <summary>Returns the number of jobs moved back to Pending.</summary>
+    /// <summary>
+    /// Returns the number of jobs moved back to Pending.
+    ///
+    /// <para>A write that fails for ONE job must not end the pass. It used to: the exception left
+    /// this method, and on a pass triggered by a volume coming back that meant every other job
+    /// waiting for that same volume kept waiting for the next event — a failure on the first
+    /// candidate cost the whole queue. The examined set below is what lets the loop resume: after
+    /// a failure the change tracker is dropped (the rolled-back attempt left tracked entities
+    /// behind, and the next job's save would drag them along — that is how one job's failure
+    /// became the next one's) and the remaining candidates are re-read from committed state.</para>
+    /// </summary>
     public async Task<int> RevaluateAsync(CancellationToken ct)
     {
-        var blocked = await _db.OperationJobs
+        int unblockedCount = 0;
+        var examined = new HashSet<int>();
+
+        while (true)
+        {
+            var batch = await LoadCandidatesAsync(examined, ct);
+            if (batch.Count == 0)
+                return unblockedCount;
+
+            var (released, interrupted) = await RunPassAsync(batch, examined, ct);
+            unblockedCount += released;
+
+            if (!interrupted)
+                return unblockedCount;
+
+            // A job's write failed. Start the rest of the queue from a clean context: the
+            // rolled-back attempt left tracked entities behind, and the next job's save would drag
+            // them along. The loop then re-reads what it has not examined yet.
+            _db.ChangeTracker.Clear();
+        }
+    }
+
+    private Task<List<OperationJob>> LoadCandidatesAsync(HashSet<int> examined, CancellationToken ct) =>
+        _db.OperationJobs
             .Include(j => j.Items)
             .Include(j => j.SourceVolume)
             .Include(j => j.TargetVolume)
-            .Where(j => j.State == JobState.Blocked && RevaluableReasons.Contains(j.BlockReason))
+            .Where(j => j.State == JobState.Blocked && RevaluableReasons.Contains(j.BlockReason) &&
+                        !examined.Contains(j.Id))
             .OrderBy(j => j.SequenceOrder)
             .ToListAsync(ct);
 
+    /// <summary>
+    /// Walks one batch of candidates. Reports how many were released and whether a job's write
+    /// failed — in which case the caller drops the tracker and resumes with what is left. Every
+    /// job it touches goes into <paramref name="examined"/>, the failing one included: it would
+    /// fail again on the next lap, and a pass that keeps retrying it never ends.
+    ///
+    /// <para>Only <see cref="DbUpdateException"/> is caught, and it is logged whole (§9 —
+    /// resilience yes, silence no). Nothing was committed for that job: its transaction is
+    /// disposed without a commit, so it is still <c>Blocked</c> with the reservation it had, which
+    /// is a state a later pass can retry.</para>
+    /// </summary>
+    private async Task<(int Released, bool Interrupted)> RunPassAsync(
+        List<OperationJob> blocked, HashSet<int> examined, CancellationToken ct)
+    {
         int unblockedCount = 0;
 
         // FIFO order matters: a job unblocked here re-enters the ledger demand that the
         // feasibility of the next candidate must account for.
         foreach (var job in blocked)
         {
+            examined.Add(job.Id);
+
             // A job waiting for another job is not waiting for the WORLD: the offline and space
             // gates below would overwrite DependencyPending with a reason that is true but not
             // the blocking one, and lose track of the prerequisite. Settle the dependency first;
@@ -112,11 +162,22 @@ public sealed class BlockedJobRevaluator
                 continue;
             }
 
-            if (await UnblockAsync(job, ct))
-                unblockedCount++;
+            try
+            {
+                if (await UnblockAsync(job, ct))
+                    unblockedCount++;
+            }
+            catch (DbUpdateException ex)
+            {
+                _logger.LogError(ex,
+                    "Job {Id}: its release could not be written — it stays Blocked ({Reason}), and " +
+                    "the revaluation carries on with the jobs behind it.",
+                    job.Id, job.BlockReason);
+                return (unblockedCount, Interrupted: true);
+            }
         }
 
-        return unblockedCount;
+        return (unblockedCount, Interrupted: false);
     }
 
     /// <summary>

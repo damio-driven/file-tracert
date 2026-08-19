@@ -33,33 +33,12 @@ public sealed class IndexUpdaterTests : IDisposable
         // EnsureCreated builds the EF tables but not the virtual one — the search index tests
         // create it the same way. It is here so the FTS assertions below can run against the REAL
         // FileSearchIndex rather than a fake of the component whose behaviour is in question.
-        setup.Database.ExecuteSqlRaw("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS FileSearchIndex USING fts5(
-                name,
-                path,
-                tokenize="unicode61 remove_diacritics 2 separators '\._-'"
-            );
-            """);
+        SqliteFts.Create(setup);
     }
 
     /// <summary>Every row of the real FTS table, as (rowid, name, path).</summary>
-    private List<(int Rowid, string Name, string Path)> FtsRows()
-    {
-        using var db = _harness.CreateContext();
-        var conn = (SqliteConnection)db.Database.GetDbConnection();
-        db.Database.OpenConnection();
-        try
-        {
-            using var cmd = conn.CreateCommand();
-            cmd.CommandText = "SELECT rowid, name, path FROM FileSearchIndex ORDER BY rowid";
-            using var reader = cmd.ExecuteReader();
-            var rows = new List<(int, string, string)>();
-            while (reader.Read())
-                rows.Add((reader.GetInt32(0), reader.GetString(1), reader.GetString(2)));
-            return rows;
-        }
-        finally { db.Database.CloseConnection(); }
-    }
+    /// <summary>Every row of the real FTS table — one reader, shared with the other suites.</summary>
+    private List<(int Rowid, string Name, string Path)> FtsRows() => SqliteFts.Rows(_harness);
 
     public void Dispose() => _harness.Dispose();
 

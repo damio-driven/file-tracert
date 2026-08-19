@@ -29,13 +29,7 @@ public sealed class RenameReclassificationTests : IDisposable
         using var setup = _harness.CreateContext();
         setup.Database.ExecuteSqlRaw("PRAGMA foreign_keys = OFF");
         // EnsureCreated builds EF tables but not virtual tables — create FTS5 manually.
-        setup.Database.ExecuteSqlRaw("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS FileSearchIndex USING fts5(
-                name,
-                path,
-                tokenize="unicode61 remove_diacritics 2 separators '\._-'"
-            );
-            """);
+        SqliteFts.Create(setup);
     }
 
     public void Dispose() => _harness.Dispose();

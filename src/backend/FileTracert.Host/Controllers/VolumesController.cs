@@ -1,3 +1,4 @@
+using FileTracert.Business.Dashboard;
 using FileTracert.Business.Filtering;
 using FileTracert.Business.Volumes;
 using FileTracert.Contracts.Dtos;
@@ -64,12 +65,12 @@ public sealed class VolumesController : ControllerBase
             return NotFound();
         }
 
-        // Index statistics for this volume in one aggregate pass.
-        var fileAgg = await _db.Files
-            .Where(f => f.VolumeId == id && f.IsIncluded && f.IsPresent)
-            .GroupBy(_ => 1)
-            .Select(g => new { Count = g.Count(), Bytes = g.Sum(f => f.SizeBytes) })
-            .FirstOrDefaultAsync(ct);
+        // Index statistics for this volume in one aggregate pass — the same two figures, over the
+        // same "catalogued and still on disk" filter, that the Dashboard headline states. Shared
+        // rather than spelled out again (K13/E6): two hand-written copies of "how many files and
+        // how many bytes" are two chances for one screen to disagree with the other.
+        var fileTotals = await CatalogTotals.ComputeAsync(
+            _db.Files.Where(f => f.VolumeId == id && f.IsIncluded && f.IsPresent), ct);
 
         // Same rule as the Catalog tree: directories no longer on disk stop counting,
         // unless a queued operation still holds them in the projection.
@@ -83,8 +84,8 @@ public sealed class VolumesController : ControllerBase
             volume,
             roots,
             directoryCount,
-            fileAgg?.Count ?? 0,
-            fileAgg?.Bytes ?? 0);
+            (int)fileTotals.TotalFiles,
+            fileTotals.TotalBytes);
 
         return Ok(dto);
     }

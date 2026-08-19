@@ -39,13 +39,7 @@ public sealed class SearchCountCapTests : IAsyncLifetime
         _harness = new SqliteInMemoryContext();
         _ctx = _harness.CreateContext();
 
-        await _ctx.Database.ExecuteSqlRawAsync("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS FileSearchIndex USING fts5(
-                name,
-                path,
-                tokenize="unicode61 remove_diacritics 2 separators '\._-'"
-            );
-            """);
+        SqliteFts.Create(_ctx);
 
         _fts = new FileSearchIndex(_ctx);
     }

@@ -36,13 +36,7 @@ public sealed class FolderRenameFtsCostTests : IDisposable
     {
         using var setup = _harness.CreateContext();
         setup.Database.ExecuteSqlRaw("PRAGMA foreign_keys = OFF");
-        setup.Database.ExecuteSqlRaw("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS FileSearchIndex USING fts5(
-                name,
-                path,
-                tokenize="unicode61 remove_diacritics 2 separators '\._-'"
-            );
-            """);
+        SqliteFts.Create(setup);
     }
 
     public void Dispose() => _harness.Dispose();
@@ -259,21 +253,6 @@ public sealed class FolderRenameFtsCostTests : IDisposable
         new FileSearchIndex(db).SyncVolumeFromDbAsync(VolId, CancellationToken.None).GetAwaiter().GetResult();
     }
 
-    private List<(int Rowid, string Name, string Path)> FtsRows()
-    {
-        using var db = _harness.CreateContext();
-        var conn = (SqliteConnection)db.Database.GetDbConnection();
-        db.Database.OpenConnection();
-        try
-        {
-            using var cmd = conn.CreateCommand();
-            cmd.CommandText = "SELECT rowid, name, path FROM FileSearchIndex ORDER BY rowid";
-            using var reader = cmd.ExecuteReader();
-            var rows = new List<(int, string, string)>();
-            while (reader.Read())
-                rows.Add((reader.GetInt32(0), reader.GetString(1), reader.GetString(2)));
-            return rows;
-        }
-        finally { db.Database.CloseConnection(); }
-    }
+    /// <summary>Every row of the real FTS table — one reader, shared with the other suites.</summary>
+    private List<(int Rowid, string Name, string Path)> FtsRows() => SqliteFts.Rows(_harness);
 }

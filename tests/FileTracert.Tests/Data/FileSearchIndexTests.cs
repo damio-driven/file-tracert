@@ -22,13 +22,7 @@ public sealed class FileSearchIndexTests
         var ctx = harness.CreateContext();
 
         // EnsureCreated builds EF tables but not virtual tables — create FTS5 manually.
-        await ctx.Database.ExecuteSqlRawAsync("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS FileSearchIndex USING fts5(
-                name,
-                path,
-                tokenize="unicode61 remove_diacritics 2 separators '\._-'"
-            );
-            """);
+        SqliteFts.Create(ctx);
 
         return new TestSetup(harness, ctx, new FileSearchIndex(ctx));
     }

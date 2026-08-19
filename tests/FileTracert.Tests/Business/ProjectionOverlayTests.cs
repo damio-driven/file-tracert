@@ -48,13 +48,7 @@ public sealed class ProjectionOverlayTests : IDisposable
             setup.Database.ExecuteSqlRaw("PRAGMA foreign_keys = OFF");
             // EnsureCreated builds the EF tables but not virtual ones — the FTS5 table is
             // created by a raw-SQL migration in production, so mirror it here.
-            setup.Database.ExecuteSqlRaw("""
-                CREATE VIRTUAL TABLE IF NOT EXISTS FileSearchIndex USING fts5(
-                    name,
-                    path,
-                    tokenize="unicode61 remove_diacritics 2 separators '\._-'"
-                );
-                """);
+            SqliteFts.Create(setup);
         }
 
         _ledger = new SpaceLedger(CreateScopeFactory(_harness), NullLogger<SpaceLedger>.Instance);
