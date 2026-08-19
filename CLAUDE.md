@@ -575,8 +575,8 @@ unificato, WP4 intero), **step 10a** (device watcher: il remount è un push, non
 ascolta invece di pollare) — **fatti**. Gli **step 9 e 10 sono chiusi**.
 Prossimo, in ordine:
 1. **Work package minori rimanenti** (dalla code review): ~~indice/ricerca (WP5)~~ —
-   **fatto allo step 11a**; ~~spazio (WP6)~~ — **fatto allo step 11b**; restano
-   **logging/shutdown** (11c),
+   **fatto allo step 11a**; ~~spazio (WP6)~~ — **fatto allo step 11b**;
+   ~~logging/shutdown (WP8)~~ — **fatto allo step 11c**; restano
    **frontend/UX** (11d), **efficienza** (11e), **cleanup** (11f, incl. eventuale
    spostamento di `ScanPath` in `Contracts` come da review, e la discrepanza §3:
    `IBulkIndexWriter` sta in `Data/Indexing` e `IFileSearchIndex` in
@@ -590,6 +590,128 @@ Prossimo, in ordine:
    ma chiuderlo vuol dire portare l'insieme escluso dentro il merge e il pass degli
    assenti di `IBulkIndexWriter`. C'è un test che **fissa** il comportamento attuale.
 2. **Step 12 — Test UI end-to-end (Playwright).**
+
+### Fatto nello step 11c (2026-08-19, commit `7a14786`…`5f3a0fb`)
+**WP8 chiuso** (C18, C23, C24, C28): i quattro difetti che si notano solo quando serve la
+diagnostica — cioè quando qualcosa è già andato storto.
+- **C18 — il token arriva fino all'enumerazione.** `ScanService` aveva il token vero e passava
+  `CancellationToken.None` a `ReadFullSnapshot` e a `Enumerate`: la fase più lunga di una
+  scansione (dump MFT / camminata delle directory, minuti su un volume grosso) era
+  **incancellabile**, quindi uno stop del servizio a metà scansione sfondava lo
+  `ShutdownTimeout` e finiva in kill sporco — l'opposto del §3. Ora il token scende alle port
+  **e** il loop che le consuma lo controlla a ogni item: entrambe le implementazioni `Platform`
+  lo onorano già, ma quel loop è l'unico pezzo che gira fra due `await`, e una port che
+  ignorasse il token non deve poter tenere in ostaggio l'intero servizio. Nessun commit avviene
+  durante l'enumerazione, quindi una scansione annullata non lascia checkpoint (§9a) e la
+  successiva riconverge. I due `CancellationToken.None` sui `CommitAsync` restano dove sono: un
+  commit non si annulla a metà, e il commento accanto lo dice già. L'esclusione ereditata di 11a
+  non è toccata — il controllo sta **prima** della risoluzione del root e di `ExcludedSubtrees`.
+- **C23 — la coda dei log viene drenata allo stop.** `SqliteLogProcessor` era registrato come
+  **istanza pre-costruita** e il container non dispone ciò che non ha creato lui, mentre
+  `SqliteLoggerProvider.Dispose` era un no-op che si appoggiava alla premessa opposta: nessuno
+  chiudeva la coda, e fino a ~10 000 record morivano con il processo a ogni stop — proprio i
+  record dello shutdown, gli unici che servono a capire perché si è fermato. Ora c'è
+  **`LogFlushService`**, hosted service registrato **per primo** e quindi fermato **per ultimo**
+  (i servizi si fermano in ordine inverso di registrazione), così la coda si chiude quando ogni
+  worker ha già scritto il proprio saluto. Le alternative sono state scartate con motivo: il
+  container non può costruire il processor (il sink deve esistere prima che qualunque cosa
+  logghi, cioè molto prima del container), e un `finally` attorno a `app.Run()` non verrebbe mai
+  eseguito sotto `WebApplicationFactory`, cioè non sarebbe testabile. L'attesa è **capata** —
+  `FileTracert:LogDrainTimeoutSeconds`, default 5 s contro i 30 s di `ShutdownTimeout` — e il
+  token di stop dell'host la capa una seconda volta: un drain senza cap trasforma un servizio
+  che si ferma in un servizio che non si ferma. Quando vince il cap, i record rimasti (in coda
+  **più** il lotto in scrittura) vengono contati e dichiarati, non dimenticati in silenzio.
+  L'ordine di stop non è dato per buono: c'è un test in cui un worker registrato **dopo** il
+  flush logga dal proprio `StopAsync` e quel record deve trovarsi nel DB log.
+- **C24 — il sink non tace più.** I tre `catch` nudi violavano il §9 nell'unico componente il cui
+  mestiere è rendere leggibili i guasti. Il sink non può loggare su sé stesso, quindi la traccia
+  esce **fuori** dal sink: ogni perdita incrementa `DroppedRecordCount`/`FailedRecordCount` e
+  lascia un breadcrumb throttlato su **stderr** (visibile in console, innocuo come servizio) e su
+  **`Trace`** (debugger / DebugView in entrambi), con l'eccezione **completa** via `ToString()`.
+  Due dettagli non ovvi: un canale `DropWrite` risponde «scritto» anche quando butta via il
+  record, quindi il contatore dei drop si aggancia alla callback `itemDropped` di
+  `Channel.CreateBounded` (con `TryWrite == false` che ora significa solo «coda chiusa», perdita
+  della stessa specie); e un consumer che muore **chiude** la coda, così i record successivi si
+  contano come drop invece di accumularsi in una coda che nessuno legge.
+  `OperationCanceledException` resta a basso rumore (solo `Trace`): è lo shutdown, non un
+  difetto — la stessa regola applicata in 10b a `RealtimeEvents`.
+- **C28 — la ricerca nei log è letterale.** Il filtro `Category` era escapato, la search una riga
+  sotto no: cercare `100%` trovava ogni riga con «100», `file_name` trovava «fileXname». Ora
+  `EscapeLike` + `ESCAPE '\'` su `Message` e `Exception`; anche l'escape dell'escape è coperto,
+  quindi un path come `C:\Temp` continua a trovare sé stesso.
+- **Verifica**: xUnit **645 verdi** (+15), build backend pulita (warnings-as-errors, anche in
+  Release). RED dimostrato rompendo il prodotto apposta e riportandolo a posto: token buttato
+  → 3 rossi (la scansione con enumeratore lento esce in 2 m 38 s invece dei 5 s di budget);
+  contatori del sink disattivati → 2 rossi; registrazione del flush tolta → 2 rossi; escape
+  della search tolto → 2 rossi; clamp del budget tolto → 2 rossi; riepilogo su DB log tolto
+  → 1 rosso. Harness sul ferro (`D:\Collaudo\A` → `C:\Collaudo\B`, la coppia
+  interna disponibile su questa macchina: **il drive E: non esiste più**): **44 scenari, 44 PASS,
+  0 FAIL, 0 SKIP** — identico alla baseline di 11b, `offline-unplug` escluso come sempre
+  (`SemiAutomatic=false`).
+- **Deviazione dallo split dei commit del task**: C24 è stato committato **prima** di C23. Il
+  breadcrumb del cap di drain usa l'helper introdotto da C24; l'ordine inverso avrebbe prodotto
+  un commit che scrive una riga grezza per poi riscriverla subito dopo.
+La **code review finale** (due passaggi indipendenti sulle modifiche di questo giro) ha trovato
+**sei** rilievi reali, tutti corretti — `5f7c4cd` il primo, `5f3a0fb` gli altri:
+1. **Doppio conteggio al cap.** Allo scadere del drain i record rimasti venivano sommati a
+   `FailedRecordCount`, ma il consumer da cui si esce **continua a girare**: potevano essere
+   scritti davvero (perdita dichiarata e mai avvenuta) o fallire nel `catch` del consumer, che
+   li avrebbe contati una **seconda** volta. Ora hanno un contatore proprio,
+   `AbandonedRecordCount`, con il significato onesto: «abbiamo smesso di aspettarli, se siano
+   atterrati non c'era più nessuno a vederlo».
+2. **`LogDrainTimeoutSeconds` era l'unica opzione non clampata** dell'host: un valore negativo
+   arrivava a `Task.Delay` e usciva come eccezione da `StopAsync` — uno shutdown fallito causato
+   proprio dal codice che esiste per renderlo pulito — e `0` rinunciava all'istante a ogni stop
+   dichiarando perso tutto. Fuori range → default, controllato nel **costruttore**, così nessun
+   chiamante può sbagliarlo.
+3. **Un host che fallisce all'AVVIO non ha una stop sequence**, quindi `LogFlushService` non
+   drenava: una migration che lancia è esattamente il momento in cui quei record servono. Ora
+   `Program` drena in un `finally` attorno a inizializzazione e `Run`, sull'istanza che possiede
+   il composition root (dopo `RunAsync` il container è già disposto e non potrebbe restituirla —
+   per questo `AddSqliteLogging` torna a restituire il processor). Verificato che **non** scatta
+   sotto `WebApplicationFactory`: la coda del test host è ancora aperta e accetta record due
+   secondi dopo l'avvio.
+4. **I contatori non avevano un lettore dove il prodotto gira davvero**: stderr è scartato dal
+   servizio Windows e `Trace` richiede un debugger attaccato. Il riepilogo di fine run viene
+   ora scritto **anche nel DB log**, dritto attraverso lo store e attorno alla coda chiusa
+   (nessuna ricorsione). Non sul percorso di rinuncia: lì lo store è proprio ciò che non ha
+   risposto, e scrivergli spenderebbe il budget che il cap ha appena imposto.
+5. **Throttle dei breadcrumb a una sola casella**: una raffica di drop poteva mangiare la
+   finestra di un guasto vero del sink. Ora drop e failure hanno una casella ciascuno.
+6. **Test C18 dipendente dalla risoluzione del timer**: su una macchina con timer a 1 ms i 1 000
+   item si percorrono dentro il budget e il codice non fixato passerebbe. Ora asserisce **anche**
+   che la camminata è stata interrotta (`Remaining > 0`).
+Verificati puliti: nessun catch che possa risalire da `StopAsync`, nessuna attesa illimitata né
+deadlock nel drain, l'ordine di stop (confermato con un probe su net10, oltre che dal test),
+l'esclusione ereditata di 11a intatta, nessun checkpoint scritto da uno scan annullato, escaping
+LIKE completo e unico `LIKE` scritto a mano nel codebase, layering, test contro l'implementazione
+reale senza rischio di hang. Da una rilettura mia, nello stesso giro (`066a89b`): il fallback su
+stderr tollera anche `ObjectDisposedException` — un breadcrumb non deve poter far fallire uno
+stop.
+**Limiti noti e accettati:**
+- **Il `GenericWebHostService` si ferma dopo il flush.** È registrato da
+  `WebApplication.CreateBuilder` prima di qualunque nostra riga, quindi è l'unico che stoppa
+  dopo la chiusura della coda: le ultime righe di Kestrel non finiscono nel DB log (restano su
+  console). Sono categorie `Microsoft.*`, già capate a Warning da `LogCategoryPolicy`.
+- **Ciò che viene loggato dopo il drain è perso per il DB log**, per costruzione: la coda è
+  chiusa, e i record vengono contati come drop. Il provider console resta attivo.
+- **`LogFlushService` non parla via `ILogger`**, di proposito: gira mentre la pipeline di logging
+  si smonta, e un provider già disposto trasforma una chiamata di log in un'eccezione che fa
+  fallire lo stop (visto davvero, con il provider EventLog sotto il test host). Quello che il
+  drain ha da dire lo dice su stderr/`Trace`.
+- **I contatori di perdita non hanno un endpoint dedicato**: il riepilogo di fine run finisce nel
+  DB log (quindi nella schermata Log, categoria `FileTracert.Host.Logging.SqliteLogProcessor`) e
+  nei breadcrumb; leggerli **durante** il run richiederebbe un endpoint diagnostico, materiale da
+  11d.
+- **Il drain sul fallimento di avvio non ha un test automatico**: `WebApplicationFactory` non
+  esegue il `finally` di `Program` (verificato con un probe, non assunto), quindi la copertura
+  possibile sarebbe un test che avvia un processo vero — territorio dello step 12.
+- **Una scansione annullata resta segnata `Failed` dal tracker** (`ScanStatusTracker.Fail` nel
+  `catch` di `ScanVolumeAsync`): comportamento pre-esistente, non toccato. In shutdown non si
+  vede — il client se ne è già andato — ma «annullata» e «fallita» restano la stessa cosa per il
+  tracker.
+- **Nessuno scenario harness nuovo**: nessuno di questi fix cambia il comportamento su file veri
+  (lo diceva già il task). La suite è stata comunque eseguita per intero.
 
 ### Fatto nello step 11b (2026-08-19, commit `82bf73a`…`0bba4bf`)
 **WP6 chiuso** (finding 10): la fattibilità a spazio smette di credere alle proprie stime.
