@@ -32,8 +32,12 @@ export default async function globalSetup(): Promise<void> {
     return;
   }
 
-  await run('dotnet', ['build', hostProjectDir, '-v:m', '--nologo'], repoRoot);
-  await run('npm.cmd', ['run', 'build'], frontendDir);
+  // No shell for dotnet: the repository path travels as an argument, and a shell would re-split
+  // it on spaces and fail the build with an error about a path nobody wrote. npm is a .cmd, which
+  // Node refuses to spawn without one — safe here because every argument is a literal and the
+  // directory rides in `cwd`, not in the command line.
+  await run('dotnet', ['build', hostProjectDir, '-v:m', '--nologo'], repoRoot, false);
+  await run('npm', ['run', 'build'], frontendDir, true);
   await assertBuilt();
 }
 
@@ -73,17 +77,16 @@ async function assertBuilt(): Promise<void> {
   }
 }
 
-async function run(command: string, args: string[], cwd: string): Promise<void> {
+async function run(command: string, args: string[], cwd: string, shell: boolean): Promise<void> {
   const started = Date.now();
   process.stdout.write(`[e2e] ${command} ${args.join(' ')}\n`);
   try {
-    // No shell: the repository path is passed as an argument and a shell would re-split it on
-    // spaces, failing the build with an error about a path nobody wrote.
-    await execFileAsync(command, args, { cwd, timeout: BUILD_TIMEOUT_MS, windowsHide: true });
+    await execFileAsync(command, args, { cwd, timeout: BUILD_TIMEOUT_MS, windowsHide: true, shell });
   } catch (error) {
-    const details = error as { stdout?: string; stderr?: string };
+    const details = error as { message?: string; stdout?: string; stderr?: string };
     throw new Error(
-      `[e2e] "${command} ${args.join(' ')}" failed in ${cwd}\n${details.stdout ?? ''}\n${details.stderr ?? ''}`,
+      `[e2e] "${command} ${args.join(' ')}" failed in ${cwd}: ${details.message ?? 'no message'}\n` +
+        `${details.stdout ?? ''}\n${details.stderr ?? ''}`,
     );
   }
   process.stdout.write(`[e2e] done in ${((Date.now() - started) / 1000).toFixed(1)}s\n`);
