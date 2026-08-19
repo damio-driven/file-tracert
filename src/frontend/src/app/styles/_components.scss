@@ -200,6 +200,20 @@
   gap: var(--sp-4);
 }
 
+// The action bar. Same eight declarations under two names (.dialog-footer /
+// .picker-footer) until now, which is one rewrite away from the two dialogs of the same
+// app disagreeing about where their buttons sit. Cancel then confirm, right-aligned:
+// one order everywhere, so muscle memory carries between dialogs.
+.ft-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-5);
+  border-top: 1px solid var(--line);
+  background: var(--panel-2);
+}
+
 @keyframes ft-modal-backdrop-in {
   from { opacity: 0; }
   to   { opacity: 1; }

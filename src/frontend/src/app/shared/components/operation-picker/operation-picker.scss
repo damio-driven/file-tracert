@@ -1,6 +1,6 @@
 @use '../../../styles/mixins' as *;
 
-// Shell (backdrop, panel, header, body) comes from `.ft-modal*` in the design system.
+// Shell (backdrop, panel, header, body, footer) comes from `.ft-modal*` in the design system.
 // `.picker-backdrop` carries no style: it is the marker the backdrop click test looks for.
 .picker-modal {
   width: 540px;
@@ -380,17 +380,6 @@
   color: var(--red);
   flex-shrink: 0;
   font-size: 14px;
-}
-
-// Footer
-.picker-footer {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: var(--sp-3);
-  padding: var(--sp-4) var(--sp-5);
-  border-top: 1px solid var(--line);
-  background: var(--panel-2);
 }
 
 // Success state

@@ -1,4 +1,4 @@
-// Shell (backdrop, panel, header, body) comes from `.ft-modal*` in the design system.
+// Shell (backdrop, panel, header, body, footer) comes from `.ft-modal*` in the design system.
 // `.dialog-backdrop` carries no style: it is the marker the backdrop click test looks for.
 .dialog-modal {
   width: 420px;
@@ -74,12 +74,3 @@
   font-size: 14px;
 }
 
-.dialog-footer {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: var(--sp-3);
-  padding: var(--sp-4) var(--sp-5);
-  border-top: 1px solid var(--line);
-  background: var(--panel-2);
-}
