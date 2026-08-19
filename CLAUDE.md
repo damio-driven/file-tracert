@@ -275,6 +275,20 @@ stato fisico (ultima scansione) **+ overlay delle operazioni in coda**.
     esiste, anche se non se ne indicizza il contenuto. Una cartella fuori
     perimetro resta quindi `IsPresent = true` e visibile nel Catalogo, con dentro
     solo ciò che è incluso.
+  - **Una riga ricorda *perché* è esclusa** *(step 11h)*: tre flag su `Files` —
+    `ExcludedByType` (estensione fuori allow-list), `ExcludedByRoot` (nessun
+    watched root **attivo** la governa), `ExcludedByScan` (la scansione l'ha
+    scavalcata: attributi, segmento di path escluso, o una cartella sopra di lei
+    che ha fallito una di quelle regole). Flag e non un enum: le cause si
+    **sommano** (un `.tmp` dentro una cartella nascosta è escluso due volte) e
+    ognuna deve poter essere spenta dal suo proprietario. Invariante mantenuta da
+    ogni writer: `IsIncluded == !(ExcludedByType || ExcludedByRoot ||
+    ExcludedByScan)`; `IsIncluded` resta una colonna propria perché è quella che
+    leggono Catalogo, FTS e gli indici covering.
+    **Chi disfa cosa:** `FilterReconciler` ricalcola le prime due (sono fatti
+    delle impostazioni, quindi nessuna lettura del disco) e **non nomina mai** la
+    terza — nessuna impostazione sa se quella cartella è ancora nascosta. Solo il
+    merge di una scansione azzera tutte e tre.
 - Configurazioni EF in classi `IEntityTypeConfiguration` separate. **Nessuna
   data annotation sulle entità.**
 
@@ -305,7 +319,9 @@ mai marcata così, e non esiste un `IsIncluded` sulle directory — step 11g) ·
 `Id` · `VolumeId` · `DirectoryId`→Directories · `Name` · `Extension` (lower) ·
 `Category` (derivata e persistita) · `SizeBytes` · `CreatedUtc`/`ModifiedUtc`
 (del file) · `Attributes` · `UsnFileRef?` · `QuickHash?` (size + primi/ultimi KB)
-· `Hash?` (full, lazy) · `IsIncluded` · `IsPresent` · `LastIndexedUtc` ·
+· `Hash?` (full, lazy) · `IsIncluded` · `ExcludedByType` · `ExcludedByRoot` ·
+`ExcludedByScan` (le tre cause di §6 «Convenzioni trasversali», step 11h) ·
+`IsPresent` · `LastIndexedUtc` ·
 `PendingName?` · `PendingDirectoryId?` · `PendingState` · `PendingJobId?` + audit.
 Indici: `(VolumeId, DirectoryId)`, `Extension`, `Category`, `SizeBytes`,
 `ModifiedUtc`, `UsnFileRef` unique per volume.
@@ -612,19 +628,148 @@ allo step 11f, **decisa dall'utente il 2026-08-19**, implementata nello **step 1
 l'opzione (b) — le esclusioni da filtro o da perimetro si marcano `IsIncluded=false`,
 `IsPresent` torna a significare soltanto «non c'è più sul disco». Vedi §6 e il paragrafo
 «Fatto nello step 11g».
+~~**`FilterReconciler` non sa perché una riga è esclusa**~~ *(aperta dalla review dello step 11g)* —
+**chiusa allo step 11h**, insieme alle due lacune collegate della stessa voce (l'FTS non
+risincronizzata dalla riconciliazione, e i contatori file/cartelle della pagina Volumi che
+descrivevano perimetri diversi). Una riga porta ora le **tre cause** di §6 e la riconciliazione
+disfa solo le due che può conoscere. Resta aperta la terza metà di quella voce: **`ExcludedPaths`
+non ha una riconciliazione propria** — togliere un segmento escluso dice onestamente `NeedsScan`
+(11g) e non riammette nulla senza scansione, il che è corretto ma non è una riconciliazione. Vedi
+il paragrafo «Fatto nello step 11h».
 Prossimo, in ordine:
-1. **`FilterReconciler` non sa perché una riga è esclusa** *(aperto dalla review dello step 11g;
-   decisione di prodotto/priorità all'utente)*. Da 11g `IsIncluded=0` porta due significati diversi
-   — «tipo non ammesso» e «fuori perimetro» — e la riconciliazione, che vede solo le estensioni, li
-   tratta uguali: qualunque cambio di filtro o switch di root **re-include in blocco** anche ciò che
-   la scansione aveva escluso per attributi o path, fino alla scansione successiva. Chiuderlo
-   significa **persistere il motivo** (colonna nuova su `Files`, migration di sole colonne nuove) e
-   distinguere almeno *tipo* / *root spento* / *saltato dalla scansione*, perché il secondo va
-   annullato dalla riconciliazione e il terzo no. Nello stesso pacchetto: la riconciliazione non
-   risincronizza l'FTS (Catalogo e Ricerca divergono finché non passa uno scan) e il filtro
-   `ExcludedPaths` non ha alcuna riconciliazione propria (11g gli ha dato solo un `NeedsScan`
-   onesto).
-2. **Step 12 — Test UI end-to-end (Playwright).**
+1. **Step 12 — Test UI end-to-end (Playwright).**
+
+### Fatto nello step 11h (2026-08-19, commit `b0090c1`…`460495c`)
+**Una riga ricorda perché è esclusa, e la riconciliazione disfa solo ciò che ha diritto di
+disfare.** Chiude il debito che 11g aveva creato consapevolmente più le due lacune collegate.
+Lo scenario del difetto, in chiaro: rendi nascosta `Photos\Private`, scansiona (righe
+`IsIncluded=0`, `IsPresent=1`, giusto), poi **allarga il filtro dei tipi** — e il contenuto della
+cartella nascosta ricompariva nel Catalogo fino alla scansione successiva, perché la
+riconciliazione vedeva un'estensione ammessa e non sapeva nulla della cartella.
+- **Tre flag booleani, non un enum** *(la decisione del giro)*: `ExcludedByType`,
+  `ExcludedByRoot`, `ExcludedByScan` su `Files` (§6). Le cause **si sommano** — un `.tmp` dentro
+  una cartella nascosta è escluso due volte — e con un valore solo avresti dovuto definire una
+  **precedenza**, dopo la quale «disfa il filtro dei tipi» diventa una domanda ambigua: la riga è
+  *anche* fuori perimetro? Con un flag per causa ognuna si spegne per conto suo e
+  `FilterReconciler` — dove si paga il conto — non deve tradurre nulla in aritmetica di bit che EF
+  poi deve saper tradurre in SQL. `IsIncluded` **resta** una colonna propria (derivata,
+  `!(a||b||c)`): è quella che leggono Catalogo, FTS e i due indici covering, e un OR di tre
+  booleani a ogni seek non è quello che si vuole sul percorso caldo.
+- **Il backfill è pessimista, e lo è di proposito.** Le righe esistenti `IsIncluded=0` non sanno
+  perché lo sono: la migration le timbra tutte `ExcludedByScan`, cioè **la causa che la
+  riconciliazione non disfa mai**, così nulla rientra in silenzio. Il prezzo: una riga che in
+  realtà era solo fuori dall'allow-list resta esclusa una scansione in più. L'errore opposto —
+  indovinare «tipo» e riammettere il contenuto di una cartella nascosta — è esattamente il difetto
+  che si sta chiudendo, ed è **invisibile all'utente**. Il merge azzera tutte e tre le cause quando
+  rivede il file, quindi il primo scan corregge. C'è un test che applica davvero le migration alla
+  versione precedente, scrive righe come le scriveva quella versione e migra in avanti.
+- **La scansione consegna la causa, non un booleano.** `ScanPerimeter.SkipCause` distingue «nessun
+  root **attivo** la governa» (→ `ExcludedByRoot`, disfabile dalle impostazioni) da «le regole di
+  perimetro l'hanno rifiutata» (→ `ExcludedByScan`, disfabile solo da un'altra scansione);
+  `Covers` è ora quella risposta letta come sì/no. Precedenza deliberata: si chiedono **prima i
+  root**, perché un item fuori da ogni root attivo non è mai stato offerto al filtro e quindi non
+  può essere stato «filtrato via». `SkippedScanArea` porta la causa e la chiusura fa **un UPDATE
+  per causa presente**.
+- **Il guard dell'esclusione non è più `IsIncluded`, è il flag della causa.** Una riga già esclusa
+  per un altro motivo deve comunque **imparare** questo: senza, il `.tmp` nella cartella nascosta
+  non riceveva il timbro dello scan e tornava dentro al primo allargamento del filtro. Il trucco
+  dell'ordine di 11g regge lo stesso: l'esclusione gira per prima, le righe che timbra escono da
+  sole dal pass degli assenti (che resta lo statement e il predicato esatti di sempre).
+- **La riconciliazione risincronizza l'FTS** (seconda lacuna di 11g). Il Catalogo legge il flag e
+  si riprendeva da solo; la Ricerca legge l'**indice**, che la chiusura di una scansione aveva già
+  potato: riallargare un filtro produceva file navigabili e non trovabili. Fatto con l'API
+  set-based che esiste già — `SyncDirectoriesAsync`, che nomina le righe **per directory**, quindi
+  l'insieme non lascia mai il database e porta il nome proiettato di §5 dalla costante condivisa.
+  Anche cancellare un watched root ora toglie le sue voci dall'indice invece di lasciarle
+  rispondere alle query fino al prossimo scan.
+- **Un root inattivo si decide in un posto solo.** Il branch è passato da `WatchedRootsService`
+  dentro `ReconcileRootAsync`: `FilterSettingsService` itera **tutti** i root senza override, attivi
+  o no, quindi un cambio di filtro globale azzerava in silenzio l'esclusione di un root che l'utente
+  aveva spento.
+- **UI (skill `impeccable`)**: «1.204 file · 87 cartelle» si leggeva come **un solo censimento** e
+  da 11g sono due — il numero dei file risponde al filtro e al perimetro (spegni un root e va a
+  zero), quello delle cartelle no, perché una cartella che esiste sul disco esiste. Due righe, ognuna
+  che dichiara il proprio perimetro: **«Indice — N file inclusi»** (la parola che Setup usa già per
+  quel flag) e **«Struttura — M cartelle nell'albero, comprese quelle senza file inclusi»**. La
+  didascalia riusa il parentetico faint della riga «Disco fisico»: niente di nuovo inventato.
+- **Verifica**: xUnit **786 verdi** (+21, di cui 6 dal giro di review), Vitest **244 verdi** (+1),
+  build backend pulita (warnings-as-errors), `ng build` ok (restano i 4 warning di budget SCSS,
+  pre-esistenti).
+  **RED dimostrato prima del fix**: 5 test rossi su 6 nel file nuovo — il file sotto la cartella
+  nascosta rientrava al primo allargamento del filtro (due varianti: filtro globale e switch di
+  root), il `.tmp` con due cause rientrava disfacendone una, e le due metà FTS non trovavano più il
+  file re-incluso; il sesto (il controllo: ciò che il filtro dei tipi esclude **deve** rientrare)
+  era verde da subito. Sul frontend, 1 rosso.
+  **Misura, statement non millisecondi** (`CountingSqliteConnection`, lo stesso attrezzo di 11g):
+  chiusura della scansione **1** statement senza aree saltate (invariato), **6** con una causa
+  (invariato), **7** con due — mai per riga; riconciliazione di un root **3** statement per i flag
+  più **3** per l'indice (una SELECT degli id di directory e la coppia DELETE/INSERT), e **non si
+  muovono** passando da 50 a 500 file sotto il root.
+  Harness sul ferro (`D:\Collaudo\A` → `C:\Collaudo\B`): **47 scenari, 47 PASS, 0 FAIL**, eseguito
+  **due volte**, prima e dopo il giro di review, con `exclusion-vs-absence` esteso alle asserzioni
+  di questo giro su file veri. Costo di scansione **misurato in A/B contro l'albero pre-11h**
+  invece che confrontato con numeri di sessioni passate: 2 002 file, primo scan 1,76–3,27 s /
+  re-scan 1,08–1,19 s prima, 1,40–4,79 s / 0,95–1,74 s dopo. La macchina è rumorosa (C: è il disco
+  di sistema, e la varianza dentro una singola sessione copre l'intero intervallo); nessuna
+  differenza attribuibile al giro. `appsettings.json` dell'harness rimesso byte-identico
+  (sha256 `653f5990…` verificato).
+- **Trovato di passaggio e chiuso** (`a8f26e3`): `ScanLockContentionTests` è caduto **una volta su
+  cinque** run pieni, verde in isolamento. Il messaggio conteneva la diagnosi — `0 succeeded` **e**
+  `0 blocked`, cioè non «lo scrittore è rimasto fuori» ma «lo scrittore non è mai partito»: sotto
+  carico il corpo del `Task.Run` poteva essere schedulato per la prima volta **dopo** la fine dello
+  scan. Non è flakiness da archiviare (11i): un test che può diventare rosso per un motivo che non
+  c'entra col write lock vale meno anche quando è verde. Ora l'hammer segnala prima del primo
+  tentativo e lo scan aspetta quel segnale.
+La **code review finale** (indipendente, sulle modifiche di questo giro) ha trovato **due cose
+sullo stesso filo**, corrette nel commit `460495c`, più tre minori attorno.
+Lo spostamento del guard dell'esclusione da `IsIncluded` alla colonna della causa è corretto
+**solo finché l'invariante regge** — e un writer non la reggeva. `IndexUpdater.RenameFileIndexAsync`
+sovrascriveva `IsIncluded` con `ShouldIncludeFile` e non toccava le tre cause: quella chiamata
+conosce nome, attributi e path del **file**, non sa che una **cartella** sopra di lui è nascosta.
+Il difetto era già documentato lì come «known gap», e dichiarato innocuo perché la scansione
+successiva rimetteva a posto. **Qui smetteva di esserlo**: una riga con `ExcludedByScan=1` e
+`IsIncluded=1` viene saltata dal pass di esclusione, cade in quello degli **assenti** e si prende
+`IsPresent=0` — un file che sta sul disco dichiarato sparito, cioè esattamente il difetto che 11g
+esisteva per togliere. Corretto **alla sorgente** (il rename ricalcola la causa che può decidere,
+**alza** quella di perimetro se il nuovo path fallisce da solo le regole, non la **abbassa** mai, e
+deriva `IsIncluded` dalle tre) e **di nuovo come rete sotto** (`OR IsIncluded = 1` nel guard):
+nessun guard su un percorso a forma di perdita di dati deve dipendere da un'invariante mantenuta
+altrove. Le minori: mancava un test di **idempotenza** della chiusura proprio nel giro che ne ha
+cambiato il guard (aggiunto, più il caso della riparazione); il test del backfill asseriva il flag
+ma non che il reconciler lo **onori** su una riga legacy (aggiunto); e il log «marked excluded»
+contava anche le righe che imparavano soltanto una causa in più, quindi ora dice «recorded as
+outside the scanned perimeter» invece di far credere che siano appena sparite dalla vista.
+Verificati uno per uno e **senza rilievi**: l'invariante su ogni altro writer (merge, insert,
+reconciler, `ToEntity`, bulk insert, migration, seed dei test), l'esaustività e disgiunzione delle
+tre `ExecuteUpdate`, il caso radice-volume di `DirectoriesUnder` (`SubtreePrefix("")` è `"\"`, e
+nessun `MaterializedPath` inizia con un separatore: il ramo speciale c'è ed è giusto), il fatto che
+l'insieme dei file i cui flag si muovono coincide con quello delle directory risincronizzate, che
+il sync FTS giri **dentro** la transazione del chiamante, e la precedenza di `SkipCause` (non
+osservabile: `ExcludeSubtree` è raggiungibile solo dentro un root attivo).
+**Limiti noti e accettati:**
+- **`ExcludedPaths` continua a non avere una riconciliazione propria**: togliere un segmento
+  escluso non riammette nulla senza scansione (le righe sotto non sono mai state scritte) e
+  `FilterWidened` lo dice onestamente con `NeedsScan` da 11g. È la terza metà della voce di roadmap
+  che questo step chiude per due terzi.
+- **Il pass dell'FTS in riconciliazione è chunked per DIRECTORY** (500 id per coppia di statement):
+  è piatto nel numero di **file** — che è ciò che un filtro riallargato accumula in massa — e cresce
+  nel numero di **cartelle**. È il baratto che `SyncDirectoriesAsync` esiste per fare, ed è quello
+  giusto: le cartelle sono ordini di grandezza meno dei file. **Gira però anche dove non
+  servirebbe**: solo il *rientro* può lasciare voci mancanti, mentre le voci di troppo sono già
+  invisibili (la `SearchAsync` filtra `IsIncluded`/`IsPresent` a ogni query), quindi restringere un
+  filtro o spegnere un root paga un DELETE+INSERT che nessuno leggerà. Tenuto incondizionato perché
+  lascia l'indice **uguale a come lo lascerebbe una scansione**, che è un'invariante più facile da
+  difendere di «ricostruiscilo solo nei casi in cui serve».
+- **Il numero «esclusi» del cambio filtro globale su un root spento è il totale, non il delta**:
+  `FilterSettingsService` itera tutti i root senza override e per uno inattivo la riconciliazione
+  ri-esclude l'intero sottoalbero. Il comportamento è quello giusto (è il buco cross-service che
+  questo giro chiude); è solo il numero sulla schermata Setup a essere meno informativo.
+- **Un root creato ex novo non riconcilia**: `CreateAsync` non chiama il reconciler, quindi le righe
+  che portavano `ExcludedByRoot` da una cancellazione precedente restano escluse fino alla prima
+  scansione. Pre-esistente, non toccato qui.
+- **Nessun `BlockReason`-equivalente per la causa in UI**: le tre cause sono persistite e usate dal
+  motore, ma il Catalogo mostra ancora soltanto «incluso / non incluso». Dire all'utente *perché*
+  una riga è fuori è un lavoro di UI a sé.
 
 ### Fatto nello step 11i (2026-08-19, commit `7b3e938`…`776f4cf`)
 **La suite dice la verità anche sotto carico.** La flakiness che 11e, 11f e 11g avevano
