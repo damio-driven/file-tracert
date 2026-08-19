@@ -261,7 +261,20 @@ stato fisico (ultima scansione) **+ overlay delle operazioni in coda**.
 - **Path sempre relativi alla radice del volume**; l'assoluto si risolve a
   runtime via `Volume → mount point corrente`.
 - Niente hard-delete dal DB: flag di stato (`IsIncluded`, `IsPresent`) per
-  distinguere "non c'è più sul disco" da "escluso dal filtro".
+  distinguere "non c'è più sul disco" da "escluso dal filtro". **I due non si
+  sostituiscono mai a vicenda** *(decisione di prodotto del 2026-08-19, step 11g)*:
+  - `IsPresent = false` significa **soltanto** «la scansione l'ha cercato e non
+    l'ha trovato sul disco». Nient'altro lo scrive.
+  - `IsIncluded = false` significa «fuori da ciò che l'utente ha chiesto di
+    indicizzare»: fuori dai watched root attivi, sotto una cartella esclusa per
+    attributi o path, o fuori dall'allow-list di estensioni. Non dice nulla sul
+    disco ed è **reversibile senza ri-scansione** (§4).
+  - Quindi: una decisione di perimetro non tocca `IsPresent`, un'assenza non tocca
+    `IsIncluded`. **Ciò che la scansione non ha guardato non è assente.**
+  - Le **directory** non hanno `IsIncluded`: una cartella che esiste sul disco
+    esiste, anche se non se ne indicizza il contenuto. Una cartella fuori
+    perimetro resta quindi `IsPresent = true` e visibile nel Catalogo, con dentro
+    solo ciò che è incluso.
 - Configurazioni EF in classi `IEntityTypeConfiguration` separate. **Nessuna
   data annotation sulle entità.**
 
@@ -282,8 +295,10 @@ stato fisico (ultima scansione) **+ overlay delle operazioni in coda**.
 `PendingCreate` ha `IsMaterialized = false` e `IsPresent = false` finché il job non la crea)*
 `Id` · `VolumeId` · `ParentId?`→self · `Name` · `MaterializedPath` (denormalizzato,
 aggiornato in cascata sui rename) · `UsnFileRef?` · `IsMaterialized` · `IsPresent`
-(default `true`; stessa semantica di `Files.IsPresent` — la scansione non l'ha più
-trovata sul disco, mai un delete) · `PendingName?` · `PendingParentId?` ·
+(default `true`; stessa semantica di `Files.IsPresent` — la scansione l'ha cercata e
+non l'ha trovata sul disco, mai un delete; una cartella **fuori perimetro** non viene
+mai marcata così, e non esiste un `IsIncluded` sulle directory — step 11g) ·
+`PendingName?` · `PendingParentId?` ·
 `PendingState` · `PendingJobId?` + audit.
 
 **Files**
@@ -588,23 +603,152 @@ step 11b), logging/shutdown (WP8, step 11c), frontend/UX (WP7, step 11d), effici
 §3 sono chiuse **con codice e brief concordi**: `ScanPath` è stato **spostato** in
 `Contracts/Scanning`; `IBulkIndexWriter` **resta** in `Data/Indexing` e il brief è stato
 corretto (parla in entità EF: portarlo in `Contracts` ci trascinerebbe il modello).
+~~**Decisione di prodotto — `IsPresent=false` usato come «escluso dal filtro»**~~ *(posta
+allo step 11f, **decisa dall'utente il 2026-08-19**, implementata nello **step 11g**)*: vince
+l'opzione (b) — le esclusioni da filtro o da perimetro si marcano `IsIncluded=false`,
+`IsPresent` torna a significare soltanto «non c'è più sul disco». Vedi §6 e il paragrafo
+«Fatto nello step 11g».
 Prossimo, in ordine:
-1. **Decisione di prodotto in sospeso — `IsPresent=false` usato come «escluso dal filtro»**
-   *(posta allo step 11f, non decisa dall'agente: è §«Cosa resta all'umano»)*. Un file
-   **fuori** dai watched root attivi viene marcato `IsPresent=false` al primo scan del
-   volume; dallo step 11a lo è anche un file dentro una cartella **esclusa per attributi**
-   (System/Hidden) o dentro un sottoalbero escluso. §6 riserva `IsPresent` a «non c'è più
-   sul disco», e il flag onesto per una decisione di *filtro* è `IsIncluded=false` (§4).
-   Nessuna riga viene mai cancellata e uno scan con il filtro riallargato la ripristina,
-   ma nel Catalogo l'utente oggi legge «assente» dove il fatto è «fuori dal perimetro che
-   hai scelto». **Le opzioni differiscono per significato, non per costo**, ed è ciò che
-   l'utente vede: (a) lasciare com'è e cambiare solo la parola in UI; (b) usare
-   `IsIncluded=false` per le esclusioni di filtro e tenere `IsPresent` per il disco — è la
-   lettura di §4/§6, e costa portare l'insieme escluso dentro il merge e il pass degli
-   assenti di `IBulkIndexWriter`; (c) un terzo stato «non ancora guardato», che è un
-   cambio di schema. C'è un test che **fissa** il comportamento attuale, quindi nulla si
-   muove finché non si decide.
+1. **`FilterReconciler` non sa perché una riga è esclusa** *(aperto dalla review dello step 11g;
+   decisione di prodotto/priorità all'utente)*. Da 11g `IsIncluded=0` porta due significati diversi
+   — «tipo non ammesso» e «fuori perimetro» — e la riconciliazione, che vede solo le estensioni, li
+   tratta uguali: qualunque cambio di filtro o switch di root **re-include in blocco** anche ciò che
+   la scansione aveva escluso per attributi o path, fino alla scansione successiva. Chiuderlo
+   significa **persistere il motivo** (colonna nuova su `Files`, migration di sole colonne nuove) e
+   distinguere almeno *tipo* / *root spento* / *saltato dalla scansione*, perché il secondo va
+   annullato dalla riconciliazione e il terzo no. Nello stesso pacchetto: la riconciliazione non
+   risincronizza l'FTS (Catalogo e Ricerca divergono finché non passa uno scan) e il filtro
+   `ExcludedPaths` non ha alcuna riconciliazione propria (11g gli ha dato solo un `NeedsScan`
+   onesto).
 2. **Step 12 — Test UI end-to-end (Playwright).**
+
+### Fatto nello step 11g (2026-08-19, commit `c8b0fff`…`ae8c679`)
+**Esclusione e assenza sono due fatti diversi, e ora il database lo dice.** Implementa la
+decisione di prodotto presa dall'utente lo stesso giorno (opzione (b) della voce di roadmap, ora
+chiusa): `IsPresent=false` significa **soltanto** «la scansione l'ha cercato e non l'ha trovato sul
+disco»; tutto ciò che sta fuori dal perimetro — fuori dai watched root attivi, sotto una cartella
+esclusa per attributi o path — è `IsIncluded=false` con la presenza **intatta**. Vedi §6.
+- **La scansione consegna al merge il perimetro che ha applicato** (`ScanPerimeter` in
+  `Business/Filtering`: i root ordinati + i sottoalberi esclusi + i file saltati uno a uno).
+  `IBulkIndexWriter.MarkAbsentFilesAsync` diventa `ReconcileUnseenFilesAsync` e prende le **aree
+  saltate**; due UPDATE set-based, in **quest'ordine**: prima l'esclusione, così le righe che
+  timbra `IsIncluded=0` **escono da sole** dal pass degli assenti — che resta lo statement e il
+  predicato esatti di prima, senza sottoquery negate sul percorso caldo e senza due condizioni da
+  tenere in accordo.
+- **Un'area è un id di DIRECTORY** (o una coppia `(directory, nome)` per un file saltato da solo),
+  **non un prefisso di path**. È la scelta tecnica centrale del giro: il catalogo contiene solo ciò
+  che *era* dentro il perimetro quando è stato scritto, quindi «quali directory del catalogo sono
+  fuori adesso» è normalmente l'insieme **vuoto** e al massimo il sottoalbero appena disattivato —
+  mentre l'insieme dei **path esclusi** è grande per costruzione (su un volume di sistema ogni
+  cartella sotto `Windows\` fallisce il filtro per conto suo). Lo staging riusa la forma del merge
+  (tabella TEMP per connessione), e la mappa `IdByPath` che serve a tradurre l'ha già costruita il
+  merge delle directory: zero query in più.
+- **Il merge scrive `IsIncluded = 1`** sulle righe che ritrova. Una riga nel lotto è una riga che
+  il filtro ha lasciato passare, quindi **la scansione È la decisione del filtro** (§4) — ed è
+  l'unica cosa che può annullare un'esclusione che nessuno ha fatto da Setup: una cartella che
+  smette di essere nascosta non alza alcun evento, e senza questo il suo contenuto resterebbe
+  invisibile per sempre.
+- **Nessuna colonna nuova sulle directory** *(decisione, come chiedeva il task)*: una cartella che
+  esiste sul disco **esiste**, anche se non se ne indicizza il contenuto. Quindi niente
+  `IsIncluded` su `Directories`, e `DirectoryMerger` semplicemente **non marca più assente** una
+  cartella solo perché la scansione non ci è entrata. Il prezzo, accettato: dopo aver disattivato
+  un root il Catalogo mostra lo **scheletro** delle sue cartelle (vuote), invece di farle sparire.
+- **Il rientro nel perimetro non costa una ri-scansione** (§4): `WatchedRootsService.UpdateAsync`
+  riconcilia anche sul cambio di `IsActive` — stesso `FilterReconciler`, un entry point in più,
+  **non una seconda copia**. Root spento → tutto sotto va `IsIncluded=false` (ciò che la cancella-
+  zione del root già faceva); riacceso → inclusione ricalcolata contro il filtro effettivo, con
+  `NeedsScan` vero perché ciò che non è mai stato indicizzato non si può «riabilitare» da una riga
+  che non esiste. Una richiesta che non cambia nulla non riscrive l'indice.
+- **Niente migration che indovina.** I DB esistenti contengono righe `IsPresent=false` scritte dal
+  comportamento vecchio e **non sono distinguibili** da file davvero spariti: la riga si ripara
+  alla prima scansione che la guarda di nuovo, che è esattamente quando la verità diventa
+  conoscibile. C'è un test che lo fissa.
+- **UI**: lo switch di una cartella monitorata produce ora una riconciliazione vera, e lo store la
+  buttava via — l'utente doveva fidarsi. Ora finisce sulla nota che il cambio filtro usa già, con
+  il testo riscritto: dice **l'effetto** («Indice riallineato: N file inclusi · M esclusi»), che è
+  vero per entrambe le cause, invece di nominare il filtro dei tipi che è solo una delle due.
+- **Verifica**: xUnit **765 verdi** (+15, di cui 4 dal giro di review), Vitest **243 verdi** (+1),
+  build backend pulita (warnings-as-errors), `ng build` ok (restano i 4 warning di budget SCSS,
+  pre-esistenti).
+  RED dimostrato rompendo il prodotto apposta: tolte le aree saltate → **4 rossi**; tolta la
+  scrittura di `IsIncluded` dal merge → il ramo «torna dentro» diventa rosso da solo; tolta la
+  riconciliazione dallo switch del root → **2 rossi**; tolti i due fix della review (il guard sul
+  tipo del file saltato, i segmenti di path in `FilterWidened`) → **2 rossi**.
+  **Misura, statement non millisecondi** (`CountingSqliteConnection`: i comandi raw del writer non
+  passano dagli interceptor di EF): chiudere una scansione che non ha saltato nulla = **1
+  statement**, esattamente come prima; **6** con un'area saltata, e **6 restano** che dietro
+  quell'area ci siano 50 righe o 500.
+  Harness sul ferro (`D:\Collaudo\A` → `C:\Collaudo\B`): **47 scenari, 47 PASS, 0 FAIL** (44 era la
+  baseline; il nuovo `exclusion-vs-absence` si applica a tutte e tre le coppie), eseguito **due
+  volte**, prima e dopo il giro di review. Costo di scansione invariato: 2 002 file, primo scan
+  1,27 s / re-scan 0,68 s prima, 0,52–0,83 s / 0,55–0,61 s dopo. `appsettings.json` dell'harness
+  rimesso byte-identico (sha256 `653f5990…` verificato).
+La **code review finale** (indipendente, sulle modifiche di questo giro) ha trovato **due cose con
+i denti**, entrambe corrette nel commit `ae8c679`, più le minori attorno.
+La prima: la scansione registrava **ogni** file scavalcato per motivi di perimetro, e ognuno
+diventava un INSERT in staging **dentro la transazione di chiusura** — quella che tiene l'unico
+write lock di SQLite. Su un volume sorvegliato dalla radice sono i `desktop.ini` di ogni cartella
+personalizzata, i `Thumbs.db`, il `pagefile.sys`: migliaia di stringhe tenute per tutta la
+scansione e migliaia di round-trip **per non dire niente**, perché un file che l'allow-list rifiuta
+non ha alcuna riga da correggere. Ora si registra un file saltato **solo se il filtro dei TIPI lo
+avrebbe ammesso**, che è esattamente l'insieme che può avere una riga `IsIncluded = 1`.
+La seconda: `FilterWidened` guardava solo le estensioni, quindi **togliere un segmento di path
+escluso** — un allargamento di perimetro a tutti gli effetti: sotto non è mai stato indicizzato
+niente — diceva all'utente che non serviva alcuna scansione.
+Nel passaggio: le due metà del filtro si chiedono **una volta ciascuna** invece di richiedere il
+perimetro sul ramo di scarto (`IsPathExcluded` fa uno `Split` per chiamata, e lo pagavamo due volte
+per ogni file rifiutato di un volume); il log «marked excluded» non sostiene più che i file siano
+ancora sul disco (la scansione non ha guardato, che è il motivo per cui la presenza è rimasta
+ferma), e la stessa frase è corretta su `IBulkIndexWriter`, dove ora dice anche **cosa implica**
+«lasciata com'era»; un file saltato la cui directory non si risolve non viene più scartato in
+silenzio (§9); e il test del conteggio statement dichiara **ciò che non prova**.
+**Limiti noti e accettati:**
+- **`FilterReconciler` non conosce il perimetro, e ora quel flag è l'unico segno che l'esclusione
+  esiste** *(sollevato dalla review, NON chiuso qui: chiuderlo richiede stato persistito nuovo —
+  una colonna che dice **perché** una riga è esclusa — ed è un work package, vedi roadmap)*.
+  Scenario: rendi nascosta `Photos\Private`, scansiona (righe `IsIncluded=0`, `IsPresent=1`, giusto),
+  poi **cambia il filtro dei tipi o accendi/spegni un root qualsiasi**: la riconciliazione re-include
+  in blocco tutto ciò che l'allow-list ammette sotto quel root, comprese quelle righe, e il
+  contenuto della cartella nascosta ricompare nel Catalogo fino alla scansione successiva, che lo
+  ri-esclude. Prima di 11g la stessa sequenza era innocua solo perché quelle righe portavano
+  `IsPresent=0` (cioè la bugia che questo step ha tolto). Nessuna perdita di dati, finestra chiusa
+  da qualunque scansione, `NeedsScan=true` sul percorso del root.
+- **Dopo un riallargamento senza scansione, Catalogo e Ricerca non concordano**: la chiusura della
+  scansione **pota** dall'FTS le righe che esclude, e `FilterReconciler` fa solo `ExecuteUpdate` —
+  non ha mai risincronizzato l'indice di ricerca. Quindi le righe re-incluse si navigano nel
+  Catalogo e **non si trovano in Ricerca** finché non passa una scansione. Pre-esistente per la
+  metà «tipi», esteso ora alla metà «perimetro».
+- **I due contatori della pagina Volumi descrivono perimetri diversi**: dopo aver spento un root il
+  conteggio **file** va a zero (filtra `IsIncluded`), quello delle **cartelle** no (filtra solo
+  `IsPresent`, e le directory non hanno un flag di inclusione — è la decisione presa qui).
+- **Un file rifiutato SOLO dall'allow-list delle estensioni non viene registrato come saltato**: la
+  sua riga è già `IsIncluded=0` nel catalogo (`FilterReconciler` la timbra nell'istante in cui il
+  filtro cambia) e il pass degli assenti la ignora già. Registrarli vorrebbe dire portare ogni
+  `.dll` di un volume sorvegliato dentro il merge per dire una cosa già detta. Se un giorno un
+  restringimento di filtro sfuggisse alla riconciliazione, quelle righe tornerebbero a essere lette
+  come assenti: è il limite, ed è pre-esistente.
+- **Una riga già `IsPresent=false` dal comportamento vecchio e ancora fuori perimetro resta così.**
+  Non l'abbiamo guardata, quindi non la correggiamo: converge quando rientra nel perimetro e una
+  scansione la ritrova. Il contrario sarebbe dichiarare presente un file che potrebbe essere stato
+  cancellato mesi fa.
+- **La riconciliazione non legge il disco, quindi non conosce gli attributi.** Riaccendendo un root,
+  `FilterReconciler` re-include tutto ciò che l'allow-list ammette — comprese le righe sotto una
+  cartella nel frattempo diventata nascosta, che la scansione successiva ri-escluderà. È il prezzo
+  di «senza ri-scansione»: l'alternativa sarebbe sondare il filesystem dentro una richiesta di
+  Setup, cioè fare una scansione per non farla.
+- **Spegnere l'ULTIMO root attivo** non passa dalla scansione (con zero root attivi `ScanService`
+  esce subito, «nothing to scan»): l'esclusione la scrive la riconciliazione di Setup. Chi
+  disattivasse un root scrivendo direttamente nel DB non vedrebbe muoversi niente finché un root
+  non torna attivo.
+- **`IndexUpdater` (fine di un rename/move) valuta `IsIncluded` con il filtro di default** quando
+  il path di destinazione è fuori da ogni root attivo (regola pre-esistente di
+  `RootFilterResolver`: «la risposta più larga»). Un file portato fuori perimetro da un job resta
+  quindi incluso fino alla scansione successiva, che lo esclude. Si ripara da solo, ma le due
+  strade non danno la stessa risposta nello stesso istante.
+- **`SkippedAreas` interroga il perimetro su ogni directory del volume** presente a catalogo. È in
+  memoria e senza query (la mappa è già in mano al merge), ma è O(directory) per scansione.
+- **Flakiness pre-esistente incontrata** (una passata: `CatalogApiTests`, verde in isolamento e su
+  una passata pulita, 761/761): è quella documentata da 11e/11f, non di questo giro.
 
 ### Fatto nello step 11f (2026-08-19, commit `20791fd`…`1fca8c3`)
 **WP10 chiuso**, e con esso i **work package minori**: il prossimo è lo **step 12 (Playwright)**.
@@ -708,9 +852,10 @@ sopravvive invece di prendere la prima.
   (un test diverso a ogni giro — `DomainApiTests`, `SetupApiTests`, `RootsBySpecificityTests`,
   `Win32FileMoverTests` — sempre verde in isolamento e su una passata pulita, 750/750). Non è di
   questo giro: le passate incriminate non toccano i file modificati qui. Resta aperta.
-- **La domanda di prodotto su `IsPresent=false` come «escluso dal filtro» è stata posta e NON
+- ~~**La domanda di prodotto su `IsPresent=false` come «escluso dal filtro» è stata posta e NON
   decisa** (è §«Cosa resta all'umano»): vedi il punto 1 della roadmap. Nulla è stato mosso, e il
-  test che fissa il comportamento attuale è ancora lì.
+  test che fissa il comportamento attuale è ancora lì.~~ **Decisa dall'utente e implementata allo
+  step 11g** (2026-08-19).
 
 ### Fatto nello step 11e (2026-08-19, commit `ec725c3`…`d7f7748`)
 **WP9 chiuso** (E1, E3, E4, E5, E6, E7, E8; E2 era già chiuso allo step 9a). La radice è sempre la
@@ -1387,9 +1532,10 @@ toccata, indici non-unique quindi nessun rischio da duplicati pre-esistenti).
   `Blocked(NameCollision)` e `FinalizePartial` rifiuta un target esistente, quindi nulla viene mai
   sovrascritto — ma l'invariante «una sola operazione pendente per entità» non è garantita per
   quella coppia. Stesso WP dell'altro.
-- **`IsPresent=false` per una decisione di filtro** (vedi roadmap sopra): un file già indicizzato
-  che finisce sotto una cartella diventata nascosta viene marcato assente invece che escluso.
-  Fissato da un test, non benedetto.
+- ~~**`IsPresent=false` per una decisione di filtro**: un file già indicizzato che finisce sotto
+  una cartella diventata nascosta viene marcato assente invece che escluso. Fissato da un test,
+  non benedetto.~~ **Chiuso allo step 11g**: ora è `IsIncluded=false` con la presenza intatta, e
+  quel test è stato riscritto per asserire il comportamento giusto.
 - **`NOCASE` piega solo l'ASCII** (stesso limite del merge di scan, step 9a): un case-variant
   **non ASCII** resta due path diversi, in SQL come in memoria. Costa una riga in più, mai una in
   meno. Le righe già duplicate in un DB esistente **non** vengono fuse dalla migration: sarebbe
