@@ -1,4 +1,4 @@
-using FileTracert.Business.Operations;
+﻿using FileTracert.Business.Operations;
 using FileTracert.Contracts.Operations;
 using FileTracert.Data;
 using FileTracert.Tests.Data;
@@ -498,4 +498,103 @@ public sealed class SpaceLedgerTests : IDisposable
         r.DeficitBytes.Should().BeGreaterThan(0);
     }
 
+    // ── K3: one definition of "does this job hold a reservation, and which one" ────────
+
+    /// <summary>
+    /// The guard that used to be spelled out at both re-queue call sites. Null means "this job
+    /// needs no room anywhere" — and it must agree with <see cref="SpaceCheck.EvaluateHardAsync"/>,
+    /// which waves exactly these three cases through without touching the device. A job the two
+    /// judged differently would be reserved for something the engine never re-checks.
+    /// </summary>
+    [Theory]
+    [InlineData(false, 500, 2, true)]    // cross-volume, real demand, a target: a reservation
+    [InlineData(true, 500, 2, false)]    // intra-volume moves nothing between volumes
+    [InlineData(false, 0, 2, false)]     // nothing to ask for
+    [InlineData(false, 500, null, false)] // nowhere to ask
+    public void ReservationFor_answers_the_three_no_space_cases_with_null(
+        bool intraVolume, long requiredBytes, int? targetVolumeId, bool expected)
+    {
+        var job = new FileTracert.Data.Entities.OperationJob
+        {
+            Id = 7,
+            Type = FileTracert.Contracts.Enums.JobType.MoveFile,
+            State = FileTracert.Contracts.Enums.JobState.Pending,
+            SequenceOrder = 3,
+            IsIntraVolume = intraVolume,
+            RequiredBytesTarget = requiredBytes,
+            TargetVolumeId = targetVolumeId,
+            SourceVolumeId = 1,
+            FreedBytesSource = requiredBytes,
+        };
+
+        var reservation = SpaceLedger.ReservationFor(job);
+
+        reservation.HasValue.Should().Be(expected);
+        if (expected)
+        {
+            reservation!.Value.Should().Be(new JobReservation(7, 3, 2, requiredBytes, 1, requiredBytes));
+        }
+    }
+
+    /// <summary>
+    /// "Exactly one active reservation", from each of the three starting points a re-queued job
+    /// can be in — never reserved, still reserving, no longer reserving. Normalizing is what all
+    /// three have in common, and it must be idempotent: a second pass leaves one set, not two.
+    /// </summary>
+    [Fact]
+    public async Task Normalize_leaves_exactly_one_reservation_whatever_the_job_was_holding()
+    {
+        var reservation = new JobReservation(
+            JobId: 1, SequenceOrder: 1, TargetVolumeId: 2,
+            RequiredBytes: 400, SourceVolumeId: 3, FreedBytes: 400);
+
+        // Never reserved.
+        await _ledger.NormalizeReservationAsync(reservation);
+        (await ActiveEntriesAsync(1)).Should().Be(2, "one +reservation on the target, one -liberation on the source");
+
+        // Still reserving: normalizing again does not double it.
+        await _ledger.NormalizeReservationAsync(reservation);
+        (await ActiveEntriesAsync(1)).Should().Be(2);
+
+        // No longer reserving.
+        await Release(1);
+        (await ActiveEntriesAsync(1)).Should().Be(0);
+        await _ledger.NormalizeReservationAsync(reservation);
+        (await ActiveEntriesAsync(1)).Should().Be(2);
+
+        // And the mirror agrees with the table: 1 000 free, 400 taken, 400 left over.
+        var f = await Compute(volId: 2, free: 1_000, required: 600, excludeJobId: null);
+        f.ReservedBytes.Should().Be(400);
+    }
+
+    /// <summary>
+    /// The durable half alone, as the release of a parked job uses it (E8): it writes through the
+    /// CALLER's context so it can sit inside that job's state-change transaction, and the mirror
+    /// is brought level afterwards by the in-memory half. Both must end up saying the same thing
+    /// as the all-in-one call.
+    /// </summary>
+    [Fact]
+    public async Task The_durable_and_mirror_halves_together_say_what_the_single_call_says()
+    {
+        var reservation = new JobReservation(1, 1, 2, 400, 3, 400);
+
+        await using (var db = _harness.CreateContext())
+        {
+            await SpaceLedger.NormalizeReservationDurableAsync(db, reservation, CancellationToken.None);
+        }
+        (await ActiveEntriesAsync(1)).Should().Be(2, "the rows are committed by the caller's unit of work");
+
+        // Before the mirror is told, the ledger still knows nothing — which is why the caller must
+        // run this after its commit and never before.
+        (await Compute(volId: 2, free: 1_000, required: 100)).ReservedBytes.Should().Be(0);
+
+        await _ledger.NormalizeReservationInMemoryAsync(reservation);
+        (await Compute(volId: 2, free: 1_000, required: 100)).ReservedBytes.Should().Be(400);
+    }
+
+    private async Task<int> ActiveEntriesAsync(int jobId)
+    {
+        await using var db = _harness.CreateContext();
+        return await db.SpaceLedgerEntries.CountAsync(e => e.JobId == jobId && e.IsActive);
+    }
 }

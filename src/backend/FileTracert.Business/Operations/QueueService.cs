@@ -505,14 +505,12 @@ public sealed class QueueService : IQueueService
 
         // Ledger coherence (same principle as the atomic enqueue, fix #2): a Failed job
         // released its reservation, an engine-Blocked one kept it, an enqueue-Blocked one
-        // never had it — release-then-reserve normalizes all three to exactly one set.
-        if (!job.IsIntraVolume && job.RequiredBytesTarget > 0 && job.TargetVolumeId.HasValue)
-        {
-            await _ledger.ReleaseAsync(job.Id, ct);
-            await _ledger.ReserveAsync(
-                job.Id, job.SequenceOrder, job.TargetVolumeId.Value,
-                job.RequiredBytesTarget, job.SourceVolumeId, job.FreedBytesSource, ct);
-        }
+        // never had it — release-then-reserve normalizes all three to exactly one set. Same
+        // rule, same numbers and the same guard as the release of a parked job (K3), and
+        // uncancellable by signature: the Pending state is already committed, so a request that
+        // gives up here would leave a runnable job whose demand the ledger does not know about.
+        if (SpaceLedger.ReservationFor(job) is { } reservation)
+            await _ledger.NormalizeReservationAsync(reservation);
 
         // A retried job is runnable again — wake the processor.
         _signal.Signal();

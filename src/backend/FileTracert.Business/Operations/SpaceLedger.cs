@@ -133,6 +133,62 @@ public sealed class SpaceLedger : ISpaceLedger
         _logger.LogDebug("SpaceLedger: released entries for job {Job}.", jobId);
     }
 
+    // ── normalization (K3) ───────────────────────────────────────────────────
+
+    /// <summary>
+    /// Does this job hold a reservation, and which one? THE single answer (K3) — the guard used to
+    /// be written out at both call sites that re-queue a job, and a job the two judged differently
+    /// would end up reserved twice or not at all.
+    ///
+    /// <para>Null for a job that needs no room on any target: an intra-volume operation moves
+    /// nothing between volumes, a zero-byte demand asks for nothing, and a job with no target
+    /// volume has nowhere to ask. Those are also exactly the cases
+    /// <see cref="SpaceCheck.EvaluateHardAsync"/> waves through without touching the device — one
+    /// definition of "this job needs space", or the queue reserves for a job the engine never
+    /// checks.</para>
+    /// </summary>
+    public static JobReservation? ReservationFor(OperationJob job) =>
+        !job.IsIntraVolume && job.RequiredBytesTarget > 0 && job.TargetVolumeId.HasValue
+            ? new JobReservation(
+                job.Id, job.SequenceOrder, job.TargetVolumeId.Value,
+                job.RequiredBytesTarget, job.SourceVolumeId, job.FreedBytesSource)
+            : null;
+
+    public async Task NormalizeReservationAsync(JobReservation reservation)
+    {
+        await ReleaseAsync(reservation.JobId, CancellationToken.None);
+        await ReserveAsync(
+            reservation.JobId, reservation.SequenceOrder, reservation.TargetVolumeId,
+            reservation.RequiredBytes, reservation.SourceVolumeId, reservation.FreedBytes,
+            CancellationToken.None);
+    }
+
+    public async Task NormalizeReservationInMemoryAsync(JobReservation reservation)
+    {
+        await ReleaseInMemoryAsync(reservation.JobId, CancellationToken.None);
+        await RegisterReservationInMemoryAsync(
+            reservation.JobId, reservation.SequenceOrder, reservation.TargetVolumeId,
+            reservation.RequiredBytes, reservation.SourceVolumeId, reservation.FreedBytes,
+            CancellationToken.None);
+    }
+
+    /// <summary>
+    /// The DURABLE half of the normalization, written through the CALLER's DbContext so it can
+    /// live inside the transaction of the state change it belongs to (E8): a crash must never
+    /// leave a Pending job whose reservation was released and not re-taken, i.e. under-reserved
+    /// against everybody else. The caller runs <see cref="NormalizeReservationInMemoryAsync"/>
+    /// after its commit.
+    /// </summary>
+    public static async Task NormalizeReservationDurableAsync(
+        FileTracertDbContext db, JobReservation reservation, CancellationToken ct)
+    {
+        await DeactivateEntriesAsync(db, reservation.JobId, ct);
+        db.SpaceLedgerEntries.AddRange(BuildReservationEntries(
+            reservation.JobId, reservation.TargetVolumeId, reservation.RequiredBytes,
+            reservation.SourceVolumeId, reservation.FreedBytes));
+        await db.SaveChangesAsync(ct);
+    }
+
     /// <summary>
     /// Deactivates a job's active entries through the CALLER's DbContext, so a terminal state
     /// change and its ledger release commit in the same transaction (finding #5): a crash can

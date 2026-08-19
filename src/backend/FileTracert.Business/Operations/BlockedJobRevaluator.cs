@@ -216,40 +216,21 @@ public sealed class BlockedJobRevaluator
         // OWN scope and connection, and calling them while holding SQLite's single write lock is
         // what would be a self-inflicted SQLITE_BUSY. The static halves take the caller's context
         // precisely so a unit of work can own them.
-        bool normalizeReservation =
-            !job.IsIntraVolume && job.RequiredBytesTarget > 0 && job.TargetVolumeId.HasValue;
+        var reservation = SpaceLedger.ReservationFor(job);
 
-        if (normalizeReservation)
-        {
-            await SpaceLedger.DeactivateEntriesAsync(_db, job.Id, ct);
-            _db.SpaceLedgerEntries.AddRange(SpaceLedger.BuildReservationEntries(
-                job.Id, job.TargetVolumeId!.Value, job.RequiredBytesTarget,
-                job.SourceVolumeId, job.FreedBytesSource));
-            await _db.SaveChangesAsync(ct);
-        }
+        if (reservation is { } durable)
+            await SpaceLedger.NormalizeReservationDurableAsync(_db, durable, ct);
 
         await tx.CommitAsync(ct);
 
         // The in-memory mirror follows the commit, never precedes it — same order as the enqueue
         // and the completion. Until this runs the ledger under-counts this job's demand; a
         // revaluation pass is single-threaded and the next candidate is judged after it, so no
-        // decision is taken on the gap.
-        //
-        // NOT cancellable, deliberately, and for the same reason the engine's post-commit mirror
-        // updates are not: the rows are already committed. Honouring the token here would abort
-        // between the durable fact and its mirror, and since the mirror — not the table — is what
-        // every feasibility decision is computed from, the two would stay apart until a restart
-        // rebuilt it. That is not a shutdown-only hazard: `CancelAsync` runs a revaluation on the
-        // request's own token, so a user closing the tab mid-cancel would leave the queue judging
-        // the next job against a reservation the database holds and the ledger cannot see.
-        if (normalizeReservation)
-        {
-            await _ledger.ReleaseInMemoryAsync(job.Id, CancellationToken.None);
-            await _ledger.RegisterReservationInMemoryAsync(
-                job.Id, job.SequenceOrder, job.TargetVolumeId!.Value,
-                job.RequiredBytesTarget, job.SourceVolumeId, job.FreedBytesSource,
-                CancellationToken.None);
-        }
+        // decision is taken on the gap. Uncancellable by signature (K3): the rows are already
+        // committed, and the mirror — not the table — is what every feasibility verdict is
+        // computed from.
+        if (reservation is { } mirror)
+            await _ledger.NormalizeReservationInMemoryAsync(mirror);
 
         _logger.LogInformation(
             "Job {Id} unblocked: the obstacle is gone (was {Reason}).", job.Id, previousReason);

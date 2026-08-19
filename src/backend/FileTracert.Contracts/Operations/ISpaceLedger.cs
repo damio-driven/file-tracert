@@ -98,6 +98,31 @@ public interface ISpaceLedger
     Task ReleaseInMemoryAsync(int jobId, CancellationToken ct);
 
     /// <summary>
+    /// Guarantees a job that is (re)entering the queue holds EXACTLY ONE active reservation,
+    /// in the database and in the mirror: release whatever it has, then reserve what it needs.
+    /// The one call that covers all three starting points — a job blocked at enqueue for lack of
+    /// space never reserved, one blocked by the engine or parked by the offline gate kept its
+    /// reservation, a Failed one released it (K3).
+    ///
+    /// <para><b>No cancellation token, deliberately.</b> The job's <c>Pending</c> state is already
+    /// committed when this runs; abandoning it half-way leaves a runnable job whose demand the
+    /// ledger does not know about — and the ledger, not the table, is what every feasibility
+    /// verdict is computed from. That is not a shutdown-only hazard: the retry runs on the
+    /// request's own token, so a user closing the tab would leave the queue planning against a
+    /// reservation nobody holds. The two hand-written copies disagreed here, one passing the
+    /// request token and one <c>CancellationToken.None</c>; the signature settles it.</para>
+    /// </summary>
+    Task NormalizeReservationAsync(JobReservation reservation);
+
+    /// <summary>
+    /// The mirror half of <see cref="NormalizeReservationAsync"/>, for a caller that has already
+    /// moved the DURABLE half inside its own state-change transaction (E8). Call it after the
+    /// commit — never before, or the mirror would reflect a reservation the database has not
+    /// committed. Uncancellable for the reason above.
+    /// </summary>
+    Task NormalizeReservationInMemoryAsync(JobReservation reservation);
+
+    /// <summary>
     /// Rebuilds in-memory state from all active <c>SpaceLedgerEntries</c> in the DB.
     /// Must be called once at startup before any other operation.
     /// </summary>
