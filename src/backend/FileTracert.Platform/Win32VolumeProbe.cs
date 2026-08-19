@@ -75,6 +75,29 @@ internal sealed class Win32VolumeProbe : IVolumeProbe
             .FirstOrDefault(v => string.Equals(v.VolumeGuid, volumeGuid, StringComparison.OrdinalIgnoreCase));
     }
 
+    public long? TryGetFreeBytes(string volumeGuid)
+    {
+        if (!VolumePathParsing.IsVolumeGuidPath(volumeGuid))
+        {
+            _logger.LogWarning("Free-space probe refused a value that is not a volume GUID path: '{Guid}'.", volumeGuid);
+            return null;
+        }
+
+        // One syscall against the volume itself. It doubles as a presence check: an unmounted
+        // or removed volume fails here instead of returning a stale number.
+        if (NativeMethods.GetDiskFreeSpaceEx(volumeGuid, out _, out _, out var totalFree))
+        {
+            return (long)totalFree;
+        }
+
+        // Not silent (§9): the caller turns this into a Blocked job, and the reason why the
+        // device could not answer belongs in the log.
+        _logger.LogWarning(
+            "GetDiskFreeSpaceEx failed for volume {Guid} (Win32 error {Error}); the volume is not readable right now.",
+            volumeGuid, Marshal.GetLastWin32Error());
+        return null;
+    }
+
     private ProbedVolume BuildVolume(string volumeGuid, IReadOnlyDictionary<string, string> diskMap)
     {
         var mountPoints = GetMountPoints(volumeGuid);

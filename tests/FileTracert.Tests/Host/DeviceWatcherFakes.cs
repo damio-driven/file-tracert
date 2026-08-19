@@ -53,6 +53,8 @@ internal sealed class CountingVolumesProbe(IReadOnlyList<ProbedVolume> volumes) 
 
     public ProbedVolume? TryGetByGuid(string volumeGuid) =>
         volumes.FirstOrDefault(v => string.Equals(v.VolumeGuid, volumeGuid, StringComparison.OrdinalIgnoreCase));
+
+    public long? TryGetFreeBytes(string volumeGuid) => TryGetByGuid(volumeGuid)?.FreeBytes;
 }
 
 /// <summary>
@@ -100,4 +102,6 @@ internal sealed class LatchingVolumesProbe : IVolumeProbe
     }
 
     public ProbedVolume? TryGetByGuid(string volumeGuid) => null;
+
+    public long? TryGetFreeBytes(string volumeGuid) => null;
 }

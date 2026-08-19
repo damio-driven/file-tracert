@@ -51,6 +51,8 @@ internal sealed class FakeVolumeProbe(ProbedVolume volume) : IVolumeProbe
 
     public ProbedVolume? TryGetByGuid(string volumeGuid) =>
         string.Equals(volumeGuid, volume.VolumeGuid, StringComparison.OrdinalIgnoreCase) ? volume : null;
+
+    public long? TryGetFreeBytes(string volumeGuid) => TryGetByGuid(volumeGuid)?.FreeBytes;
 }
 
 internal sealed class FakeVolumesProbe(IReadOnlyList<ProbedVolume> volumes) : IVolumeProbe
@@ -59,6 +61,8 @@ internal sealed class FakeVolumesProbe(IReadOnlyList<ProbedVolume> volumes) : IV
 
     public ProbedVolume? TryGetByGuid(string volumeGuid) =>
         volumes.FirstOrDefault(v => string.Equals(v.VolumeGuid, volumeGuid, StringComparison.OrdinalIgnoreCase));
+
+    public long? TryGetFreeBytes(string volumeGuid) => TryGetByGuid(volumeGuid)?.FreeBytes;
 }
 
 internal sealed class FakeDirectoryEnumerator(IReadOnlyList<ScanEntry> entries) : IDirectoryEnumerator
