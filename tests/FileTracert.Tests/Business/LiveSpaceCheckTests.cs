@@ -121,10 +121,10 @@ public sealed class LiveSpaceCheckTests : IDisposable
 
         await using var db = _harness.CreateContext();
         var target = await db.Volumes.SingleAsync(v => v.Id == TargetVolumeId);
-        // Absolute overwrite, not a delta: the completion fold subtracts the job's bytes from
-        // whatever the row holds, and a fresh reading supersedes both.
-        target.FreeBytesLastKnown.Should().Be(777_000 - MoveSizeBytes,
-            "the probed value replaces the estimate, then the completion fold applies once");
+        // An absolute overwrite, and nothing else: no completion arithmetic on top of it, or the
+        // stored estimate would drift one job size below the truth until the next probe.
+        target.FreeBytesLastKnown.Should().Be(777_000,
+            "the column holds what was measured, not a measurement minus a guess");
     }
 
     [Fact]

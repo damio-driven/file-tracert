@@ -23,6 +23,11 @@ namespace FileTracert.Tests.Business;
 /// The execution-time HARD re-check must NOT trust that promise: attempted before A has freed,
 /// B must go Blocked(InsufficientSpace) — never proceed on estimate, never end Failed — and must
 /// recover on its own once A completes (revaluation cycle).
+///
+/// The drive is modelled by <see cref="StubFreeSpaceProbe"/> and moves only when a job really
+/// moves bytes (see <c>RunWorkerLoopAsync</c>): since step 11b the checks read the device, so B's
+/// recovery has to come from space that genuinely exists, not from an estimate the queue wrote
+/// to itself.
 /// </summary>
 public sealed class QueueFifoRecoveryTests : IDisposable
 {
@@ -37,6 +42,11 @@ public sealed class QueueFifoRecoveryTests : IDisposable
     private readonly SqliteInMemoryContext _harness;
     private readonly SpaceLedger _ledger;
     private readonly JobCancellationRegistry _cancellation = new();
+
+    /// <summary>The two drives as the device reports them, before any job has run.</summary>
+    private readonly StubFreeSpaceProbe _disk = new StubFreeSpaceProbe(freeBytes: null)
+        .SetVolume(Vol1Guid, 200_000)
+        .SetVolume(Vol2Guid, Vol2Free);
 
     public QueueFifoRecoveryTests()
     {
@@ -88,22 +98,22 @@ public sealed class QueueFifoRecoveryTests : IDisposable
     // ── wiring (real services, fresh DbContext each) ──────────────────────────
 
     private QueueService MakeQueueService(FileTracertDbContext db) =>
-        new(db, _ledger, TestProjection.Space(db, _ledger), _cancellation, Substitute.For<IFileMover>(), new QueueSignal(),
+        new(db, _ledger, TestProjection.Space(db, _ledger, _disk), _cancellation, Substitute.For<IFileMover>(), new QueueSignal(),
             TestProjection.Index(db), TestProjection.Overlay(db),
             TestProjection.Unblocker(db),
-            TestProjection.Revaluator(db, _ledger),
+            TestProjection.Revaluator(db, _ledger, fts: null, _disk),
             TestProjection.Realtime(), NullLogger<QueueService>.Instance);
 
     private JobExecutionEngine MakeEngine(IFileMover mover, FileTracertDbContext db)
     {
         var indexUpdater = TestProjection.Index(db);
         var notifications = new FileTracert.Business.Notifications.NotificationService(db, TestProjection.Realtime());
-        return new JobExecutionEngine(db, mover, _ledger, TestProjection.Space(db, _ledger), indexUpdater, TestProjection.Overlay(db), notifications,
+        return new JobExecutionEngine(db, mover, _ledger, TestProjection.Space(db, _ledger, _disk), indexUpdater, TestProjection.Overlay(db), notifications,
             TimeProvider.System, TestProjection.Realtime(), NullLogger<JobExecutionEngine>.Instance);
     }
 
     private BlockedJobRevaluator MakeRevaluator(FileTracertDbContext db) =>
-        new(db, _ledger, TestProjection.Space(db, _ledger), TestProjection.Unblocker(db), TestProjection.Realtime(), NullLogger<BlockedJobRevaluator>.Instance);
+        new(db, _ledger, TestProjection.Space(db, _ledger, _disk), TestProjection.Unblocker(db), TestProjection.Realtime(), NullLogger<BlockedJobRevaluator>.Instance);
 
     private static IFileMover HappyMover()
     {
@@ -167,12 +177,33 @@ public sealed class QueueFifoRecoveryTests : IDisposable
             if (await ReadState(jobId.Value) == JobState.Completed)
             {
                 completedOrder.Add(jobId.Value);
+                // The bytes really moved: the drives change accordingly. This is what makes B's
+                // recovery honest — it runs because the room is there, not because the queue
+                // told itself so.
+                await ApplyPhysicalEffectAsync(jobId.Value);
                 await using var db = _harness.CreateContext();
                 await MakeRevaluator(db).RevaluateAsync(CancellationToken.None);
             }
         }
 
         return completedOrder;
+    }
+
+    /// <summary>Applies a completed job's bytes to the modelled drives.</summary>
+    private async Task ApplyPhysicalEffectAsync(int jobId)
+    {
+        await using var db = _harness.CreateContext();
+        var job = await db.OperationJobs
+            .Include(j => j.SourceVolume)
+            .Include(j => j.TargetVolume)
+            .AsNoTracking()
+            .SingleAsync(j => j.Id == jobId);
+
+        if (job.IsIntraVolume) return;
+        if (job.TargetVolume is not null)
+            _disk.Adjust(job.TargetVolume.VolumeGuid, -job.RequiredBytesTarget);
+        if (job.SourceVolume is not null)
+            _disk.Adjust(job.SourceVolume.VolumeGuid, +job.FreedBytesSource);
     }
 
     private async Task<JobState> ReadState(int jobId)

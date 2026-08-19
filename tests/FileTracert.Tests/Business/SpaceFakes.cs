@@ -27,14 +27,31 @@ internal sealed class LastKnownFreeSpaceProbe(FileTracertDbContext db) : IVolume
 /// <summary>
 /// Platform fake whose answer is set by the test, independently of what the catalog believes —
 /// the disk as another process left it. <c>null</c> models a volume that does not answer at all.
+/// A per-volume figure can be registered when the test needs two drives with different room;
+/// anything not registered gets <see cref="FreeBytes"/>.
 /// </summary>
 internal sealed class StubFreeSpaceProbe(long? freeBytes) : IVolumeProbe
 {
-    /// <summary>What the next probe reports. Settable so a test can "free space" mid-scenario.</summary>
+    private readonly Dictionary<string, long> _byVolume = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>What an unregistered volume reports. Settable so a test can "free space" mid-scenario.</summary>
     public long? FreeBytes { get; set; } = freeBytes;
 
     /// <summary>How many times the device was actually asked.</summary>
     public int Probes { get; private set; }
+
+    public StubFreeSpaceProbe SetVolume(string volumeGuid, long free)
+    {
+        _byVolume[volumeGuid] = free;
+        return this;
+    }
+
+    /// <summary>Moves a registered volume's free space, the way real bytes landing or leaving would.</summary>
+    public void Adjust(string volumeGuid, long deltaBytes)
+    {
+        if (_byVolume.TryGetValue(volumeGuid, out var current))
+            _byVolume[volumeGuid] = Math.Max(0, current + deltaBytes);
+    }
 
     public IReadOnlyList<ProbedVolume> EnumerateVolumes() => [];
 
@@ -43,6 +60,6 @@ internal sealed class StubFreeSpaceProbe(long? freeBytes) : IVolumeProbe
     public long? TryGetFreeBytes(string volumeGuid)
     {
         Probes++;
-        return FreeBytes;
+        return _byVolume.TryGetValue(volumeGuid, out var free) ? free : FreeBytes;
     }
 }

@@ -740,25 +740,19 @@ public sealed class JobExecutionEngine
         job.State = JobState.Completed;
         job.CompletedUtc = DateTime.UtcNow;
 
-        // Fold the job's now-materialized space effect into the volumes' last-known free bytes
-        // BEFORE releasing its ledger entries: releasing alone would make the target look
-        // roomier (reservation gone, stale free unchanged) and the source liberation would
-        // vanish without ever reaching FreeBytesLastKnown — blocking jobs that now fit until
-        // the next volume probe. Estimate bookkeeping only; the periodic sync overwrites it.
-        if (!job.IsIntraVolume)
-        {
-            if (job.TargetVolume is not null && job.RequiredBytesTarget > 0)
-                job.TargetVolume.FreeBytesLastKnown =
-                    Math.Max(0, job.TargetVolume.FreeBytesLastKnown - job.RequiredBytesTarget);
-            if (job.SourceVolume is not null && job.FreedBytesSource > 0)
-                job.SourceVolume.FreeBytesLastKnown += job.FreedBytesSource;
-        }
+        // No space fold here. Until step 11b the completion subtracted the job's bytes from the
+        // target's FreeBytesLastKnown and credited the source's, to keep the estimate usable
+        // between two volume probes. Now that the hard re-check reads the DEVICE — and writes
+        // what it read — that arithmetic runs on top of a figure which already includes the
+        // bytes just written, and the estimate ends up one job size too pessimistic until the
+        // next probe corrects it. The source half was never true anyway: the files went to the
+        // recycle bin, so those bytes are not free until the bin is emptied. FreeBytesLastKnown
+        // is now written by measurements only — the volume sync, and the hard check's refresh.
 
         // One atomic completion commit:
         // - catalog/FTS update INSIDE it (finding #7): a failure rolls the whole completion
         //   back — the job stays at its checkpoint and re-runs — instead of flipping an
-        //   already-committed Completed to Failed; and since the space fold above commits
-        //   with it, a retry can never subtract RequiredBytesTarget twice.
+        //   already-committed Completed to Failed.
         // - ledger release INSIDE it (finding #5): a crash can't leave a phantom IsActive
         //   reservation on a terminal job. The in-memory mirror follows after the commit.
         // - overlay clear INSIDE it (§5): the projection stops being an overlay the instant the
@@ -806,8 +800,8 @@ public sealed class JobExecutionEngine
     private async Task HandleCompletionCommitFailureAsync(OperationJob job, Exception failure, CancellationToken ct)
     {
         // The tracker still holds every pending mutation of the rolled-back completion
-        // (Completed state, space fold, index re-points). Drop them all — only the
-        // committed checkpoint may reach the DB from here on.
+        // (Completed state, index re-points). Drop them all — only the committed
+        // checkpoint may reach the DB from here on.
         _db.ChangeTracker.Clear();
 
         var attempts = await _db.OperationJobs.AsNoTracking()

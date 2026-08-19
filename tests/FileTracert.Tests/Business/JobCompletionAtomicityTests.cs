@@ -15,11 +15,13 @@ namespace FileTracert.Tests.Business;
 
 /// <summary>
 /// Review finding #7: the index update used to run AFTER the Completed commit, without a
-/// catch — a transient failure (SQLITE_BUSY) flipped an already-completed job to Failed,
-/// and re-running completion subtracted RequiredBytesTarget from FreeBytesLastKnown a
-/// second time. The completion must be atomic: index update inside the same commit as
-/// Completed, so a failure rolls the whole completion back (job re-runs from checkpoint)
-/// and the space fold applies exactly once.
+/// catch — a transient failure (SQLITE_BUSY) flipped an already-completed job to Failed.
+/// The completion must be atomic: index update inside the same commit as Completed, so a
+/// failure rolls the whole completion back and the job re-runs from its checkpoint.
+///
+/// The other half of that finding — the retry subtracting RequiredBytesTarget from
+/// FreeBytesLastKnown a second time — cannot happen at all since step 11b: completion no
+/// longer does arithmetic on that column, which now only ever holds a measurement.
 /// </summary>
 [Trait("Category", "Platform")]
 public sealed class JobCompletionAtomicityTests : IDisposable
@@ -157,9 +159,11 @@ public sealed class JobCompletionAtomicityTests : IDisposable
         job2.State.Should().Be(JobState.Completed, $"error='{job2.ErrorMessage}'");
         job2.Items.Single().State.Should().Be(JobItemState.Done);
 
-        // Space fold exactly once, no double decrement across the retry.
+        // The free-space estimate is a measurement, not a running total: the completion (or its
+        // retry) must not decrement it — the probe of the hard re-check is what writes it, and
+        // here it reports exactly what the row already held.
         var volume = await final.Volumes.AsNoTracking().SingleAsync(v => v.Id == 1);
-        volume.FreeBytesLastKnown.Should().Be(InitialFreeBytes - content.Length);
+        volume.FreeBytesLastKnown.Should().Be(InitialFreeBytes);
 
         // The index update did land: the file row points at the target directory.
         var file = await final.Files.AsNoTracking().SingleAsync(f => f.Id == 10);
