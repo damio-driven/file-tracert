@@ -5,8 +5,13 @@ namespace FileTracert.Host.Logging;
 /// <summary>
 /// Registers the SQLite sink as a logging provider. The console sink stays active
 /// alongside it (added by the default host builder) so early-startup logs — emitted
-/// before the log DB is ready — are never lost. The processor's lifecycle is owned
-/// by DI (singleton), so disposing the provider must not tear it down.
+/// before the log DB is ready — are never lost.
+/// <para>
+/// Disposing the provider deliberately does <em>not</em> tear the processor down: the
+/// provider is one of several holders of a queue that must stay open until every worker has
+/// logged its last line. Closing and draining it is <see cref="LogFlushService"/>'s job, at
+/// the end of the host's stop sequence.
+/// </para>
 /// </summary>
 [ProviderAlias("Sqlite")]
 public sealed class SqliteLoggerProvider : ILoggerProvider
@@ -25,6 +30,6 @@ public sealed class SqliteLoggerProvider : ILoggerProvider
 
     public void Dispose()
     {
-        // The processor is a DI-owned singleton; it is flushed/disposed there.
+        // Intentionally empty: see the note above — LogFlushService owns the drain.
     }
 }

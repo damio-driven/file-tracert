@@ -38,6 +38,14 @@ public sealed class FileTracertOptions
     /// <summary>Graceful shutdown budget for in-flight workers.</summary>
     public int ShutdownTimeoutSeconds { get; set; } = 30;
 
+    /// <summary>
+    /// How long the shutdown may wait for the queued log records to reach the log database
+    /// (<see cref="Logging.LogFlushService"/>). Deliberately a small fraction of
+    /// <see cref="ShutdownTimeoutSeconds"/>: flushing the queue must never be the reason a
+    /// service fails to stop.
+    /// </summary>
+    public int LogDrainTimeoutSeconds { get; set; } = 5;
+
     /// <summary>How often <see cref="Workers.LogRetentionWorker"/> trims the log database.</summary>
     public int LogRetentionIntervalSeconds { get; set; } = 3600;
 

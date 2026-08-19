@@ -20,6 +20,9 @@ namespace FileTracert.Host.Logging;
 /// </summary>
 public sealed class SqliteLogProcessor : IAsyncDisposable
 {
+    /// <summary>Default budget for the shutdown drain; well inside the host's own timeout.</summary>
+    public static readonly TimeSpan DefaultDrainTimeout = TimeSpan.FromSeconds(5);
+
     /// <summary>A failing sink fails for every batch: report it, do not narrate it.</summary>
     private static readonly TimeSpan BreadcrumbInterval = TimeSpan.FromSeconds(30);
 
@@ -27,15 +30,23 @@ public sealed class SqliteLogProcessor : IAsyncDisposable
     private readonly Channel<LogRecord> _channel;
     private readonly Task _consumer;
     private readonly int _batchSize;
+    private readonly TimeSpan _drainTimeout;
 
     private long _droppedRecords;
     private long _failedRecords;
     private long _lastBreadcrumbTimestamp;
+    private int _inFlightRecords;
+    private int _draining;
 
-    public SqliteLogProcessor(ILogStore store, int capacity = 10_000, int batchSize = 200)
+    public SqliteLogProcessor(
+        ILogStore store,
+        int capacity = 10_000,
+        int batchSize = 200,
+        TimeSpan? drainTimeout = null)
     {
         _store = store;
         _batchSize = batchSize;
+        _drainTimeout = drainTimeout ?? DefaultDrainTimeout;
         _channel = Channel.CreateBounded<LogRecord>(
             new BoundedChannelOptions(capacity)
             {
@@ -97,6 +108,9 @@ public sealed class SqliteLogProcessor : IAsyncDisposable
 
                 try
                 {
+                    // Published so a drain that gives up can report the batch it abandoned
+                    // mid-write, not just what was still queued behind it.
+                    Volatile.Write(ref _inFlightRecords, buffer.Count);
                     await _store.WriteBatchAsync(buffer, CancellationToken.None);
                 }
                 catch (OperationCanceledException ex)
@@ -118,6 +132,10 @@ public sealed class SqliteLogProcessor : IAsyncDisposable
                         $"{failed} record(s) unwritten so far",
                         ex);
                 }
+                finally
+                {
+                    Volatile.Write(ref _inFlightRecords, 0);
+                }
             }
         }
         catch (Exception ex)
@@ -130,11 +148,68 @@ public sealed class SqliteLogProcessor : IAsyncDisposable
         }
     }
 
-    public async ValueTask DisposeAsync()
+    /// <summary>
+    /// Closes the queue and waits — <b>bounded</b> — for the consumer to write what is left.
+    /// The cap matters as much as the drain: a store that hangs would otherwise turn a service
+    /// that stops into a service that never stops. On timeout (or when the caller's own
+    /// shutdown budget runs out) the consumer is abandoned — the process is going away anyway —
+    /// and the records left behind are counted and reported.
+    /// </summary>
+    public async Task DrainAsync(CancellationToken ct = default)
     {
+        if (Interlocked.Exchange(ref _draining, 1) == 1)
+        {
+            return;
+        }
+
         _channel.Writer.TryComplete();
-        await _consumer.ConfigureAwait(false);
+
+        using var cap = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var timeout = Task.Delay(_drainTimeout, cap.Token);
+        var finished = await Task.WhenAny(_consumer, timeout).ConfigureAwait(false);
+        await cap.CancelAsync().ConfigureAwait(false);
+
+        if (finished == _consumer)
+        {
+            // The consumer loop never lets an exception out, so this only observes completion.
+            await _consumer.ConfigureAwait(false);
+            ReportLosses();
+            return;
+        }
+
+        // Still queued, plus the batch the consumer was in the middle of writing. A pessimistic
+        // count at this instant: the abandoned write may yet land, but nobody will be here to see.
+        var abandoned = _channel.Reader.Count + Volatile.Read(ref _inFlightRecords);
+        Interlocked.Add(ref _failedRecords, abandoned);
+        Breadcrumb(
+            $"log queue drain gave up after {_drainTimeout.TotalSeconds:0.#}s; " +
+            $"{abandoned} record(s) left unwritten",
+            exception: null,
+            force: true);
+        ReportLosses();
     }
+
+    /// <summary>
+    /// Last word of the sink, written outside the logging pipeline — by the time the queue is
+    /// closed, an <c>ILogger</c> call would be dropped by this sink and can throw in another
+    /// (a provider disposed earlier in the stop sequence).
+    /// </summary>
+    private void ReportLosses()
+    {
+        var dropped = DroppedRecordCount;
+        var failed = FailedRecordCount;
+        if (dropped == 0 && failed == 0)
+        {
+            return;
+        }
+
+        Breadcrumb(
+            $"log sink ended the run with {dropped} dropped and {failed} unwritten record(s)",
+            exception: null,
+            force: true);
+    }
+
+    public ValueTask DisposeAsync() => new(DrainAsync());
 
     /// <summary>
     /// Writes a trace the sink itself cannot write. stderr is the visible channel in a console
