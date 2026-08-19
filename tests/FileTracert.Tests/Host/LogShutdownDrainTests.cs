@@ -67,6 +67,30 @@ public sealed class LogShutdownDrainTests
         host.Dispose();
     }
 
+    /// <summary>
+    /// The drain is registered first so that it stops last — that is the whole reason a worker's
+    /// goodbye still reaches the log DB. Asserted rather than assumed: the host's stop order is
+    /// a framework behaviour this design leans on.
+    /// </summary>
+    [Fact]
+    public async Task A_worker_stopping_after_the_flush_is_registered_still_reaches_the_store()
+    {
+        var store = new SlowRecordingLogStore(WritePerBatch);
+        var builder = Microsoft.Extensions.Hosting.Host.CreateApplicationBuilder();
+        builder.Logging.ClearProviders();
+        builder.AddSqliteLogging(store, new LogLevelSwitch(LogLevel.Trace), TimeSpan.FromSeconds(10));
+        // Registered after the flush service, therefore stopped before it.
+        builder.Services.AddHostedService<GoodbyeWorker>();
+
+        var host = builder.Build();
+        await host.StartAsync();
+        await host.StopAsync();
+
+        store.Written.Should().Contain(r => r.Message == GoodbyeWorker.Goodbye);
+
+        host.Dispose();
+    }
+
     /// <summary>A minimal host wired through the very registration the composition root uses.</summary>
     private static IHost BuildHost(ILogStore store, TimeSpan drainTimeout)
     {
@@ -74,5 +98,18 @@ public sealed class LogShutdownDrainTests
         builder.Logging.ClearProviders();
         builder.AddSqliteLogging(store, new LogLevelSwitch(LogLevel.Trace), drainTimeout);
         return builder.Build();
+    }
+
+    private sealed class GoodbyeWorker(ILogger<GoodbyeWorker> logger) : IHostedService
+    {
+        public const string Goodbye = "worker says goodbye";
+
+        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            logger.LogInformation(Goodbye);
+            return Task.CompletedTask;
+        }
     }
 }
