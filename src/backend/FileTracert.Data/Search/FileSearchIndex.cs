@@ -170,18 +170,30 @@ public sealed class FileSearchIndex : IFileSearchIndex
 
             // COUNT is capped at 10 000. Large result sets can be very slow to count fully;
             // the UI displays "10 000+" when totalCount == 10 000 and items.Count == take.
+            //
+            // E3 — the cap is applied by a LIMIT on the SCAN, not by MIN() on the RESULT.
+            // `SELECT MIN(COUNT(*), 10000) FROM …` still visits every match and joins two
+            // tables for each of them before clamping the number it prints: on a query that
+            // matches half the catalog the cap saved the display and nothing else. Wrapping a
+            // LIMIT-ed subquery makes SQLite stop stepping at the cap, so the work is bounded
+            // by the cap instead of by the size of the match. Same number out — MIN(n, cap)
+            // and "count of at most cap rows" agree for every n.
+            //
             // NOTE: SQLite FTS5 requires the real table name (not an alias) in the MATCH
             // predicate when the FTS table is joined with other tables. Using the alias
             // causes "no such column: <alias>" on SQLite 3.x.
             var countSql =
                 $"""
-                SELECT MIN(COUNT(*), 10000)
-                FROM FileSearchIndex fts
-                JOIN Files f ON f.Id = fts.rowid
-                JOIN Volumes v ON v.Id = f.VolumeId
-                WHERE FileSearchIndex MATCH $match
-                  AND f.IsIncluded = 1 AND f.IsPresent = 1
-                {filterSql}
+                SELECT COUNT(*) FROM (
+                  SELECT 1
+                  FROM FileSearchIndex fts
+                  JOIN Files f ON f.Id = fts.rowid
+                  JOIN Volumes v ON v.Id = f.VolumeId
+                  WHERE FileSearchIndex MATCH $match
+                    AND f.IsIncluded = 1 AND f.IsPresent = 1
+                  {filterSql}
+                  LIMIT 10000
+                )
                 """;
 
             int total;
