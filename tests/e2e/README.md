@@ -15,7 +15,9 @@ npm test
 ```
 
 `npm test` fa tutto: compila il backend e il frontend, poi avvia un Host per ogni test.
-Una passata completa dura **circa 2 minuti**.
+Una passata completa dura **circa 5 minuti** su una macchina scarica — il costo dominante è
+l'avvio di un processo per test (Host + i due `.ps1`), quindi una macchina in cui la creazione di
+processi è lenta (antivirus, EDR, finestra di manutenzione) la allunga di parecchio.
 
 Varianti utili:
 
@@ -47,7 +49,8 @@ Varianti utili:
 
 Solo `tests/e2e/.artifacts/`, che viene svuotata all'inizio di ogni passata e ripulita test per
 test. Dentro ci finiscono il database usa-e-getta di ogni Host, il suo log, e la cartella-sandbox
-che i test popolano e scansionano.
+che i test popolano, scansionano e — dallo step 12b — fanno **spostare e rinominare al prodotto
+vero**.
 
 Le garanzie, in ordine di importanza:
 
@@ -76,19 +79,35 @@ contenimento si **verifica**, non si organizza. Tre strati, uno per ogni modo di
    sandbox: è l'unica cartella monitorata della macchina, quindi **nessun id sorgente può nominare
    un file fuori**. Verificato sulla risposta del servizio, non dedotto dal fatto che il test ne ha
    registrata una sola.
-2. **Destinazione** (`violationOf`, prima di ogni enqueue) — volume e path di destinazione devono
-   stare dentro la sandbox. Vale per le richieste che partono dal test (`Api.enqueue` **pretende** il
-   fence come parametro) e per quelle che partono dalla **SPA** quando uno spec guida il picker: il
-   contesto del browser le intercetta e le rifiuta prima che raggiungano il Host, cioè prima che
-   l'engine possa agire. Una richiesta pulita passa **intatta**: non si finge nulla.
-3. **Audit** (`auditRecordedJobs`, in teardown mentre il Host risponde ancora) — ogni job che il
-   servizio ha **registrato** viene riletto e controllato: dentro la sandbox, sul volume della
-   sandbox, intra-volume. Cross-volume è una violazione di per sé: è l'unico percorso che manda un
+2. **Destinazione** (`violationOf`, prima di ogni enqueue — e `watchedRootViolation` prima di ogni
+   cartella messa sotto osservazione, che è l'altro modo di allargare il perimetro) — volume e path
+   devono stare dentro la sandbox. Vale per le richieste che partono dal test (`Api.enqueue`
+   **pretende** il fence come parametro) e per quelle che partono dalla **SPA** quando uno spec
+   guida il picker o l'albero del Setup: il contesto del browser le intercetta e le rifiuta prima
+   che raggiungano il Host, cioè prima che l'engine possa agire. Una richiesta pulita passa
+   **intatta**: non si finge nulla.
+3. **Audit** (`auditRecordedJobs`, in teardown della fixture `host` mentre il servizio risponde
+   ancora — sta lì e non su `api`, così vale anche per uno spec che `api` non lo chiede) — ogni job
+   che il servizio ha **registrato** viene riletto e controllato: dentro la sandbox, sul volume
+   della sandbox, intra-volume. Cross-volume è una violazione di per sé: è l'unico percorso che manda un
    file nel **cestino**, e questa suite non deve metterci mai niente.
 
 I primi due strati sono la promessa («prima dell'esecuzione»), il terzo è la prova. Ognuno fallisce
 **rumorosamente**, col path incriminato, e nessuno corregge niente in silenzio.
 `specs/sandbox-fence.spec.ts` prova a uscire da tutti e tre.
+
+Due cose da sapere se scrivi uno spec nuovo:
+
+- **Il corpo di una richiesta si legge come il contratto lo scrive.** Il fence rifiuta un enqueue
+  che porti chiavi che non conosce: ASP.NET Core lega il body **senza distinguere maiuscole**,
+  quindi un `TargetVolumeId` maiuscolo significherebbe tutto per il servizio e niente per un
+  controllo che cerca solo la forma camelCase. Un corpo che il recinto non sa leggere è una
+  destinazione che non può controllare, e non parte.
+- **Un client HTTP tuo esce dal recinto.** `Api.enqueue` **pretende** il fence e la SPA passa
+  dall'intercettazione, ma tre righe di `request.newContext()` dentro uno spec aggirano entrambi.
+  Resta l'**audit** in teardown — che sta sulla fixture `host`, quindi vale anche per uno spec che
+  non chiede `api` — ma è una rete, non un cancello: se scrivi un client tuo, la revisione è
+  l'unica guardia.
 
 ## Come è montato
 
@@ -141,4 +160,5 @@ scritte accanto al codice:
 | `specs/search.spec.ts` | l'FTS trova per nome, «solo nome» e «percorso completo» danno risposte diverse, il filtro categoria stringe, e il filtro data ragiona in **giorni locali** |
 | `specs/projection.spec.ts` | accodare uno spostamento dal picker muove **subito** il file nel Catalogo e nella Ricerca, col badge che linka la riga della Coda; a operazione eseguita il badge sparisce e il **disco** è dove la proiezione diceva |
 | `specs/queue.spec.ts` | un job fermo su un **nome già preso** offre «Riprova»; un secondo job sulla stessa entità è `Blocked(DependencyPending)` col rimando linkato; annullare il prerequisito **parcheggia** il dipendente invece di cancellarlo |
+| `specs/queue.spec.ts` (fattibilità) | la **verifica spazio** dichiara il margine di 11b e non accoda niente — *saltato* su una macchina con un solo volume catalogabile online, perché lo spazio si prenota solo cross-volume |
 | `specs/realtime.spec.ts` | la Coda e il Catalogo si muovono per un enqueue fatto **fuori** dal browser, la campanella si accende su una notifica di background, e quando il Host si spegne la shell lo dice e al ritorno **rilegge** |

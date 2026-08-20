@@ -639,9 +639,126 @@ disfa solo le due che può conoscere. Resta aperta la terza metà di quella voce
 non ha una riconciliazione propria** — togliere un segmento escluso dice onestamente `NeedsScan`
 (11g) e non riammette nulla senza scansione, il che è corretto ma non è una riconciliazione. Vedi
 il paragrafo «Fatto nello step 11h».
-Prossimo, in ordine:
-1. **Step 12b — flussi E2E di Catalogo, Ricerca, Coda e realtime.** Lo **step 12a**
-   (infrastruttura Playwright + avvio/auth, Dashboard, Volumi, scansione) è **fatto**.
+~~**Step 12 — test UI end-to-end**~~ — **CHIUSO**: **12a** (infrastruttura Playwright, avvio/auth,
+Dashboard, Volumi, scansione) e **12b** (recinto della sandbox, Catalogo, Ricerca, accodamento con
+proiezione, Coda, realtime). **Con lo step 12 si chiude l'MVP**: tutte e dodici le voci del §10
+sono fatte. Vedi il paragrafo «Fatto nello step 12b».
+
+Cosa resta aperto, e **non è più MVP** — sono debiti datati e roadmap di fase 2:
+1. **La corsa dell'auto-selezione su Volumi** (difetto di prodotto trovato dal 12a e lasciato lì:
+   selezione automatica e clic dell'utente producono due richieste, vince l'ultima risposta che
+   atterra). Primo candidato per il giro che tocca quella schermata.
+2. **`ExcludedPaths` non ha una riconciliazione propria** (terza metà della voce chiusa da 11h).
+3. **Classificazione Cloud non affidabile** (§11, debito datato allo step 6.7).
+4. La **fase 2** del §11, nell'ordine che l'utente deciderà.
+
+### Fatto nello step 12b (2026-08-20, commit `d01f455`…`885380c`)
+**L'MVP è coperto fino allo schermo, e lo step 12 è chiuso.** I flussi che il prodotto promette —
+Catalogo, Ricerca, accodamento con **proiezione**, Coda, **realtime** — sono guidati da Playwright
+sul prodotto assemblato, con il Host vero, il socket vero e file veri.
+
+- **Il primo commit non è un test: è il recinto** (`tests/e2e/src/fence.ts`). 12a aveva chiuso
+  scrivendo che la sandbox proteggeva la suite, non il prodotto: i suoi flussi **leggevano**
+  soltanto. Qui i test accodano operazioni che il vero `JobExecutionEngine` esegue su un volume che
+  la suite rende catalogabile — su una macchina di sviluppo, il **disco di sistema**. Una
+  destinazione sbagliata non è più un'asserzione rossa: è un file dell'utente che si sposta. Quindi
+  il contenimento si **verifica**, in tre strati, uno per ogni modo di uscire:
+  **(1) perimetro** — l'unica cartella monitorata della macchina è la sandbox, quindi nessun id
+  sorgente può nominare un file fuori; ed è la *risposta del servizio* a dirlo, non le due chiamate
+  che il test ha fatto. **(2) destinazione** — volume e path di ogni enqueue (e di ogni
+  `watched-root`, che è l'altro modo di allargare il perimetro) sono controllati **prima** che la
+  richiesta raggiunga il Host: sia quando parte dal test (`Api.enqueue` **pretende** il fence come
+  parametro, quindi non esiste un modo di chiamarlo senza) sia quando parte dalla **SPA**, perché
+  il contesto del browser le intercetta. Una richiesta pulita passa **intatta**: non si finge
+  niente. **(3) audit** — in teardown, mentre il Host risponde ancora, ogni job che il servizio ha
+  **registrato** viene riletto e controllato; *cross-volume* è una violazione di per sé, perché è
+  l'unico percorso che manda un file nel **cestino**. I primi due sono la promessa, il terzo è la
+  prova; ognuno fallisce col path incriminato e nessuno corregge niente in silenzio.
+  `specs/sandbox-fence.spec.ts` prova a uscire da tutti e tre.
+- **Lezione imparata rompendo il recinto.** Il modo per dimostrare che quello spec non è vuoto è
+  disabilitare il fence e guardarlo diventare rosso — e mentre è disabilitato i tentativi vengono
+  spediti **davvero**. Il primo giro li puntava su `Windows\Temp`: nessun file è finito lì (l'hanno
+  fermati le ACL di Windows, non il progetto), ma è stata la dimostrazione a diventare l'incidente
+  che il recinto esiste per evitare. Ora i tentativi puntano **un livello sopra** la cartella
+  monitorata, dentro `.artifacts`: fuori dal recinto esattamente quanto serve, innocuo se il
+  recinto un giorno cede.
+- **La proiezione osservata senza spegnere niente.** Il §5 chiede uno stato intermedio
+  («il file è già nella destinazione, col badge»), che con la coda accesa dura millisecondi. Non è
+  stato introdotto un interruttore per fermare il `QueueProcessorWorker` — il prodotto non ne ha
+  uno e inventarlo per un test sarebbe stato scope creep: la destinazione **contiene già** una voce
+  col nome verso cui il file si sta spostando, quindi l'engine parte, rifiuta di sovrascrivere e
+  parcheggia il job `Blocked(NameCollision)`, che per §5 **conserva** l'overlay. La voce che
+  collide è una **cartella**, così l'elenco file della destinazione ha esattamente una riga con
+  quel nome e l'asserzione non può essere soddisfatta da quella sbagliata.
+- **Il push provato davvero** (la lacuna che 10b e 10c avevano messo per iscritto). Dallo step 10c
+  le schermate non hanno timer: leggono una volta all'apertura e poi sono **patchate dall'hub**.
+  Quindi ogni cambiamento asserito è provocato **fuori** dal browser, via HTTP, e nessuno ricarica
+  niente: se il socket non portasse il messaggio, la schermata resterebbe com'era. La connessione
+  persa si prova **spegnendo il Host** — l'emulazione offline di Chromium lascia in piedi un
+  WebSocket già aperto, quindi l'unico modo onesto di togliere l'hub è fermare il servizio che lo
+  serve, che è anche il caso che l'utente incontra. Poi il browser viene tenuto offline mentre il
+  servizio torna e il lavoro accade: così la corsa col retry da 15 s del client sparisce e la riga
+  che compare dopo «Riconnetti» può venire **solo** dalla rilettura.
+- **Verifica**: xUnit **786** verdi, Vitest **244** verdi, build backend pulita
+  (warnings-as-errors), `ng build` ok (restano i 4 warning di budget SCSS, pre-esistenti). Harness
+  sul ferro (`D:\Collaudo\A` → `C:\Collaudo\B`): **47 scenari, 47 PASS, 0 FAIL** — identico alla
+  baseline di 11h, e ci si aspettava esattamente questo, perché **nessun file di prodotto è stato
+  toccato** (`git diff b648df9..HEAD -- src/` è vuoto); `appsettings.json` dell'harness rimesso
+  byte-identico (sha256 `653f5990…` verificato).
+  E2E: **24 verdi su 24** in una passata piena da 7,2 min *prima* del giro di review. Dopo le
+  correzioni della review la passata **non è stata rifatta ×3**, e il motivo va scritto invece che
+  nascosto: a metà lavoro la macchina è entrata in uno stato in cui la **creazione di processi**
+  costa 1–7 secondi invece di ~20 ms — misurato più volte cronometrando `cmd.exe /c exit`, con CPU,
+  RAM e disco scarichi. Con un rallentamento di quell'ordine ogni test sfonda il proprio budget da
+  180 s e perfino `ng build` supera i 15 minuti che il `globalSetup` concede alla build. Un ultimo
+  tentativo con `--timeout=900000` (solo da riga di comando: **la configurazione committata non è
+  stata toccata**) ha portato **6 test verdi su 7**, con singoli test da 2 a 8 minuti; il settimo è
+  caduto su un `actionTimeout` di 20 s aspettando che la lista volumi del Catalogo comparisse, che
+  è la stessa lentezza vista da un'altra angolazione. **Alzare i timeout committati per far passare
+  la suite sarebbe stato il modo sbagliato di rispondere**, quindi non è stato fatto.
+  Cosa resta verificato dopo le correzioni: `tsc --noEmit` pulito, i sette test sopra, e ogni spec
+  verde uno per uno mentre la macchina era ancora sana. **Resta da fare: `npm test` ×3 su una
+  macchina in ordine** — è la prima cosa da rifare alla prossima sessione.
+  **RED dimostrato quattro volte** rompendo il prodotto e ripristinandolo: tolta la scrittura
+  dell'overlay all'enqueue → **2 rossi** (il badge non compare in Catalogo e in Ricerca), 8 verdi;
+  tolto l'instradamento di `JobStateChanged` nel `RealtimeBridge` → **1 rosso** (la Coda non vede
+  comparire il job), 7 verdi; tolta la rilettura alla riconnessione → **1 rosso** (la schermata
+  resta vuota al ritorno), 3 verdi; disabilitato il fence → **2 rossi** su 3 nello spec del
+  recinto.
+La **code review finale** (indipendente, sulle modifiche di questo giro) ha trovato **cinque** cose,
+tutte corrette. **Due erano bloccanti e riguardavano il recinto**, cioè esattamente il punto in cui
+sbagliare costa un file dell'utente. (a) Il perimetro aveva **un cancello e due strade**: il
+controllo guardava solo le destinazioni, mentre una *cartella monitorata* puntata altrove avrebbe
+messo i file dell'utente a portata di un'operazione con destinazione perfettamente legale — ora
+anche i `watched-root` passano dal fence, dal test e dalla schermata Setup allo stesso modo (e
+`volumes.spec.ts`, che monitora *dallo schermo* senza passare da `watchSandbox`, lega il fence per
+quel motivo: senza, il gate nuovo faceva diventare rossa una prova del 12a — ed è successo davvero
+in una passata). (b) Il corpo di una richiesta veniva **letto** in camelCase e **legato** da
+ASP.NET Core senza distinguere le maiuscole: un `TargetVolumeId` maiuscolo significava tutto per il
+servizio e niente per il fence, che vedeva un `undefined`, saltava il controllo del volume e
+avrebbe lasciato passare un **cross-volume** — l'unica forma che manda un file nel cestino. Ora
+l'insieme delle chiavi si controlla **prima** di leggerci dentro, il volume di destinazione è
+obbligatorio e non «controllato-se-c'è», i due punti in un path sono rifiutati (drive o alternate
+data stream) e il contenimento si chiede una seconda volta al resolver di Node sul path assoluto.
+Le altre tre: l'audit stava sulla fixture `api`, quindi uno spec che `api` non lo chiede poteva
+accodare senza che nessuno rileggesse dove (spostato su `host`); un'asserzione **eco** nel Catalogo
+(«il numero di cartelle non si è mosso» è vero anche di un contatore fermo a zero, e quel test è
+l'unico che parla per 11h → ora c'è un minimo prima dell'invarianza); e un gruppo di minori (la
+pagina dell'audit che poteva essere più corta della coda, un body illeggibile che *bloccava* la
+richiesta invece di fallire per nome, il filtro data che prendeva il giorno dall'orologio invece
+che dal file, e il prefisso `[SANDBOX FENCE]` usato per un Host irraggiungibile).
+**Cosa resta scoperto da questo livello, e perché** (meglio scritto che immaginato coperto):
+- **Il percorso USN.** La suite si rifiuta di partire da elevato (12a): senza privilegi la
+  scansione ripiega sull'enumerazione. Vale anche per l'harness.
+- **Tutto ciò che è cross-volume**: `JobProgress` e quindi la **barra di avanzamento di una copia**,
+  la prenotazione di spazio, `Blocked(InsufficientSpace)` col deficit e il margine, e il passaggio
+  dal **cestino**. Servirebbe un secondo volume, cioè scrivere fuori dalla sandbox: resta coperto
+  dall'harness sul ferro e da xUnit. Sullo schermo se ne copre il parente più vicino: il
+  **preview** (§7, «senza creare il job»), che è l'unico posto in cui uno spec può puntare a un
+  altro volume perché non crea niente — e che dice *«Richiesto 200 B + 6 B di margine»*.
+- **Drive esterni e volumi offline veri**: staccare un drive non è simulabile (lo dice già 10a).
+- **La Dashboard non reagisce ai `JobStateChanged`** resta un limite noto di 10c, non un buco di
+  copertura.
 
 ### Fatto nello step 12a (2026-08-19, commit `9da54f1`…`76fdebf`)
 Il **terzo livello della piramide** esiste: `tests/e2e`, Playwright su Chromium, che guida **il
@@ -715,9 +832,8 @@ teardown, shell che spezzava gli argomenti di build sugli spazi, export morti, l
   vuota. Non è un difetto ora; se un domani uno spec aggiungesse un root più lentamente, la prima
   asserzione a rompersi sarebbe *«Ultima scansione … mai»*.
 - **`FT_E2E_SKIP_BUILD=1` controlla che gli artefatti esistano, non che siano aggiornati.**
-- **La sandbox protegge la suite, non il prodotto.** Qui si legge soltanto il disco (una
-  scansione). Il 12b eseguirà **move e rename veri** sul volume di sistema, che questa suite rende
-  catalogabile: qualunque cosa limiti quelle operazioni va costruita **prima** del 12b, non dopo.
+- ~~**La sandbox protegge la suite, non il prodotto.**~~ — **chiusa allo step 12b**, che ha
+  costruito il **recinto** (`tests/e2e/src/fence.ts`) prima di scrivere il primo test che accoda.
 
 ### Fatto nello step 11h (2026-08-19, commit `b0090c1`…`460495c`)
 **Una riga ricorda perché è esclusa, e la riconciliazione disfa solo ciò che ha diritto di
@@ -1956,9 +2072,9 @@ proteggerlo — ogni ramo rimasto nella macchina a stati è un ramo che un test 
 - **La Dashboard non reagisce ai `JobStateChanged`**: i contatori job delle card si aggiornano al
   caricamento della schermata e alla riconnessione, non a ogni transizione. Sarebbe una richiesta
   per transizione; da valutare nei WP minori se dà fastidio all'uso.
-- **Nessuna prova su ferro del push**: l'hub non è montato nell'harness (lo diceva già 10b) e i
-  test E2E sono lo **step 12**. Qui la copertura è Vitest con una `HubConnection` finta; la prova
-  end-to-end vera arriva con Playwright.
+- ~~**Nessuna prova su ferro del push**~~ — **chiusa allo step 12b**: `specs/realtime.spec.ts`
+  guida il socket vero verso `/hubs/events` del Host vero, con gli eventi provocati **fuori** dal
+  browser. Resta scoperto il solo `JobProgress` (vedi il paragrafo di 12b).
 
 ### Fatto nello step 10b (2026-08-18, commit `6d41a46`…`f816ce2`)
 Il §7 esiste davvero lato server: l'hub, i sei messaggi, l'autenticazione e i punti di emissione.
@@ -2025,7 +2141,8 @@ sono cambiati, e nominarne uno farebbe aggiornare al client la metà sbagliata.
   quindi nessun task resta faulted; il prezzo è che due frame possono arrivare fuori ordine — ognuno
   porta i contatori completi e il frame terminale è quello su cui la UI si regola.
 - Nessuno scenario harness nuovo: l'harness non monta l'hub (lo dice il task). La copertura del
-  trasporto vero è nei test di integrazione sopra.
+  trasporto vero è nei test di integrazione sopra — e, **dallo step 12b**, negli E2E, che lo
+  guidano dal browser sul socket vero.
 
 ### Fatto nello step 10a (2026-08-18, commit `a86783a`…`40c36d4`)
 Il remount di un drive è un **evento**, non più un'attesa fino a 60 s. Il polling resta, come rete.
