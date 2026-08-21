@@ -2,7 +2,59 @@
 
   <PropertyGroup>
     <TargetFramework>net10.0-windows</TargetFramework>
+    <AssemblyTitle>FileTracert</AssemblyTitle>
+    <Product>FileTracert</Product>
+    <Company>FAD.iT</Company>
   </PropertyGroup>
+
+  <PropertyGroup>
+    <!-- The Angular workspace. `ng build` writes straight into this project's wwwroot
+         (angular.json: outputPath), which is why nothing here copies files around. -->
+    <SpaRoot>$(MSBuildProjectDirectory)\..\..\frontend</SpaRoot>
+    <!-- Set to false to publish whatever is already in wwwroot (a build you just ran by hand).
+         The publish still fails if the SPA is missing: an executable that serves a blank page is
+         not a deployable artifact. -->
+    <BuildSpaOnPublish Condition="'$(BuildSpaOnPublish)' == ''">true</BuildSpaOnPublish>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- wwwroot is generated, and generated after this project is evaluated when the SPA build is
+         part of the publish. The default glob would therefore capture whatever the PREVIOUS build
+         left there and miss what this one just produced. Taken out of the default items and added
+         explicitly in IncludeSpaInPublish below, from the state of the folder at that moment. -->
+    <Content Remove="wwwroot\**" />
+    <None Remove="wwwroot\**" />
+  </ItemGroup>
+
+  <Target Name="BuildSpa" Condition="'$(BuildSpaOnPublish)' == 'true'">
+    <!-- npm is a .cmd, so it needs a shell; Exec gives it one. Nothing here is interpolated from
+         user input, and the only path that travels is WorkingDirectory. -->
+    <Exec Command="npm ci" WorkingDirectory="$(SpaRoot)" Condition="!Exists('$(SpaRoot)\node_modules')" />
+    <Exec Command="npm run build" WorkingDirectory="$(SpaRoot)" />
+  </Target>
+
+  <Target Name="IncludeSpaInPublish"
+          DependsOnTargets="BuildSpa"
+          BeforeTargets="ComputeResolvedFilesToPublishList">
+    <ItemGroup>
+      <SpaPublishFile Include="$(MSBuildProjectDirectory)\wwwroot\**\*" />
+    </ItemGroup>
+
+    <!-- The SPA is half the product: the service serves it on loopback and there is no other
+         client. Publishing without it produces an executable whose UI is a 404, which is the kind
+         of thing that is discovered after the install, not before it. -->
+    <Error Condition="!Exists('$(MSBuildProjectDirectory)\wwwroot\index.html')"
+           Text="No SPA in wwwroot: expected $(MSBuildProjectDirectory)\wwwroot\index.html. Run 'npm run build' in $(SpaRoot), or publish with -p:BuildSpaOnPublish=true." />
+
+    <ItemGroup>
+      <ResolvedFileToPublish Include="@(SpaPublishFile)">
+        <RelativePath>wwwroot\%(RecursiveDir)%(Filename)%(Extension)</RelativePath>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+
+    <Message Importance="high" Text="FileTracert: publishing @(SpaPublishFile->Count()) SPA file(s) into wwwroot." />
+  </Target>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.8" />
