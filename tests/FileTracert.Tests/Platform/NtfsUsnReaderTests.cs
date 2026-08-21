@@ -1,4 +1,5 @@
 using System.Security.Principal;
+using FileTracert.Contracts.Platform;
 using FileTracert.Platform;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -92,6 +93,63 @@ public class NtfsUsnReaderTests
         result.RequiresFullRescan.Should().BeFalse();
         result.Changes.Should().BeEmpty();
         result.NextUsn.Should().BeGreaterThanOrEqualTo(state.NextUsn);
+    }
+
+    /// <summary>
+    /// The promise of CLAUDE.md §1.2, asserted for the first time: work done <em>outside</em> the
+    /// application shows up in the delta, with the reason that says what happened. Everything the
+    /// test does to the filesystem is done through plain BCL calls in the user's temp folder - no
+    /// product code is involved in producing the changes, which is the whole point.
+    /// <para>
+    /// The cursor is taken before the work and the read is done after it, so this also fixes the
+    /// direction the sibling test cannot: reading from the current tail proves nothing arrives,
+    /// this proves what was done in between does.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void ReadChanges_sees_work_done_outside_the_application()
+    {
+        if (!IsElevated() || TryGetSystemVolumeGuid() is not { } guid)
+        {
+            return;
+        }
+
+        var reader = CreateReader();
+        var before = reader.GetJournalState(guid);
+
+        // Unique names: the journal is volume-wide and C: is busy, so the assertions have to name
+        // files that can only be ours.
+        var stamp = Guid.NewGuid().ToString("N");
+        var createdName = $"ft-usn-{stamp}-created.bin";
+        var renamedName = $"ft-usn-{stamp}-renamed.bin";
+        var directory = Path.Combine(Path.GetTempPath(), $"ft-usn-{stamp}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var created = Path.Combine(directory, createdName);
+            File.WriteAllBytes(created, new byte[64]);
+            File.Move(created, Path.Combine(directory, renamedName));
+            File.Delete(Path.Combine(directory, renamedName));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+
+        var result = reader.ReadChanges(guid, before.NextUsn, before.JournalId, CancellationToken.None);
+
+        result.RequiresFullRescan.Should().BeFalse();
+        result.NextUsn.Should().BeGreaterThan(before.NextUsn);
+
+        result.Changes.Should().Contain(
+            c => c.Entry.Name == createdName && (c.Reason & UsnReason.FileCreate) != 0,
+            "the create must be in the delta");
+        result.Changes.Should().Contain(
+            c => c.IsRename && c.OldName == createdName,
+            "the rename must carry the name the file had before it");
+        result.Changes.Should().Contain(
+            c => c.Entry.Name == renamedName && (c.Reason & UsnReason.FileDelete) != 0,
+            "the delete must be in the delta, under the name the file had when it was deleted");
     }
 
     [Fact]
