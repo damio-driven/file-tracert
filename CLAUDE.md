@@ -652,6 +652,30 @@ Cosa resta aperto, e **non è più MVP** — sono debiti datati e roadmap di fas
 3. **Classificazione Cloud non affidabile** (§11, debito datato allo step 6.7).
 4. La **fase 2** del §11, nell'ordine che l'utente deciderà.
 
+### Collaudo elevato — il motore USN esercitato per la prima volta (2026-08-21)
+Fino a qui **ogni** numero del progetto descriveva il motore a **enumerazione**: xUnit, harness ed
+E2E giravano non elevati, e `NtfsUsnReaderTests` — che richiede l'elevazione — **ritornava subito**,
+cioè passava a vuoto. Sessione aperta come amministratore, su richiesta dell'utente, per chiudere
+il buco. Nessun codice toccato.
+- **Journal preesistenti su entrambi i volumi** (`fsutil usn queryjournal C:` e `D:`): non è stato
+  creato nulla, e gli **ID journal sono identici prima e dopo** il collaudo — nessuna modifica
+  persistente ai dischi.
+- **xUnit 786/786 verdi da elevato** (1 m 57 s). I cinque `NtfsUsnReaderTests` isolati costano
+  **17 s**: un ritorno a vuoto costerebbe millisecondi, quindi lo snapshot MFT di `C:` è stato
+  percorso davvero. È la prima prova che `NtfsUsnReader` funziona sul ferro.
+- **Harness 47/47 PASS** su `D:\Collaudo\A` → `C:\Collaudo\B` (272 s), e stavolta **sul motore
+  USN**: zero occorrenze di *«falling back to enumeration»* nel log, contro **17** nel log degli E2E
+  non elevati della stessa giornata e della stessa macchina. È il contrasto che rende la prova
+  positiva invece che un'assenza.
+- Tempi con USN, 2 002 file: primo scan **7,56 s**, re-scan (merge) **2,07 s**. Sono **più lenti**
+  dei numeri storici a enumerazione (1,05 s / 0,83 s allo step 9a) e la differenza va indagata prima
+  di trattarli come baseline: su un volume piccolo il costo fisso di `FSCTL_ENUM_USN_DATA` (che
+  cammina l'**intera** MFT del volume, non la sola cartella sorvegliata) può dominare — cioè
+  potrebbe essere il comportamento atteso e non una regressione. Serve una misura su un volume con
+  molti più file per saperlo.
+- `appsettings.json` dell'harness ripristinato byte-identico (sha256 `653f5990…`), scratch puliti
+  dall'harness, nessun residuo.
+
 ### Fatto nello step 12b (2026-08-20, commit `d01f455`…`885380c`)
 **L'MVP è coperto fino allo schermo, e lo step 12 è chiuso.** I flussi che il prodotto promette —
 Catalogo, Ricerca, accodamento con **proiezione**, Coda, **realtime** — sono guidati da Playwright
@@ -717,8 +741,16 @@ sul prodotto assemblato, con il Host vero, il socket vero e file veri.
   è la stessa lentezza vista da un'altra angolazione. **Alzare i timeout committati per far passare
   la suite sarebbe stato il modo sbagliato di rispondere**, quindi non è stato fatto.
   Cosa resta verificato dopo le correzioni: `tsc --noEmit` pulito, i sette test sopra, e ogni spec
-  verde uno per uno mentre la macchina era ancora sana. **Resta da fare: `npm test` ×3 su una
-  macchina in ordine** — è la prima cosa da rifare alla prossima sessione.
+  verde uno per uno mentre la macchina era ancora sana.
+  **Debito chiuso il 2026-08-21**: a macchina sana (~27 ms a spawn, rimisurato) la suite completa è
+  **25 verdi su 25 per tre passate di fila** — 311 s con build, poi 271 s e 301 s con
+  `FT_E2E_SKIP_BUILD=1`. Nessun Host residuo, DB reale dell'utente non toccato (timestamp invariati).
+  **Nota su come si lancia**, costata una passata rossa da 22 minuti: `npm test` va eseguito da una
+  shell **con console**. `scripts/stop-host.ps1` spegne il Host con `AttachConsole` +
+  `GenerateConsoleCtrlEvent`, e da una shell staccata (background, senza console) non c'è nessuna
+  console a cui agganciarsi: il Ctrl+C non arriva, ogni test muore sul teardown con *«The Host (pid …)
+  did not stop within 45000 ms»* e **tutti e 25 falliscono per la stessa ragione, che non è la loro**.
+  Un fallimento di massa con quel messaggio va letto come «lanciata male», non come regressione.
   **RED dimostrato quattro volte** rompendo il prodotto e ripristinandolo: tolta la scrittura
   dell'overlay all'enqueue → **2 rossi** (il badge non compare in Catalogo e in Ricerca), 8 verdi;
   tolto l'instradamento di `JobStateChanged` nel `RealtimeBridge` → **1 rosso** (la Coda non vede
@@ -748,8 +780,9 @@ pagina dell'audit che poteva essere più corta della coda, un body illeggibile c
 richiesta invece di fallire per nome, il filtro data che prendeva il giorno dall'orologio invece
 che dal file, e il prefisso `[SANDBOX FENCE]` usato per un Host irraggiungibile).
 **Cosa resta scoperto da questo livello, e perché** (meglio scritto che immaginato coperto):
-- **Il percorso USN.** La suite si rifiuta di partire da elevato (12a): senza privilegi la
-  scansione ripiega sull'enumerazione. Vale anche per l'harness.
+- **Il percorso USN.** La suite E2E si rifiuta di partire da elevato (12a): senza privilegi la
+  scansione ripiega sull'enumerazione. **Per l'harness il limite è stato tolto il 2026-08-21**
+  (vedi «Collaudo elevato» qui sotto): resta vero per gli E2E, per scelta.
 - **Tutto ciò che è cross-volume**: `JobProgress` e quindi la **barra di avanzamento di una copia**,
   la prenotazione di spazio, `Blocked(InsufficientSpace)` col deficit e il margine, e il passaggio
   dal **cestino**. Servirebbe un secondo volume, cioè scrivere fuori dalla sandbox: resta coperto
