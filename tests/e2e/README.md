@@ -55,7 +55,7 @@ vero**.
 Le garanzie, in ordine di importanza:
 
 - **Mai il database reale.** Ogni Host parte con `FileTracert:DatabasePath` dentro `.artifacts`;
-  `%LOCALAPPDATA%\FileTracert` non viene mai aperto. Non è solo una configurazione: appena il Host
+  `%ProgramData%\FileTracert` non viene mai aperto. Non è solo una configurazione: appena il Host
   risponde, il test **verifica che quel file esista davvero**, così un binding rotto diventa un
   errore con un nome invece di una migrazione silenziosa del catalogo dell'utente.
 - **Mai la porta 5005.** Gli Host dei test prendono la prima porta libera nell'intervallo

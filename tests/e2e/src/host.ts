@@ -179,7 +179,7 @@ export class HostProcess {
 
   /**
    * The isolation rule with an assertion behind it. If the database path ever failed to reach the
-   * Host, `DatabaseLocation.Resolve` would silently fall back to %LOCALAPPDATA%\FileTracert —
+   * Host, `DatabaseLocation.Resolve` would silently fall back to %ProgramData%\FileTracert —
    * the user's real catalog — and migrate it. Checking that the file this Host was told to create
    * exists turns that from a silent accident into an immediate, named failure.
    */

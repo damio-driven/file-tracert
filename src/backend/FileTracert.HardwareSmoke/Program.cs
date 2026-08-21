@@ -2,6 +2,7 @@ using FileTracert.Contracts.Platform;
 using FileTracert.HardwareSmoke.Harness;
 using FileTracert.HardwareSmoke.Report;
 using FileTracert.HardwareSmoke.Scenarios;
+using FileTracert.Host.Configuration;
 using FileTracert.Platform;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -140,16 +141,17 @@ internal static class HarnessProgram
         return ReportPrinter.ExitCodeFor(results);
     }
 
-    /// <summary>Same convention as the service: explicit override, else %LOCALAPPDATA%\FileTracert\filetracert.db.</summary>
-    private static string ResolveMainDbPath(HardwareSmokeOptions options)
-    {
-        if (!string.IsNullOrWhiteSpace(options.MainDatabasePath))
-            return Path.GetFullPath(options.MainDatabasePath);
-
-        return Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "FileTracert", "filetracert.db");
-    }
+    /// <summary>
+    /// Same convention as the service: explicit override, else <see cref="DatabaseLocation.DefaultPath"/>.
+    /// Asked of the Host's own resolver rather than re-derived here: this path decides which
+    /// WatchedRoots the guard protects, so a second copy that drifts would not merely be
+    /// duplication — it would point the guard at an empty database and report "no catalogued data
+    /// here" about a folder full of it.
+    /// </summary>
+    private static string ResolveMainDbPath(HardwareSmokeOptions options) =>
+        string.IsNullOrWhiteSpace(options.MainDatabasePath)
+            ? DatabaseLocation.DefaultPath
+            : Path.GetFullPath(options.MainDatabasePath);
 
     private static void TryDeleteWorkRoot(string workRoot, IHarnessConsole console)
     {

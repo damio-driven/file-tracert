@@ -25,7 +25,9 @@ var options = builder.Configuration
     .GetSection(FileTracertOptions.SectionName)
     .Get<FileTracertOptions>() ?? new FileTracertOptions();
 
-// Database lives in %LOCALAPPDATA%\FileTracert (or an explicit override).
+// Database lives in %ProgramData%\FileTracert (or an explicit override): machine-wide, because
+// the service runs as LocalSystem and a per-user folder would hand it a different, empty catalog.
+// See DatabaseLocation for the full reasoning.
 var databasePath = DatabaseLocation.Resolve(options);
 var connectionString = DatabaseLocation.ConnectionString(databasePath);
 

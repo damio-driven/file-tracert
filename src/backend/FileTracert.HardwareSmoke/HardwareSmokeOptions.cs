@@ -64,7 +64,7 @@ public sealed class HardwareSmokeOptions
 
     /// <summary>
     /// Override for the production database the guard reads WatchedRoots from. Empty = the
-    /// service's own convention (<c>%LOCALAPPDATA%\FileTracert\filetracert.db</c>).
+    /// service's own convention (<c>%ProgramData%\FileTracert\filetracert.db</c>).
     /// </summary>
     public string? MainDatabasePath { get; set; }
 

@@ -14,7 +14,9 @@ public sealed class FileTracertOptions
 
     /// <summary>
     /// Explicit database file path. When null the host uses
-    /// <c>%LOCALAPPDATA%\FileTracert\filetracert.db</c>. Mainly an override for tests.
+    /// <see cref="DatabaseLocation.DefaultPath"/> (<c>%ProgramData%\FileTracert\filetracert.db</c>,
+    /// machine-wide so the service and a console run open the same catalog). Mainly an override
+    /// for tests and for measurement runs against a throwaway database.
     /// </summary>
     public string? DatabasePath { get; set; }
 
