@@ -650,7 +650,169 @@ Cosa resta aperto, e **non è più MVP** — sono debiti datati e roadmap di fas
    atterra). Primo candidato per il giro che tocca quella schermata.
 2. **`ExcludedPaths` non ha una riconciliazione propria** (terza metà della voce chiusa da 11h).
 3. **Classificazione Cloud non affidabile** (§11, debito datato allo step 6.7).
-4. La **fase 2** del §11, nell'ordine che l'utente deciderà.
+4. **Trovati dallo step 13, sul catalogo vero da 742 033 file** — nessuno è MVP, tutti sono reali:
+   il **filtro per categoria** della Ricerca costa come l'insieme dei match e non come il risultato
+   (2 righe in 12 s; con un match set grande non torna affatto); una **query lunga non si annulla**,
+   quindi tiene lo shutdown oltre lo `ShutdownTimeout`; **lista e dettaglio Volumi** stanno oltre il
+   secondo; il motore **USN non ha le dimensioni dei file** e le ricompra con una `stat` per file,
+   che è il motivo per cui non batte l'enumerazione; **manca l'id del giornale** in `Volumes`, e
+   senza quello il worker incrementale non è scrivibile.
+5. **Il percorso incrementale USN non esiste**: `ReadChanges` è implementato e testato, ma nessun
+   consumatore lo chiama e il `UsnSyncWorker` del §3 non è mai stato scritto. Ogni scansione è piena.
+6. La **fase 2** del §11, nell'ordine che l'utente deciderà.
+
+### Fatto nello step 13 (2026-08-22, commit `76e0154`…`01be0a4`)
+**Il prodotto è installato come servizio, gira sul catalogo vero, e la domanda aperta sull'USN ha
+una risposta misurata — che non è quella che ci si aspettava.** Primo passo fuori dall'MVP: non
+aggiunge funzionalità, mette alla prova le due fondamenta che nessun test aveva mai toccato.
+
+- **Il database ha una casa sola, e il servizio la trova.** `DatabaseLocation` puntava a
+  `%LOCALAPPDATA%`; come servizio il Host gira da `LocalSystem`, per cui quel percorso diventa
+  `C:\Windows\System32\config\systemprofile\AppData\Local` — il servizio sarebbe partito su un
+  catalogo **vuoto**, accanto a quello costruito dalle esecuzioni in console, senza che niente lo
+  dicesse. Ora il default è **`%ProgramData%\FileTracert`** (decisione dell'utente, opzione (a) delle
+  tre poste dal task): machine-wide, lo stesso file che il Host giri come servizio, come console
+  elevata o sotto un altro account. **Nessun codice migra niente**: spostare il catalogo di un utente
+  è un'operazione deliberata a servizio fermo, non qualcosa che un host decide all'avvio, dove un
+  file copiato a metà è un catalogo corrotto. L'harness aveva una **seconda copia** della convenzione
+  e non è duplicazione qualunque: il suo guard legge quel database per sapere quali cartelle
+  contengono dati catalogati, quindi un percorso divergente non avrebbe sbagliato un path — avrebbe
+  dichiarato «qui non c'è niente di catalogato» di un drive pieno di roba dell'utente. Ora la
+  derivazione è una sola, con un test che scandisce i sorgenti perché non ne ricompaia una seconda.
+- **Migrazione fatta una volta sola, a servizio fermo, copiando.** `filetracert.db`
+  (731 619 328 byte, sha256 `3729AD6C…` prima e dopo), `-wal`, `-shm` e il DB dei log. Conteggi
+  verificati identici alla sorgente: **742 033 file · 114 132 directory · 742 033 righe FTS · 15
+  volumi · 7 cartelle monitorate · 28 job**; log 500 144 righe. L'originale in `%LOCALAPPDATA%`
+  **resta dov'è** come rete di sicurezza. Prima di avviare il servizio si è controllata la cosa che
+  conta: **tutti e 28 i job sono terminali** (22 Completed, 4 Cancelled, 2 Failed) e **zero overlay
+  pendenti**, quindi il `QueueProcessorWorker` non aveva un solo file da spostare. Questo giro
+  **indicizza e basta**.
+- **Publish, install, uninstall.** `dotnet publish` esegue anche `ng build` e porta la SPA dentro
+  `wwwroot` **come parte della build** (29 file), con un `Error` che fa fallire la publish se
+  `index.html` non c'è: un eseguibile che serve una pagina bianca non è un artefatto installabile.
+  Il glob di default non poteva essere usato — è valutato **prima** che il target giri, quindi
+  avrebbe pubblicato la build precedente e mancato quella appena fatta. `deploy\install-service.ps1`
+  registra il servizio (LocalSystem, avvio **automatico**, riavvio 3×60 s poi stop), copia in
+  `%ProgramFiles%\FileTracert` con `robocopy /MIR` — così un aggiornamento non lascia dietro un
+  `chunk-*.js` che il nuovo `index.html` non nomina più — e **aspetta che il servizio risponda**.
+  `uninstall-service.ps1` **lascia il database**: è dell'utente, disinstallare non è chiedere di
+  buttarlo (`-RemoveData` lo cancella, dopo aver scritto la parola per esteso).
+  Alla cartella dati si concede **Modify a `Users`**, deliberatamente: scrive `LocalSystem`, ma lo
+  stesso file deve poter essere aperto da una console elevata o dall'harness, che girano come
+  l'utente connesso.
+- **Verificato sul ferro**: servizio `Running`/`Automatic` da `C:\Program Files\FileTracert`, UI
+  `200` con il token nel `<meta>`, `/api/dashboard` che risponde **742 033 file / 468 861 553 711
+  byte**, `401` senza token, in ascolto **solo** su `127.0.0.1` e `::1`. **Stop e start provati**:
+  stop pulito in 31,2 s (WAL checkpointato a zero), start di nuovo servente in 0,3 s.
+  **Il riavvio vero della macchina NON è stato fatto** — questa sessione ci girava sopra: resta
+  all'utente, ed è l'unica cosa che manca alla prova dell'avvio automatico.
+
+#### La misura che il giro esisteva per produrre
+Stesso volume, stesso insieme di file, database usa-e-getta, radice del volume come unica cartella
+monitorata. `D:` è NTFS, 931,5 GB, **59 627 voci di MFT → 51 710 file + 6 782 directory** indicizzati
+da entrambi i motori (numeri identici, il che è metà della prova).
+
+| motore | primo scan | re-scan | fase Enumerating | fase ReadingMetadata | fase Writing |
+|---|---|---|---|---|---|
+| **USN** (elevato) | **4,88 s** | 3,67 s | 0,57 s | 0,53 s | 3,17 s |
+| **Enumerazione** (non elevato) | **3,74 s** | 3,43 s | 1,06 s | ~0 | 2,10 s |
+
+Sottoalbero della **stessa** unità, 2 000 file in 20 cartelle: USN **1,15 s** (poi 0,79 s),
+enumerazione **0,86 s**. L'USN ha camminato 61 648 voci di MFT per indicizzarne 2 000.
+
+**La risposta: l'ipotesi è per metà giusta, e la conclusione è che oggi l'USN non conviene mai.**
+Giusta la parte sul costo fisso: la camminata dell'MFT **non** dipende dal perimetro, e quando il
+perimetro è l'intero volume è **il doppio più veloce** della camminata delle directory (0,57 s
+contro 1,06 s). Sbagliata la conclusione che ne seguiva, perché l'USN paga un secondo costo che
+l'enumerazione non ha, ed è **proporzionale ai file, non fisso**: i record dell'MFT non portano
+**dimensione né date**, quindi `ScanService.ResolveFilesAsync` interroga il filesystem **file per
+file** attraverso `IFileMetadataReader` — la fase `ReadingMetadata`, 0,53 s per 51 710 file, che sul
+ramo a enumerazione semplicemente non esiste (le dimensioni arrivano gratis dalla camminata).
+Il conto non si chiude con la scala: il vantaggio della camminata (≈8 µs a voce) e il prezzo dei
+metadati (≈10 µs a file) sono **dello stesso ordine**, quindi crescono insieme. L'USN vincerebbe
+solo dove il filtro **scarta** gran parte del volume (un file scartato non paga la lettura dei
+metadati) — cioè non nel caso d'uso di questo prodotto, dove si sorvegliano cartelle di media.
+**Non è una regressione ed è la scoperta importante del giro**: la scelta di §1.2 va rivista, e la
+strada non è ottimizzare, è **leggere le dimensioni dall'MFT** invece che con una `stat` per file
+(`FSCTL_ENUM_USN_DATA` non le espone: servirebbe leggere `$STANDARD_INFORMATION`/`$DATA`).
+Nota di igiene: i **7,56 s** su 2 002 file del collaudo del 2026-08-21 **non sono stati riprodotti**
+(1,15 s qui, stesso ordine di lavoro): quel numero non descriveva una proprietà stabile del motore.
+
+#### I quattro comportamenti USN del §2, uno per uno
+1. **Primo scan via MFT — osservato.** Su un volume di test creato per l'occasione (VHDX NTFS
+   montato su `T:`, giornale **assente**) `EnsureJournal` lo ha **creato** e lo scan è girato sul
+   motore `UsnJournal`. La ricostruzione dei path dai `ParentFileReferenceNumber` è stata verificata
+   **a campione sul catalogo vero di `D:`**, non a fiducia: **60 righe su 60** risolvono a un file
+   che esiste sul disco; nel verso opposto **38 su 40**, e i 2 mancanti sono file creati **dopo**
+   quello scan (verificato), quindi 40 su 40 spiegati.
+2. **Delta incrementale — NON esiste nel prodotto.** `IUsnReader.ReadChanges` **non ha alcun
+   chiamante** fuori dai test (grep su `src/`); `ScanWorker` prende solo i volumi con
+   `LastFullScanUtc == null` più le richieste esplicite; `ScanService` fa **sempre** snapshot pieno +
+   merge. Il `UsnSyncWorker` che il §3 nomina fra i BackgroundServices **non è mai stato scritto**.
+   La metà **piattaforma** funziona, e da questo giro è asserita: un test crea, rinomina e cancella
+   un file **fuori dall'applicazione** e pretende di ritrovare tutti e tre nel delta con la ragione
+   giusta (RED dimostrato facendo partire `ReadChanges` dalla coda corrente invece che dal cursore
+   del chiamante: **cade solo quel test**, gli altri cinque restano verdi).
+3. **`LastUsn` ripreso dopo il riavvio — non ripreso, perché nessuno lo legge.** Provato:
+   catalogo a 501 file, host fermo, due file creati + uno rinominato + uno cancellato **fuori
+   dall'app** (il giornale avanza da 0 a 0x3b0), host riavviato con sync volumi a 10 s e poll di
+   scansione a 5 s, lasciato in pace **75 s** → catalogo ancora 501, `LastUsn` fermo, nessuna
+   scansione nel log. Una ri-scansione **esplicita** converge perfettamente (502 presenti, **1
+   assente** per il file cancellato — mai un delete, §6 —, il rinominato sotto il nome nuovo,
+   `LastUsn` = 944 = esattamente il `NextUsn` del giornale) ma passando da una camminata **completa**
+   dell'MFT.
+   **Lacuna di schema trovata qui**: `Volumes` persiste `LastUsn` ma **non l'id del giornale**, e
+   `ReadChanges` ne ha bisogno per accorgersi dell'invalidazione. Chi scriverà il worker incrementale
+   deve prima aggiungere quella colonna.
+4. **Journal azzerato → osservato, solo sul volume usa-e-getta.** Mai su `C:`, mai su `D:`. Id prima
+   `0x01dd318acf43c59f`; `fsutil usn deletejournal /d T:` → «giornale non attivo»; un file creato
+   fuori dall'app mentre il giornale non c'era; scansione successiva del prodotto → giornale
+   **ricreato** con id nuovo (`0x01dd318c745af494`), scansione completa, e il file nuovo **recepito**
+   (500 → 501). Nessun fallimento silenzioso, nessun indice dichiarato aggiornato senza esserlo.
+   L'altra faccia dello stesso guasto — handle di volume rifiutato — è il **fallback a enumerazione**
+   documentato, osservato due volte nei log delle passate non elevate con la sua Notification.
+
+#### Soak sul catalogo vero
+- **La retention dei log funziona e recupera davvero lo spazio.** Il DB migrato conteneva **500 144
+  righe / 184 467 456 byte**, tutte di luglio: al primo avvio `LogRetentionWorker` ha tolto tutto
+  ciò che superava i 14 giorni e ha fatto `VACUUM` → **20 480 byte**. Dopo 2 h 31 m di servizio:
+  **431 righe / 139 264 byte** (401 Information, 13 Warning, 17 Error). Il tetto non è la crescita
+  libera ma `LogMaxRows` = 500 000, che a `MinimumLogLevel = Trace` sono ~184 MB: è il soffitto, ed è
+  quello che lega per primo.
+- **Il WAL resta piccolo**: 61 832 byte quello del catalogo, 70 072 byte quello dei log dopo ore di
+  esercizio (`WalCheckpointWorker` ogni 120 s). Del WAL da 555 MB citato nelle opzioni, nessuna
+  traccia.
+- **Il catalogo non cresce da solo e nessuno scansiona di sua iniziativa**: 731 619 328 byte
+  invariati, perché ogni volume aveva già `LastFullScanUtc` e quelli senza non hanno cartelle
+  monitorate attive. È la verifica che la «regola di sicurezza» del task chiedeva.
+- **Memoria piatta**: RSS 166 MB, privata 73 MB, 33 thread, 722 handle dopo 2,5 h.
+- **Le schermate su 742 033 file**, misurate sugli endpoint che chiamano: Dashboard **373 ms**;
+  **lista volumi 1 571 ms** e dettaglio volume **1 768 ms** (oltre il secondo, entrambi);
+  coda 52 ms; notifiche 23 ms. Ricerca per nome: `report` (431 risultati) **517 ms** a freddo,
+  284 / 64 ms poi; `e` (tappato a 10 000) **3 910 ms**; per path `a` **543 ms**.
+- **Il difetto che il soak ha trovato, ed è il più grave del giro: il filtro per categoria costa
+  come l'insieme dei match, non come il risultato.** `report` + categoria `Image` restituisce **2
+  righe** in **12 123 ms** (contro 517 ms senza filtro), e `e` + `Image` **non è mai tornato** — il
+  client ha rinunciato a 180 s e poi a 300 s.
+- **E la sua conseguenza, scoperta pagandola: una query che non finisce non si annulla, e tiene lo
+  shutdown.** Sganciato il client, il servizio ha continuato a bruciare **oltre un core** per più di
+  venti minuti (misurato: +147 s di CPU in 119 s di orologio), e uno `sc stop` è rimasto
+  **`StopPending` per oltre 270 s**, cioè molto oltre lo `ShutdownTimeout` di 30 s che il §3 promette.
+  `RequestAborted` non arriva dentro uno statement SQLite già in corso.
+- **Verifica finale**: xUnit **792 verdi** (+6: cinque su `DatabaseLocation`, uno sul delta USN),
+  Vitest **244 verdi**, build backend pulita (warnings-as-errors), publish del Host con SPA ok.
+  **E2E non eseguiti**: il loro `globalSetup` si rifiuta di partire da elevato, per scelta di
+  progetto (12a), e questa sessione era elevata per necessità.
+- **Nota operativa costata cara**: su una macchina in cui la creazione di processi era degradata a
+  13–40 s (la stessa patologia documentata dal 12b), `Start-Service` ha sfondato il timeout di avvio
+  dell'SCM e ha lasciato il servizio `Stopped`; `sc start`, che non aspetta, è andato a buon fine.
+  Un avvio fallito con quella firma va letto come «macchina in ginocchio», non come servizio rotto.
+
+**Cosa il soak lascia come lavoro successivo**, in ordine di gravità: (1) il filtro per categoria
+della Ricerca; (2) l'annullabilità delle query lunghe, che oggi trasforma un guasto di prestazioni in
+uno di shutdown; (3) i due endpoint di Volumi oltre il secondo; (4) le dimensioni dall'MFT, senza le
+quali il motore USN non ha un motivo per esistere; (5) la colonna con l'id del giornale, senza la
+quale il worker incrementale non si può nemmeno cominciare.
 
 ### Collaudo elevato — il motore USN esercitato per la prima volta (2026-08-21)
 Fino a qui **ogni** numero del progetto descriveva il motore a **enumerazione**: xUnit, harness ed
