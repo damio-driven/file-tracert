@@ -58,12 +58,11 @@ public sealed class DatabaseLocationTests
         }
     }
 
-    [Fact]
-    public void No_configured_path_falls_back_to_the_machine_wide_default()
-    {
-        DatabaseLocation.Resolve(new FileTracertOptions { DatabasePath = "   " })
-            .Should().Be(DatabaseLocation.DefaultPath);
-    }
+    // Deliberately not tested through Resolve: the no-override branch returns DefaultPath and
+    // Resolve creates the containing folder, which for that branch is the machine-wide folder
+    // holding the user's catalog. A test must not create it, and must certainly not clean it up.
+    // The branch is one IsNullOrWhiteSpace; what is worth asserting - where the default points -
+    // is covered above without touching the disk.
 
     /// <summary>
     /// Source scan, deliberately: the convention used to be written twice — once in the Host and

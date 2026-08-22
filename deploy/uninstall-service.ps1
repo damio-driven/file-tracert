@@ -70,8 +70,19 @@ if ($null -ne $service) {
 }
 
 if (Test-Path $InstallRoot) {
-    Write-Host "Removing $InstallRoot ..."
-    Remove-Item $InstallRoot -Recurse -Force
+    # -InstallRoot reaches a recursive delete running elevated, so a typo here is not a failed
+    # uninstall, it is a deleted folder. Only remove something that is plausibly our install.
+    $full = [IO.Path]::GetFullPath($InstallRoot)
+    if ($full -eq [IO.Path]::GetPathRoot($full)) {
+        throw "Refusing to delete a drive root: $full"
+    }
+    if (-not (Test-Path (Join-Path $full 'FileTracert.Host.exe'))) {
+        throw "'$full' does not look like a FileTracert installation (no FileTracert.Host.exe). " +
+              'Refusing to delete it. Remove it by hand if that is really what you want.'
+    }
+
+    Write-Host "Removing $full ..."
+    Remove-Item $full -Recurse -Force
 }
 
 if ($RemoveData) {

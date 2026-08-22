@@ -63,9 +63,57 @@ function Stop-ServiceIfPresent {
         # The stop sequence is the product's own: workers checkpoint, the log queue drains.
         # Give it more than the host's ShutdownTimeout (30 s) before calling it stuck.
         Stop-Service -Name $Name -Force
-        $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(60))
+        try {
+            $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(120))
+        } catch [System.ServiceProcess.TimeoutException] {
+            # Seen for real: a long-running query holds the host well past its ShutdownTimeout.
+            # Refusing here is the safe end - the binaries have not been touched yet.
+            throw "The $Name service did not stop within 120 s (a long-running request can hold it). " +
+                  "Nothing has been changed. Wait for it to stop, or stop it by hand, then run this script again."
+        }
     }
     return $true
+}
+
+<#
+.SYNOPSIS
+    Refuses install roots that a mirror-copy or a recursive delete must never be pointed at.
+.DESCRIPTION
+    Both this script (robocopy /MIR) and the uninstaller (Remove-Item -Recurse) act on whatever
+    -InstallRoot names, elevated. A typo there is not a failed install, it is a deleted system
+    folder - so the path has to be somewhere it is plausible to own: not a drive root, not a
+    well-known Windows folder, and, if it already exists with content, an install of ours.
+#>
+function Assert-SafeInstallRoot {
+    param([string] $Path)
+
+    $full = [IO.Path]::GetFullPath($Path)
+
+    if ($full -eq [IO.Path]::GetPathRoot($full)) {
+        throw "Refusing to use a drive root as the install folder: $full"
+    }
+
+    $protected = @(
+        $env:SystemRoot,
+        $env:ProgramFiles,
+        ${env:ProgramFiles(x86)},
+        $env:ProgramData,
+        $env:USERPROFILE,
+        (Join-Path $env:SystemRoot 'System32')
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+    foreach ($reserved in $protected) {
+        if ($full.TrimEnd('\') -ieq ([IO.Path]::GetFullPath($reserved)).TrimEnd('\')) {
+            throw "Refusing to use a well-known Windows folder as the install folder: $full"
+        }
+    }
+
+    if ((Test-Path $full) -and (Get-ChildItem $full -Force | Select-Object -First 1)) {
+        if (-not (Test-Path (Join-Path $full 'FileTracert.Host.exe'))) {
+            throw "'$full' already has content and does not look like a FileTracert installation " +
+                  "(no FileTracert.Host.exe). Refusing to mirror over it - pick an empty folder."
+        }
+    }
 }
 
 function Publish-Host {
@@ -115,22 +163,26 @@ function Grant-DataFolderAccess {
     # ProgramData permissions give Users read-only, so that second reader would fail with an
     # access error on a database it is supposed to own. Granting Modify to the local Users group
     # is the trade-off, and it is deliberate: single-user personal machine, UI on loopback only.
-    $usersSid = New-Object Security.Principal.SecurityIdentifier('S-1-5-32-545')
-    $acl = Get-Acl $Path
-    $rule = New-Object Security.AccessControl.FileSystemAccessRule(
-        $usersSid,
-        [Security.AccessControl.FileSystemRights]::Modify,
-        [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit',
-        [Security.AccessControl.PropagationFlags]::None,
-        [Security.AccessControl.AccessControlType]::Allow)
-    $acl.AddAccessRule($rule)
-    Set-Acl -Path $Path -AclObject $acl
+    #
+    # icacls, not Get-Acl/Set-Acl: those live in Microsoft.PowerShell.Security, and an install has
+    # already been seen to die here because that module failed to autoload - after the service was
+    # stopped and the binaries replaced, which is the worst possible moment. icacls is an
+    # executable, and the group travels as its SID so the command works on a localised Windows.
+    $output = & icacls $Path /grant '*S-1-5-32-545:(OI)(CI)M' 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        # Not fatal, and deliberately so: the service itself runs as LocalSystem and can write
+        # regardless. What is lost is the second reader (console diagnostics, the harness), and
+        # that is worth a loud warning, not an install aborted halfway.
+        Write-Warning "Could not grant Users:Modify on $Path (icacls exit $LASTEXITCODE): $output"
+        Write-Warning "The service will still work. A non-elevated console run or the hardware harness may not be able to open the database."
+    }
 }
 
 function Wait-ForService {
     param([int] $ListenPort, [int] $TimeoutSeconds = 60)
 
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $lastError = 'no attempt was made'
     while ((Get-Date) -lt $deadline) {
         $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
         if ($null -ne $service -and $service.Status -eq 'Stopped') {
@@ -144,12 +196,19 @@ function Wait-ForService {
             return $true
         } catch [System.Net.WebException] {
             if ($null -ne $_.Exception.Response) { return $true }
+            $lastError = $_.Exception.Message
         } catch {
-            if ($_.Exception.Message -notmatch 'Unable to connect|actively refused|impossibile') { throw }
+            # Deliberately not matched against the message: "connection refused" is localised, and
+            # a script that decides whether to keep waiting by reading translated text reports a
+            # failed install on a machine whose only fault is not being in English. Keep polling
+            # until the deadline; the last error is carried out with the failure if one happens.
+            $lastError = $_.Exception.Message
         }
 
         Start-Sleep -Milliseconds 500
     }
+
+    Write-Warning "Last error while waiting for http://127.0.0.1:$ListenPort/ : $lastError"
     return $false
 }
 
@@ -164,6 +223,7 @@ try {
     }
 
     Assert-PublishedArtifacts -Directory $SourcePublishDir
+    Assert-SafeInstallRoot -Path $InstallRoot
 
     $existed = Stop-ServiceIfPresent -Name $ServiceName
 
