@@ -25,6 +25,11 @@ namespace FileTracert.Data.Search;
 ///
 /// Path formula: if <c>Directories.MaterializedPath = ''</c> the path is just
 /// the projected file name; otherwise <c>dir_path \ projected_name</c>.
+///
+/// The third column, <c>tags</c>, holds no words — see <see cref="FileSearchTags"/>. It is what
+/// lets a category or volume filter be answered by the index instead of by resolving every match
+/// on <c>Files</c>, and it is never reachable from user input: every MATCH built here is scoped to
+/// <c>{name}</c> or <c>{name path}</c>.
 /// Count is capped at 10 000 — large result sets are slow to count fully and
 /// the UI shows "10 000+" when totalCount reaches the cap.
 /// bm25 score: lower = more relevant, so Relevance sorts ASC.
@@ -94,19 +99,20 @@ public sealed class FileSearchIndex : IFileSearchIndex
     }
 
     /// <summary>
-    /// EXISTS, not COUNT: the answer is "is there at least one row", and on a populated index
-    /// COUNT would walk the whole table to say what the first hit already says. Run through the
-    /// raw connection because <c>FileSearchIndex</c> is an FTS5 virtual table with no entity
-    /// behind it — which is precisely why this belongs on this side of the boundary (K12).
+    /// A real COUNT, walking the whole index. It was an EXISTS while the caller only asked "is it
+    /// empty"; 14a showed that question was the wrong one (see <see cref="IFileSearchIndex"/>), and
+    /// an EXISTS cannot answer the right one. Run through the raw connection because
+    /// <c>FileSearchIndex</c> is an FTS5 virtual table with no entity behind it — which is
+    /// precisely why this belongs on this side of the boundary (K12).
     /// </summary>
-    public async Task<bool> IsEmptyAsync(CancellationToken ct)
+    public async Task<long> CountEntriesAsync(CancellationToken ct)
     {
         var conn = _db.Database.GetDbConnection();
         await _db.Database.OpenConnectionAsync(ct);
 
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT EXISTS(SELECT 1 FROM FileSearchIndex)";
-        return (long)(await cmd.ExecuteScalarAsync(ct))! == 0;
+        cmd.CommandText = "SELECT COUNT(*) FROM FileSearchIndex";
+        return (long)(await cmd.ExecuteScalarAsync(ct))!;
     }
 
     /// <summary>

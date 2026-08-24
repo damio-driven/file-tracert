@@ -305,25 +305,37 @@ public sealed class FileSearchIndexTests
     }
 
     /// <summary>
-    /// K12: the emptiness probe the startup backfill asks. It used to be a cast to
-    /// <c>SqliteConnection</c> and a hand-written statement in <c>Host</c>; now the answer comes
-    /// from the implementation that owns the FTS5 table, and this pins the only two answers that
-    /// matter — empty before anything is synced, not empty after one file is.
+    /// K12: the probe the startup backfill asks. It used to be a cast to <c>SqliteConnection</c>
+    /// and a hand-written statement in <c>Host</c>; now the answer comes from the implementation
+    /// that owns the FTS5 table.
+    ///
+    /// <para>Since 14a it is a COUNT, not "is it empty", and the difference is the whole point:
+    /// the backfill has to be able to tell a WHOLE index from a merely non-empty one. So what is
+    /// pinned here is that the number tracks the entries — zero, then one, then two — rather than
+    /// saturating at "some".</para>
     /// </summary>
     [Fact]
-    public async Task IsEmpty_is_true_only_until_the_first_entry_exists()
+    public async Task CountEntries_tracks_how_many_entries_the_index_holds()
     {
         using var setup = await SetupAsync();
         var (ctx, fts) = (setup.Ctx, setup.Fts);
 
-        (await fts.IsEmptyAsync(CancellationToken.None)).Should().BeTrue(
+        (await fts.CountEntriesAsync(CancellationToken.None)).Should().Be(0,
             "a freshly created FTS5 table holds nothing");
 
         var (volId, dirId) = await SeedVolumeAndDirAsync(ctx);
         await AddFileAsync(ctx, volId, dirId, "vacation.jpg", "jpg");
         await fts.SyncVolumeFromDbAsync(volId, CancellationToken.None);
 
-        (await fts.IsEmptyAsync(CancellationToken.None)).Should().BeFalse(
-            "one indexed file is enough to make the backfill unnecessary");
+        (await fts.CountEntriesAsync(CancellationToken.None)).Should().Be(1);
+
+        // SyncFilesAsync, not SyncVolumeFromDbAsync: the volume-level one is insert-only (it runs
+        // right after a bulk insert on a cleared index), so calling it twice would duplicate a
+        // rowid rather than add a second entry.
+        var second = await AddFileAsync(ctx, volId, dirId, "invoice.pdf", "pdf");
+        await fts.SyncFilesAsync([second.Id], CancellationToken.None);
+
+        (await fts.CountEntriesAsync(CancellationToken.None)).Should().Be(2,
+            "an index that is short is exactly what the backfill has to be able to see");
     }
 }

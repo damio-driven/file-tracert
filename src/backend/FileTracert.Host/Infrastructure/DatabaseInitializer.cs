@@ -76,9 +76,11 @@ public sealed class DatabaseInitializer
             // the seeder so a seeded override is honored).
             await ApplyLogLevelAsync(db, ct);
 
-            // If Files exist but the FTS index is empty (e.g. first start after this
-            // feature was added), do a one-time full backfill.
-            await BackfillFtsIfNeededAsync(scope, db, ct);
+            // If the FTS index holds fewer entries than there are rows that belong in it, rebuild
+            // it. Runs last on purpose: the orphan reconciliation above clears Pending* columns,
+            // which are part of the PROJECTED name this index stores (§5), so a rebuild placed
+            // before it would index names that the very next step invalidates.
+            await BackfillFtsIfNeededAsync(scope, db, _logger, ct);
 
             _logger.LogInformation("Database initialized (migrated, WAL on).");
         }
@@ -131,23 +133,50 @@ public sealed class DatabaseInitializer
     }
 
     /// <summary>
-    /// One-time FTS backfill: if the database has indexed files but the FTS5 table is
-    /// empty (first startup after the search feature was introduced), rebuild the index.
-    /// Subsequent startups are cheap — the emptiness probe stops at the first row.
+    /// FTS backfill: if the index holds fewer entries than there are rows that belong in it,
+    /// rebuild it. That covers the first startup after the search feature was introduced, the
+    /// first startup after a migration that had to recreate the virtual table (14a — FTS5 has no
+    /// <c>ALTER TABLE … ADD COLUMN</c>), and a rebuild that was interrupted halfway.
     ///
-    /// <para>K12: both questions are now asked through an abstraction. The probe used to be a
-    /// cast to <c>SqliteConnection</c> and a hand-written statement against an FTS5 virtual
-    /// table, in <c>Host</c> — SQLite leaking straight through the boundary §3 puts around it.</para>
+    /// <para>The question used to be "is the index empty", and that was wrong in a way that could
+    /// not be seen from the outside. The 14a migration leaves the index empty on purpose; but
+    /// <see cref="OverlayWriter.ReconcileOrphansAsync"/> runs earlier in this same startup and
+    /// re-syncs the files whose orphan overlay it just cleared. Those few rows made an empty index
+    /// "not empty", the rebuild was skipped, and every search from then on answered from a handful
+    /// of rows — with nothing logged, and the Catalog screen still perfectly correct, so nothing
+    /// pointed at the cause. Ordering the two differently would fix that one interaction; asking
+    /// the right question fixes the class, and the interrupted rebuild with it.</para>
+    ///
+    /// <para><b>Deliberately one-sided</b>: short means rebuild, long does not. A stale entry for a
+    /// row that has since been excluded or removed is already invisible — <c>SearchAsync</c>
+    /// filters on <c>IsIncluded</c>/<c>IsPresent</c> — so treating "more entries than rows" as
+    /// damage would buy nothing and would risk a full rebuild on every single startup.</para>
+    ///
+    /// <para>K12 still holds: the SQLite specifics stay behind <see cref="IFileSearchIndex"/>, the
+    /// decision stays here. The cost is a full count of the index, ~250–335 ms on a 742 033-entry
+    /// catalog, once per startup.</para>
     /// </summary>
     private static async Task BackfillFtsIfNeededAsync(
-        IServiceScope scope, FileTracertDbContext db, CancellationToken ct)
+        IServiceScope scope, FileTracertDbContext db, ILogger logger, CancellationToken ct)
     {
-        var hasFiles = await db.Files.AnyAsync(f => f.IsIncluded && f.IsPresent, ct);
-        if (!hasFiles) return;
+        var indexable = await db.Files.CountAsync(f => f.IsIncluded && f.IsPresent, ct);
+        if (indexable == 0) return;
 
         var fts = scope.ServiceProvider.GetRequiredService<IFileSearchIndex>();
-        if (await fts.IsEmptyAsync(ct))
-            await fts.RebuildAsync(ct);
+        var indexed = await fts.CountEntriesAsync(ct);
+        if (indexed >= indexable) return;
+
+        // Logged before and after: a rebuild is the most expensive thing this startup does (~10 s
+        // on a real catalog), and one that repeats every startup is a defect that must be visible
+        // rather than merely slow.
+        logger.LogWarning(
+            "Search index is short — {Indexed} entries for {Indexable} indexable files. Rebuilding.",
+            indexed, indexable);
+
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        await fts.RebuildAsync(ct);
+        logger.LogInformation(
+            "Search index rebuilt in {Elapsed:F1} s.", started.Elapsed.TotalSeconds);
     }
 
     private static string GenerateToken() => Convert.ToHexString(RandomNumberGenerator.GetBytes(32));

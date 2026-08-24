@@ -18,17 +18,24 @@ public interface IFileSearchIndex
     Task RebuildAsync(CancellationToken ct);
 
     /// <summary>
-    /// True when the index holds no entry at all — the one question the startup backfill has to
-    /// ask before deciding whether <see cref="RebuildAsync"/> is worth running.
+    /// How many entries the index holds — what the startup backfill needs in order to decide
+    /// whether <see cref="RebuildAsync"/> is owed.
     ///
-    /// <para>K12: it exists so the caller does not have to. The backfill used to cast the
-    /// <c>DbConnection</c> to <c>SqliteConnection</c> and run its own
-    /// <c>SELECT EXISTS(SELECT 1 FROM FileSearchIndex)</c> from <c>Host</c> — the table name, the
-    /// fact that "empty" is cheap to answer with EXISTS rather than COUNT, and the provider
-    /// itself, all leaking through the boundary §3 draws around SQLite. The implementation keeps
-    /// the FTS5 specifics; the caller keeps the decision.</para>
+    /// <para>It used to be <c>IsEmptyAsync</c>, and "is there at least one row" turned out to be
+    /// the wrong question (step 14a). An index can be non-empty and still WRONG: the 14a migration
+    /// leaves it empty for the backfill to refill, and before the backfill runs, the startup
+    /// orphan-overlay reconciliation re-syncs the handful of files whose overlay it just cleared.
+    /// Under the old guard those few rows made the index "not empty" and the rebuild was skipped —
+    /// for that startup and every one after it — so search answered from a handful of rows with
+    /// nothing logged and the Catalog screen still perfectly correct. A rebuild interrupted halfway
+    /// leaves the same shape. So the caller compares against the number of rows that BELONG in the
+    /// index and rebuilds when the index is short.</para>
+    ///
+    /// <para>K12 still holds: the implementation keeps the FTS5 specifics (the table name, the
+    /// provider), the caller keeps the decision. The cost is a full count of the index — measured
+    /// at ~250–335 ms on a 742 033-entry catalog, paid once per startup.</para>
     /// </summary>
-    Task<bool> IsEmptyAsync(CancellationToken ct);
+    Task<long> CountEntriesAsync(CancellationToken ct);
 
     /// <summary>
     /// Re-syncs the entries of exactly these files: each is removed and re-added from its

@@ -127,7 +127,7 @@ public sealed class IndexUpdateFailOnceScenario : Scenario
         public Task ClearVolumeAsync(int volumeId, CancellationToken ct) => _inner.ClearVolumeAsync(volumeId, ct);
         public Task SyncVolumeFromDbAsync(int volumeId, CancellationToken ct) => _inner.SyncVolumeFromDbAsync(volumeId, ct);
         public Task RebuildAsync(CancellationToken ct) => _inner.RebuildAsync(ct);
-        public Task<bool> IsEmptyAsync(CancellationToken ct) => _inner.IsEmptyAsync(ct);
+        public Task<long> CountEntriesAsync(CancellationToken ct) => _inner.CountEntriesAsync(ct);
         public Task SyncFilesAsync(IReadOnlyCollection<int> fileIds, CancellationToken ct) => _inner.SyncFilesAsync(fileIds, ct);
         public Task SyncDirectoriesAsync(IReadOnlyCollection<int> directoryIds, CancellationToken ct) => _inner.SyncDirectoriesAsync(directoryIds, ct);
         public Task PruneVolumeAsync(int volumeId, CancellationToken ct) => _inner.PruneVolumeAsync(volumeId, ct);
