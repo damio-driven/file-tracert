@@ -1,6 +1,7 @@
 ﻿using FileTracert.Business;
 using FileTracert.Contracts.Logging;
 using FileTracert.Data;
+using FileTracert.Data.Cancellation;
 using FileTracert.Data.Logging;
 using FileTracert.Host.Configuration;
 using FileTracert.Host.Infrastructure;
@@ -43,6 +44,12 @@ var logProcessor = builder.AddSqliteLogging(
     TimeSpan.FromSeconds(options.LogDrainTimeoutSeconds));
 
 builder.Services.AddDataServices(connectionString);
+// 14b — reads stop when the host starts stopping. Replace, not Add: AddDataServices bound a signal
+// that never fires, for compositions with no host. Waiting for RequestAborted instead would be too
+// late by construction — Kestrel only aborts an in-flight request once the shutdown budget has
+// already been spent, and that budget is the thing §3 promises to respect.
+builder.Services.Replace(ServiceDescriptor.Singleton(sp =>
+    new DatabaseShutdownSignal(sp.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping)));
 builder.Services.AddPlatformServices();
 builder.Services.AddBusinessServices();
 
