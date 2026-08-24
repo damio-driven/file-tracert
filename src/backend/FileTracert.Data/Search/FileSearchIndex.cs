@@ -1,8 +1,10 @@
 using System.Text;
 using FileTracert.Contracts.Paging;
 using FileTracert.Contracts.Search;
+using FileTracert.Data.Cancellation;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace FileTracert.Data.Search;
 
@@ -37,8 +39,21 @@ namespace FileTracert.Data.Search;
 public sealed class FileSearchIndex : IFileSearchIndex
 {
     private readonly FileTracertDbContext _db;
+    private readonly DatabaseShutdownSignal _shutdown;
+    private readonly ILogger<FileSearchIndex>? _logger;
 
-    public FileSearchIndex(FileTracertDbContext db) => _db = db;
+    /// <param name="shutdown">14b — the reads below are raw <see cref="SqliteCommand"/>s and so
+    /// never reach EF's interceptors: they carry their own guard. Optional so a test can build the
+    /// index with nothing but a context.</param>
+    public FileSearchIndex(
+        FileTracertDbContext db,
+        DatabaseShutdownSignal? shutdown = null,
+        ILogger<FileSearchIndex>? logger = null)
+    {
+        _db = db;
+        _shutdown = shutdown ?? DatabaseShutdownSignal.None;
+        _logger = logger;
+    }
 
     /// <summary>
     /// The projected file name in SQL. <c>NULLIF</c> guards the empty string as well as NULL:
@@ -112,7 +127,8 @@ public sealed class FileSearchIndex : IFileSearchIndex
 
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = "SELECT COUNT(*) FROM FileSearchIndex";
-        return (long)(await cmd.ExecuteScalarAsync(ct))!;
+        return (long)(await SqliteReadGuard.ExecuteAsync(
+            cmd, ct, _shutdown.Token, _logger, c => cmd.ExecuteScalarAsync(c)))!;
     }
 
     /// <summary>
@@ -283,7 +299,8 @@ public sealed class FileSearchIndex : IFileSearchIndex
                 cmd.CommandText = countSql;
                 cmd.Parameters.AddWithValue("$match", matchTerm);
                 foreach (var (n, v) in filterParams) cmd.Parameters.AddWithValue(n, v);
-                total = Convert.ToInt32((long)(await cmd.ExecuteScalarAsync(ct))!);
+                total = Convert.ToInt32((long)(await SqliteReadGuard.ExecuteAsync(
+                    cmd, ct, _shutdown.Token, _logger, c => cmd.ExecuteScalarAsync(c)))!);
             }
 
             // bm25 lower = more relevant → sort ASC for Relevance; for other sorts
@@ -324,7 +341,8 @@ public sealed class FileSearchIndex : IFileSearchIndex
                 foreach (var (n, v) in filterParams) cmd.Parameters.AddWithValue(n, v);
                 cmd.Parameters.AddWithValue("$take", paged.Take);
                 cmd.Parameters.AddWithValue("$skip", paged.Skip);
-                await using var reader = await cmd.ExecuteReaderAsync(ct);
+                await using var reader = await SqliteReadGuard.ExecuteAsync(
+                    cmd, ct, _shutdown.Token, _logger, c => cmd.ExecuteReaderAsync(c));
                 while (await reader.ReadAsync(ct))
                     ids.Add(reader.GetInt32(0));
             }

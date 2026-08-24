@@ -3,6 +3,7 @@ using System.Text;
 using FileTracert.Contracts.Dtos;
 using FileTracert.Contracts.Logging;
 using FileTracert.Contracts.Paging;
+using FileTracert.Data.Cancellation;
 using FileTracert.Data.Interceptors;
 using Microsoft.Data.Sqlite;
 
@@ -85,6 +86,15 @@ public sealed class SqliteLogStore : ILogStore
         await tx.CommitAsync(ct);
     }
 
+    /// <summary>
+    /// The one READ this store serves. 14b — both statements go through
+    /// <see cref="SqliteReadGuard"/>: a <c>LIKE '%…%'</c> over a log database that step 13 found
+    /// holding 500 000 rows is a full scan, i.e. exactly the shape that used to keep burning a core
+    /// after the screen that asked for it had gone away. No shutdown signal is threaded here: this
+    /// store is built before the container exists (it has to be — it is the sink everything logs
+    /// through, including startup), so it has none to link, and its only caller is an HTTP request
+    /// whose own token covers the observed failure. No logger either, for the obvious reason.
+    /// </summary>
     public async Task<PagedResult<LogEntryDto>> QueryAsync(LogQuery query, CancellationToken ct)
     {
         var (where, parameters) = BuildFilter(query);
@@ -94,7 +104,8 @@ public sealed class SqliteLogStore : ILogStore
         await using var countCmd = conn.CreateCommand();
         countCmd.CommandText = $"SELECT COUNT(*) FROM LogEntries{where};";
         AddParameters(countCmd, parameters);
-        var total = Convert.ToInt32((long)(await countCmd.ExecuteScalarAsync(ct))!);
+        var total = Convert.ToInt32((long)(await SqliteReadGuard.ExecuteAsync(
+            countCmd, ct, default, null, c => countCmd.ExecuteScalarAsync(c)))!);
 
         await using var pageCmd = conn.CreateCommand();
         pageCmd.CommandText =
@@ -109,7 +120,8 @@ public sealed class SqliteLogStore : ILogStore
         pageCmd.Parameters.AddWithValue("$skip", query.Skip < 0 ? 0 : query.Skip);
 
         var items = new List<LogEntryDto>();
-        await using var reader = await pageCmd.ExecuteReaderAsync(ct);
+        await using var reader = await SqliteReadGuard.ExecuteAsync(
+            pageCmd, ct, default, null, c => pageCmd.ExecuteReaderAsync(c));
         while (await reader.ReadAsync(ct))
         {
             items.Add(new LogEntryDto(
