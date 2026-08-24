@@ -1,8 +1,10 @@
 using FileTracert.Data;
+using FileTracert.Data.Cancellation;
 using FileTracert.Data.Interceptors;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace FileTracert.Tests.Data;
 
@@ -39,12 +41,22 @@ public sealed class SqliteInMemoryContext : IDisposable
         }
     }
 
+    /// <summary>
+    /// The host's shutdown signal, as seen by the read guard (14b). Set it to observe what a read
+    /// does while the process is stopping; by default it never fires.
+    /// </summary>
+    public DatabaseShutdownSignal ShutdownSignal { get; set; } = DatabaseShutdownSignal.None;
+
     /// <param name="extraInterceptors">Test-specific interceptors (e.g. fault/race injection)
     /// appended after the standard auditing interceptor.</param>
     public FileTracertDbContext CreateContext(params IInterceptor[] extraInterceptors)
     {
         var builder = new DbContextOptionsBuilder<FileTracertDbContext>()
-            .UseSqlite(_connection);
+            .UseSqlite(_connection)
+            // Same interceptor AddDataServices wires in production: without it a test would be
+            // measuring a DbContext the product never builds.
+            .AddInterceptors(new SqliteReadCancellationInterceptor(
+                ShutdownSignal, NullLogger<SqliteReadCancellationInterceptor>.Instance));
 
         if (_withAuditing)
         {
