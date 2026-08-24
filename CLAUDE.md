@@ -651,8 +651,8 @@ Cosa resta aperto, e **non è più MVP** — sono debiti datati e roadmap di fas
 2. **`ExcludedPaths` non ha una riconciliazione propria** (terza metà della voce chiusa da 11h).
 3. **Classificazione Cloud non affidabile** (§11, debito datato allo step 6.7).
 4. **Trovati dallo step 13, sul catalogo vero da 742 033 file** — nessuno è MVP, tutti sono reali:
-   il **filtro per categoria** della Ricerca costa come l'insieme dei match e non come il risultato
-   (2 righe in 12 s; con un match set grande non torna affatto); una **query lunga non si annulla**,
+   ~~il **filtro per categoria** della Ricerca costa come l'insieme dei match e non come il
+   risultato~~ **chiuso allo step 14a**; una **query lunga non si annulla**,
    quindi tiene lo shutdown oltre lo `ShutdownTimeout`; **lista e dettaglio Volumi** stanno oltre il
    secondo; il motore **USN non ha le dimensioni dei file** e le ricompra con una `stat` per file,
    che è il motivo per cui non batte l'enumerazione; **manca l'id del giornale** in `Volumes`, e
@@ -660,6 +660,182 @@ Cosa resta aperto, e **non è più MVP** — sono debiti datati e roadmap di fas
 5. **Il percorso incrementale USN non esiste**: `ReadChanges` è implementato e testato, ma nessun
    consumatore lo chiama e il `UsnSyncWorker` del §3 non è mai stato scritto. Ogni scansione è piena.
 6. La **fase 2** del §11, nell'ordine che l'utente deciderà.
+
+### Fatto nello step 14a (2026-08-24, commit `df2ec7c`…`986bbf6`)
+**Il filtro della Ricerca costa quanto il risultato, non quanto l'insieme dei match.** Chiude il
+difetto più grave trovato dal soak dello step 13: `report` + categoria `Image` restituiva 2 righe in
+12 s, e `e` + `Image` non tornava affatto. Più il filtro era selettivo, peggio andava — l'esatto
+contrario di ciò che l'utente si aspetta premendo un chip.
+
+- **La prima riga di lavoro è stata `EXPLAIN QUERY PLAN` sullo statement vero**, su una copia del
+  catalogo reale, come il task chiedeva — e ha smentito per metà il sospetto scritto nel task. Non
+  c'è **un** difetto, ce ne sono **due**, e il secondo è quello che rende il caso peggiore
+  *illimitato* invece che soltanto lento.
+  1. La query di **pagina** guida dall'indice e risolve **ogni** match su `Files` per tenerne una
+     manciata: il costo segue il match set. È l'ipotesi del task, ed è giusta.
+  2. La query di **conteggio** fa di peggio. Con un predicato di **uguaglianza su una colonna
+     indicizzata** il pianificatore **inverte l'ordine di join**: guida da `IX_Files_Category` e
+     chiede alla tabella FTS «il rowid X combacia?» una volta per riga candidata. Ognuna di quelle
+     domande **rifà la query full-text** — per un termine prefisso, rimerge l'intera doclist. Il
+     costo smette di essere «match set per una costante» e diventa «match set per la query, di
+     nuovo»: 17 588 rimerge della doclist di `"e"*`. Di lì il «non torna».
+- **Il fix toglie il predicato invece di renderlo veloce.** La tabella FTS5 guadagna una terza
+  colonna, `tags`, che non contiene parole: contiene i **token sintetici** della riga (`ftcimage`,
+  `ftv3`), e il filtro diventa un congiunto del `MATCH`. L'indice fa l'**intersezione di due
+  doclist**, che è la cosa per cui esiste.
+- **Solo categoria e volume diventano token, e il vincolo è la correttezza, non la fatica.** Un
+  token è sicuro solo dove i valori sono un dominio chiuso che sopravvive **intatto** al tokenizer:
+  la categoria è un enum, il volume un int, quindi ciascuno mappa a **un** token, iniettivamente — e
+  insieme sono **esattamente ciò che la schermata Ricerca può produrre** (gli unici due controlli di
+  filtro che esistono). L'**estensione** no: sul catalogo vero **639 delle 1 150 estensioni
+  distinte** contengono caratteri su cui il tokenizer spezza (`_ - [ ]` e peggio), quindi qualunque
+  codifica leggibile fa **collidere due estensioni diverse** — e un filtro che restituisce in
+  silenzio le righe sbagliate è peggio di uno lento. Estensione, dimensione e data restano predicati
+  SQL ordinari.
+- **Ciò che le protegge è l'ordine di join, pinnato** (`CROSS JOIN`). È la seconda metà del fix e
+  non è decorazione: l'estensione è ancora un'uguaglianza su colonna indicizzata, cioè ancora un
+  grilletto per l'inversione. Misurato sul catalogo vero, filtrando su un'estensione che non
+  combacia con nulla: **739 ms** col pianificatore libero, **10 ms** pinnato, stessa risposta. Si
+  rinuncia al caso in cui guidare da `Files` sarebbe davvero meglio — che non è una perdita vera:
+  quella forma paga solo se SQLite conosce la selettività, e **questo database non esegue mai
+  `ANALYZE`** (11e), quindi sceglierebbe su una stima di default, contro una tabella virtuale il cui
+  costo per sonda non vede affatto.
+- **Due dettagli che sarebbero stati bug silenziosi.** (a) Ogni `MATCH` dell'utente è ora
+  **scopato per colonna** (`{name}` / `{name path}`): un MATCH non scopato cerca in **tutte** le
+  colonne, quindi senza questo digitare `ftcimage` avrebbe selezionato ogni immagine. Sulle due
+  colonne preesistenti la forma scopata e quella nuda significano la stessa cosa, quindi **nessuna
+  ricerca che l'utente possa digitare cambia risposta**. (b) `bm25` prende ora pesi espliciti per
+  colonna con **0 sui tag**: un token sintetico che combacia non deve poter spostare l'ordine di
+  rilevanza di una ricerca filtrata rispetto alla stessa ricerca senza filtro.
+- **La migration non riscrive le righe, e non è pigrizia.** Una tabella FTS5 non ha
+  `ALTER TABLE … ADD COLUMN` (la lista di colonne fa parte del layout delle shadow table), quindi
+  l'unico modo è ricrearla; ripopolarla **dentro** la migration vorrebbe dire una seconda copia del
+  SQL del nome proiettato e dei tag, e §5 è esplicito che quelle regole hanno **una** definizione.
+  L'indice resta vuoto e lo riempie il backfill di avvio **che esiste già**. Le migration girano
+  prima del backfill, quindi la finestra vuota non raggiunge mai una richiesta.
+- **Verifica**: xUnit **796 verdi** (+5 su una baseline **misurata** di 791 su questa macchina —
+  il brief dello step 13 diceva 792, il numero vero qui è 791), build backend pulita
+  (warnings-as-errors). Frontend non toccato, quindi nessun `ng build`.
+  Harness sul ferro (`D:\Collaudo\A` ↔ `C:\Collaudo\B`): **47 scenari, 47 PASS, 0 FAIL**, eseguito
+  **due volte**, prima e dopo il giro di review; `appsettings.json` rimesso byte-identico
+  (sha256 `653f5990…` verificato).
+  **RED dimostrato prima di ogni fix**, e i due difetti hanno richiesto **due strumenti diversi**:
+  il primo si misura in **righe visitate** (`Files` ombreggiata da una view che porta una UDF
+  contatore, la tecnica di 11e/E3) — **5 010 righe per un risultato di 5** prima, **10** dopo; il
+  secondo **non è visibile** a quel contatore, perché la forma invertita tocca **meno** righe di
+  `Files` e paga dentro la tabella virtuale, dove SQLite non espone alcun contatore. Quello si
+  asserisce sul **piano**, riletto dal SQL che il prodotto ha davvero emesso
+  (`CapturingSqliteConnection` registra gli statement mentre eseguono) e non da una copia incollata
+  nel test, che proverebbe solo che la copia è pianificata bene. RED con il loop più esterno che
+  diceva `SEARCH f USING INDEX IX_Files_Extension`: **la stessa inversione del catalogo vero,
+  riprodotta in-process**.
+- **Equivalenza, prima delle prestazioni.** Nei test: undici combinazioni di filtri confrontate con
+  la risposta calcolata **direttamente da `Files`**, stesse righe nello stesso ordine. Sul catalogo
+  vero: il conteggio via tag e quello via predicato SQL confrontati per **tutte e sei le categorie**
+  e **tutti e 22 i volumi** — identici ovunque. `e` + `Image`, che il codice vecchio non ha mai
+  restituito, dà **508** in entrambe le forme.
+
+#### I numeri, rimisurati sul catalogo vero
+Su una **copia** del catalogo reale (742 033 file, 731 MB — mai il database che il servizio usa),
+attraverso l'**API**, con lo stesso corpo di richiesta che manda la schermata Ricerca
+(`scope: Name`, `sort: Relevance`, `take: 50`), a regime (WAL checkpointato) e mediana di 5
+esecuzioni. «Prima» è il **Host costruito dal commit precedente**, in un worktree separato, sulla
+stessa macchina e sulla stessa copia: non i numeri di un'altra sessione.
+
+| query | risultato | prima | dopo |
+|---|---|---|---|
+| `report` | 431 righe | 105 ms | **55 ms** |
+| `report` + categoria `Image` | 2 righe | **2 772 ms** | **50 ms** |
+| `e` (tappato a 10 000) | 10 000 | 582 ms | **471 ms** |
+| `e` + categoria `Image` | 508 righe | **mai** (arreso a 300 s, due volte) | **90 ms** |
+
+Le righe restituite coincidono con quelle dello step 13 (431 e 2), cioè è la stessa query; i
+millisecondi assoluti sono più bassi dei 517/12 123 di allora perché il soak misurava un servizio
+sotto carico su cache fredda, questa è una copia a riposo. **Il percorso senza filtro non regredisce
+— migliora**, perché l'indice ricostruito è contiguo. *(Una prima passata sembrava dire il
+contrario: era stata misurata con un WAL da 67 MB non ancora checkpointato, lasciato lì dall'host
+ucciso subito dopo il rebuild. Il numero era vero e descriveva la cosa sbagliata.)*
+
+Rimisurato sul **build finale** (dopo la correzione della review, che aggiunge un COUNT dell'indice
+all'avvio ma non tocca la ricerca) gli stessi quattro danno **53 / 35 / 316 / 93 ms**: stessi
+risultati, stesso ordine di grandezza.
+
+**Quanto costa l'aggiornamento, una volta sola**: sullo stesso catalogo il primo avvio dopo
+l'update impiega **9,9 s** a servire, di cui **6,9 s** sono il rebuild dell'FTS (il resto è
+migration e checkpoint), contro **2,6 s** di un avvio normale sullo stesso database. L'indice torna
+a **742 033** voci esatte, quante sono le righe indicizzabili: non se ne perde nessuna. Per quei
+~7 s è la **ricerca** a non essere disponibile, non il catalogo. Il log lo dice in chiaro —
+*«Search index is short — 0 entries for 742 033 indexable files. Rebuilding.»* e poi *«Search index
+rebuilt in 6.9 s.»* — e al secondo avvio **quella riga non compare**, che è la prova che la guardia
+a senso unico non ricostruisce a ogni avvio su un database sano.
+
+La **code review finale** (indipendente, sulle modifiche di questo giro) ha trovato **due cose**.
+Una era **grave e introdotta da questo giro**, ed è del tipo peggiore: silenziosa, permanente, e
+invisibile proprio alla schermata che dovrebbe accorgersene. La migration lascia l'indice **vuoto**
+e delega il riempimento al backfill di avvio — il che è sicuro **solo se nessuno mette una riga
+nell'indice vuoto prima**. Qualcuno lo fa: `OverlayWriter.ReconcileOrphansAsync` gira **prima**,
+nello stesso avvio, e ri-sincronizza i file di cui ha appena ripulito l'overlay orfano. Con la
+guardia «c'è almeno una riga?» quelle poche righe rendevano l'indice non-vuoto, il rebuild veniva
+**saltato**, e la ricerca rispondeva da una manciata di righe — quell'avvio e **tutti quelli
+successivi**, senza una riga di log e con il Catalogo perfettamente corretto, quindi senza niente
+che indicasse la causa. Lo scatenante è un'installazione il cui ultimo arresto ha lasciato un
+overlay pendente: **esattamente il caso per cui quella riconciliazione esiste**.
+Riordinare i due passi chiuderebbe *quell'interazione*; **fare la domanda giusta chiude la classe**,
+e si porta via anche l'altro buco che questo giro apre per la prima volta — un rebuild **interrotto
+a metà** (~10 s su un catalogo vero, quindi interrompibilissimo) lascia lo stesso indice non-vuoto e
+incompleto che «è vuoto?» non riparerebbe mai. Quindi `IsEmptyAsync` è diventata `CountEntriesAsync`
+e il chiamante la confronta con il numero di righe che nell'indice **devono** stare. **A senso
+unico, di proposito**: corto vuol dire ricostruisci, lungo no — una voce stantia per una riga poi
+esclusa o sparita è già invisibile (`SearchAsync` filtra `IsIncluded`/`IsPresent`), quindi trattare
+«più voci che righe» come danno non comprerebbe nulla e rischierebbe un rebuild completo a **ogni**
+avvio. Il rebuild ora **logga** entrambi i numeri prima e la propria durata dopo: uno che si ripete
+dev'essere visibile, non solo lento. RED dimostrato **sul percorso vero** (un overlay orfano vero,
+la riconciliazione vera, l'initializer vero): **1 voce dove ne servono 20**. L'ordine dei due passi
+è stato **lasciato com'è**, con il motivo scritto accanto: la riconciliazione azzera le colonne
+`Pending*`, che fanno parte del **nome proiettato** che quell'indice contiene (§5), quindi un
+rebuild messo prima indicizzerebbe nomi che il passo immediatamente successivo invalida.
+La **seconda** non sopravvive alla misura e **non è stata applicata**: sosteneva che pinnare
+l'ordine di join impedisce anche un `ORDER BY` soddisfatto da un indice di `Files`, quindi gli
+ordinamenti per data e dimensione avrebbero iniziato a ordinare l'intero match set. Sul catalogo
+vero, ordinando `e` (match set di centinaia di migliaia) per Data, Dimensione e Nome, `JOIN` e
+`CROSS JOIN` producono il **piano identico** — `SCAN fts`, seek per rowid, `USE TEMP B-TREE FOR
+ORDER BY` — e tempi identici (~165–245 ms in entrambi i casi). SQLite quell'ordinamento non lo stava
+mai facendo in streaming da un indice di `Files`: il pin non toglie niente.
+Verificati dalla review e trovati puliti: **ogni** scrittore di `Files.Category` / `Files.VolumeId`
+(il merge dello scan, `RenameFileIndexAsync`, tutti e tre i call site di `RepointToVolume`,
+`FilterReconciler`, `OverlayWriter`) è seguito da una risincronizzazione dell'FTS, quindi i tag
+**non possono diventare stantii** — era la classe di rischio principale; il `{0}` ripetuto in
+`UpsertAsync` (EF usa `string.Format`, quindi entrambi i buchi legano lo stesso `@p0`) ed entrambi i
+suoi call site che girano **dopo** `SaveChangesAsync`, quindi la sotto-query legge la riga salvata;
+la precedenza della colspec FTS5; e l'iniettività dei token.
+
+**Limiti noti e accettati:**
+- **Estensione, dimensione e data restano O(match set)**, non O(risultato): non possono diventare
+  token (le prime due ragioni sono scritte sopra; una **gamma** non è un token per costruzione).
+  Il pin le tiene lontane dalla forma patologica, e nessuna delle tre ha oggi un controllo nella
+  schermata Ricerca — la dimensione lo dice già §«giro date/UTC», l'estensione è solo API.
+- **L'indice è più grande**: due token sintetici per riga, ~1,5 milioni su questo catalogo. Non ha
+  spostato la dimensione del file del database in modo misurabile (731 619 328 byte prima e dopo,
+  perché il rebuild riusa le pagine liberate), ma su un catalogo che cresce è spazio vero.
+- **Un `MATCH` non scopato non esiste più**, e chi aggiungesse un quarto percorso di ricerca deve
+  ricordarlo: dimenticare le graffe rende la colonna `tags` cercabile dall'utente.
+- **Il prefisso corto resta caro**: `e` da solo costa 471 ms perché FTS5 espande il prefisso su
+  tutti i termini che iniziano per «e». Un `prefix='1,2,3'` sulla tabella lo abbatterebbe al prezzo
+  di un indice molto più grande; non è stato fatto qui, non è il difetto di questo giro.
+- **La guardia del backfill costa un COUNT dell'indice a ogni avvio** (~250–335 ms sul catalogo
+  vero). È il prezzo della domanda giusta; l'alternativa economica è quella che ha prodotto il
+  difetto sopra.
+- **E2E non eseguiti**: il loro `globalSetup` si rifiuta di partire da elevato (12a) e questa
+  sessione era elevata per fermare il servizio e leggere il catalogo reale.
+- **Due rossi isolati e non riprodotti**, entrambi mentre un **secondo processo** girava la stessa
+  suite sullo stesso albero (l'agente di review): il nome del test non è stato catturato perché il
+  logger console non lo stampa in questa lingua. Cinque passate consecutive successive, con trx,
+  **796/796 verdi ogni volta**. Non è archiviato come «flakiness accettata»: è scritto qui perché
+  chi lo rivedesse sappia che il sospetto è la contesa sull'albero (la nota di 11i), non il codice
+  di questo giro.
+- **Il servizio installato non è stato aggiornato**: gira ancora il build precedente sul catalogo
+  reale, che non è stato toccato (sha256 verificato identico prima e dopo il giro). Distribuire il
+  nuovo build — e con esso pagare i ~10 s di rebuild sul database vero — è una decisione dell'utente.
 
 ### Fatto nello step 13 (2026-08-22, commit `76e0154`…`01be0a4`)
 **Il prodotto è installato come servizio, gira sul catalogo vero, e la domanda aperta sull'USN ha
@@ -808,11 +984,11 @@ Nota di igiene: i **7,56 s** su 2 002 file del collaudo del 2026-08-21 **non son
   dell'SCM e ha lasciato il servizio `Stopped`; `sc start`, che non aspetta, è andato a buon fine.
   Un avvio fallito con quella firma va letto come «macchina in ginocchio», non come servizio rotto.
 
-**Cosa il soak lascia come lavoro successivo**, in ordine di gravità: (1) il filtro per categoria
-della Ricerca; (2) l'annullabilità delle query lunghe, che oggi trasforma un guasto di prestazioni in
-uno di shutdown; (3) i due endpoint di Volumi oltre il secondo; (4) le dimensioni dall'MFT, senza le
-quali il motore USN non ha un motivo per esistere; (5) la colonna con l'id del giornale, senza la
-quale il worker incrementale non si può nemmeno cominciare.
+**Cosa il soak lascia come lavoro successivo**, in ordine di gravità: ~~(1) il filtro per categoria
+della Ricerca~~ *(chiuso allo step 14a)*; (2) l'annullabilità delle query lunghe, che oggi trasforma
+un guasto di prestazioni in uno di shutdown; (3) i due endpoint di Volumi oltre il secondo; (4) le
+dimensioni dall'MFT, senza le quali il motore USN non ha un motivo per esistere; (5) la colonna con
+l'id del giornale, senza la quale il worker incrementale non si può nemmeno cominciare.
 
 ### Collaudo elevato — il motore USN esercitato per la prima volta (2026-08-21)
 Fino a qui **ogni** numero del progetto descriveva il motore a **enumerazione**: xUnit, harness ed
