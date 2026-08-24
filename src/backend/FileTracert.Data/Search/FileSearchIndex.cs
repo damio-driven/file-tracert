@@ -241,13 +241,29 @@ public sealed class FileSearchIndex : IFileSearchIndex
             // NOTE: SQLite FTS5 requires the real table name (not an alias) in the MATCH
             // predicate when the FTS table is joined with other tables. Using the alias
             // causes "no such column: <alias>" on SQLite 3.x.
+            //
+            // 14a — CROSS JOIN, not JOIN, and it is not decoration: in SQLite it forbids the
+            // planner from reordering the loops, which is the whole point. Given an equality
+            // predicate on an indexed column of Files (an extension filter is what is left that
+            // can do it), the planner would otherwise drive from that index and ask the FTS table
+            // "does rowid X match?" once per candidate row — and each of those questions re-runs
+            // the full-text query, which for a prefix term means merging its whole doclist again.
+            // The cost stops being "match set times a constant" and becomes "match set times the
+            // query, again": on the real catalog that turned a filter matching nothing into 739 ms,
+            // and the same shape on the category filter never returned at all.
+            //
+            // Pinning gives up the theoretical case where driving from Files is genuinely better.
+            // It is not a real loss: that shape only pays off when SQLite can be trusted to know
+            // the selectivity, and this database never runs ANALYZE (see step 11e) — so what it is
+            // really choosing on is a default guess, against a virtual table whose per-probe cost
+            // it cannot see at all.
             var countSql =
                 $"""
                 SELECT COUNT(*) FROM (
                   SELECT 1
                   FROM FileSearchIndex fts
-                  JOIN Files f ON f.Id = fts.rowid
-                  JOIN Volumes v ON v.Id = f.VolumeId
+                  CROSS JOIN Files f ON f.Id = fts.rowid
+                  CROSS JOIN Volumes v ON v.Id = f.VolumeId
                   WHERE FileSearchIndex MATCH $match
                     AND f.IsIncluded = 1 AND f.IsPresent = 1
                   {filterSql}
@@ -285,8 +301,8 @@ public sealed class FileSearchIndex : IFileSearchIndex
                 $"""
                 SELECT fts.rowid
                 FROM FileSearchIndex fts
-                JOIN Files f ON f.Id = fts.rowid
-                JOIN Volumes v ON v.Id = f.VolumeId
+                CROSS JOIN Files f ON f.Id = fts.rowid
+                CROSS JOIN Volumes v ON v.Id = f.VolumeId
                 WHERE FileSearchIndex MATCH $match
                   AND f.IsIncluded = 1 AND f.IsPresent = 1
                 {filterSql}
