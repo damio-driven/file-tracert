@@ -55,10 +55,11 @@ public sealed class FileSearchIndex : IFileSearchIndex
     /// </summary>
     private const string InsertProjectedSql =
         $"""
-        INSERT INTO FileSearchIndex(rowid, name, path)
+        INSERT INTO FileSearchIndex(rowid, name, path, tags)
         SELECT f.Id,
                {ProjectedNameSql},
-               {ProjectedPathSql}
+               {ProjectedPathSql},
+               {FileSearchTags.SqlExpression}
         FROM Files f
         JOIN Directories d ON d.Id = f.DirectoryId
         """;
@@ -186,8 +187,23 @@ public sealed class FileSearchIndex : IFileSearchIndex
         // FTS5 does not support ON CONFLICT; delete first, then reinsert.
         await _db.Database.ExecuteSqlAsync(
             $"DELETE FROM FileSearchIndex WHERE rowid = {fileId}", ct);
-        await _db.Database.ExecuteSqlAsync(
-            $"INSERT INTO FileSearchIndex(rowid, name, path) VALUES ({fileId}, {name}, {path})", ct);
+
+        // Name and path are the caller's — it is finishing a rename or a move and knows where the
+        // file landed. The tags are NOT: they are facts of the row, and the caller has just saved
+        // it, so they are read back from Files as a scalar subquery. A tag column left empty here
+        // would not be a slow search, it would be a moved file that a category-filtered search
+        // stops finding until the next scan.
+        //
+        // Built as a local and run raw: the tag expression is SQL, and an interpolated
+        // ExecuteSqlAsync hole would bind it as a string literal instead. The caller's values stay
+        // real parameters ({0}, {1}, {2}).
+        const string insertSql =
+            $$"""
+            INSERT INTO FileSearchIndex(rowid, name, path, tags)
+            VALUES ({0}, {1}, {2},
+                    (SELECT {{FileSearchTags.SqlExpression}} FROM Files f WHERE f.Id = {0}))
+            """;
+        await _db.Database.ExecuteSqlRawAsync(insertSql, [fileId, name, path], ct);
     }
 
     public async Task RemoveAsync(int fileId, CancellationToken ct)
@@ -203,7 +219,7 @@ public sealed class FileSearchIndex : IFileSearchIndex
     public async Task<PagedResult<int>> SearchAsync(FileSearchQuery query, CancellationToken ct)
     {
         var paged = new PagedRequest(query.Skip, query.Take).Normalized();
-        var matchTerm = BuildMatchTerm(query.Text, query.Scope);
+        var matchTerm = BuildMatchTerm(query);
 
         var conn = (SqliteConnection)_db.Database.GetDbConnection();
         await _db.Database.OpenConnectionAsync(ct);
@@ -251,12 +267,17 @@ public sealed class FileSearchIndex : IFileSearchIndex
             // bm25 lower = more relevant → sort ASC for Relevance; for other sorts
             // honour query.Desc (default ascending).
             // bm25() also requires the real table name (not alias) for the same SQLite reason.
+            //
+            // The weights are per column, in declaration order — name, path, tags. The third is
+            // ZERO on purpose: the tags column carries synthetic tokens, and letting a matched
+            // `ftcimage` contribute to the score would make the relevance order of a filtered
+            // search differ from the same search unfiltered, for a reason no user could see.
             var sortExpr = query.Sort switch
             {
                 SearchSort.Name => "f.Name",
                 SearchSort.Date => "f.ModifiedUtc",
                 SearchSort.Size => "f.SizeBytes",
-                _              => "bm25(FileSearchIndex)",
+                _              => "bm25(FileSearchIndex, 1.0, 1.0, 0.0)",
             };
             var sortDir = query.Sort == SearchSort.Relevance ? "ASC" : (query.Desc ? "DESC" : "ASC");
 
@@ -299,44 +320,63 @@ public sealed class FileSearchIndex : IFileSearchIndex
     // -------------------------------------------------------------------------
 
     /// <summary>
-    /// Builds the FTS5 MATCH expression. A column filter (<c>name :</c>) restricts
-    /// the match to the name column; without it both name and path are searched.
-    /// An empty query becomes <c>*</c> which matches all rows (caller should avoid
-    /// calling SearchAsync with an empty query, but this is a safe fallback).
+    /// Builds the FTS5 MATCH expression: the user's text, plus the structural filters that live in
+    /// the index (§14a), ANDed together so the index does the intersection itself.
+    ///
+    /// <para>The text half is always column-scoped — <c>{name}</c> for a name search,
+    /// <c>{name path}</c> for a full-path one. Scoping the full-path case is what keeps the
+    /// <c>tags</c> column out of reach of user input: an unscoped MATCH searches EVERY column, so
+    /// typing <c>ftcimage</c> would otherwise select every image. On the two columns that existed
+    /// before, <c>{name path} : x</c> and a bare <c>x</c> mean exactly the same thing, so nothing
+    /// the user could search for changes its answer.</para>
+    ///
+    /// <para>An empty text contributes no conjunct at all; if the query has no tags either, the
+    /// expression falls back to <c>*</c>, which matches every row (callers should avoid an empty
+    /// query, but this stays a safe fallback rather than a syntax error).</para>
     ///
     /// IMPORTANT — FTS5 phrase-prefix syntax: the asterisk must appear OUTSIDE the
     /// closing double-quote (<c>"term"*</c>), NOT inside (<c>"term*"</c>).
     /// Inside quotes, <c>*</c> is a literal character; outside, it is the prefix
     /// operator. See https://www.sqlite.org/fts5.html#full_text_query_syntax.
     /// </summary>
-    private static string BuildMatchTerm(string text, SearchScope scope)
+    private static string BuildMatchTerm(FileSearchQuery q)
     {
-        // Escape embedded double-quotes by doubling them (FTS5 convention).
-        var sanitized = text.Replace("\"", "\"\"").Trim();
-        if (string.IsNullOrEmpty(sanitized))
-            return "*";
+        var conjuncts = new List<string>(3);
 
-        // Asterisk is placed OUTSIDE the closing quote for prefix matching.
-        return scope == SearchScope.Name
-            ? $"name : \"{sanitized}\"*"
-            : $"\"{sanitized}\"*";
+        // Escape embedded double-quotes by doubling them (FTS5 convention).
+        var sanitized = q.Text.Replace("\"", "\"\"").Trim();
+        if (sanitized.Length > 0)
+        {
+            var columns = q.Scope == SearchScope.Name ? "{name}" : "{name path}";
+            // Asterisk is placed OUTSIDE the closing quote for prefix matching.
+            conjuncts.Add($"{columns} : \"{sanitized}\"*");
+        }
+
+        if (q.Category.HasValue)
+            conjuncts.Add($"{FileSearchTags.Column} : {FileSearchTags.Category(q.Category.Value)}");
+
+        if (q.VolumeId.HasValue)
+            conjuncts.Add($"{FileSearchTags.Column} : {FileSearchTags.Volume(q.VolumeId.Value)}");
+
+        return conjuncts.Count == 0 ? "*" : string.Join(" AND ", conjuncts);
     }
 
     /// <summary>
     /// Builds the additional WHERE clauses (ANDed after the FTS MATCH predicate)
     /// plus the matching SqliteParameter list. Extensions are inlined after
     /// sanitisation because SQLite does not support array-valued parameters.
+    ///
+    /// <para>Category and volume are deliberately absent: since 14a they are answered inside the
+    /// MATCH by <see cref="FileSearchTags"/>, which is what makes their cost follow the result
+    /// instead of the match set. What remains here is what cannot become a token — a range
+    /// (size, date), a value whose text does not survive the tokenizer intact (extension), or a
+    /// fact of another table (<c>OnlineOnly</c>).</para>
     /// </summary>
     private static (string Sql, List<(string Name, object Value)> Params) BuildFilterClause(FileSearchQuery q)
     {
         var sb = new StringBuilder();
         var p = new List<(string, object)>();
 
-        if (q.Category.HasValue)
-        {
-            sb.AppendLine("  AND f.Category = $category");
-            p.Add(("$category", q.Category.Value.ToString()));
-        }
         if (q.Extensions is { Length: > 0 })
         {
             // Extensions are lowercase alphanumeric — sanitise single quotes and inline.
@@ -363,11 +403,6 @@ public sealed class FileSearchIndex : IFileSearchIndex
         {
             sb.AppendLine("  AND f.ModifiedUtc <= $modTo");
             p.Add(("$modTo", AsUtc(q.ModifiedTo.Value)));
-        }
-        if (q.VolumeId.HasValue)
-        {
-            sb.AppendLine("  AND f.VolumeId = $volId");
-            p.Add(("$volId", q.VolumeId.Value));
         }
         if (q.OnlineOnly)
         {

@@ -10,6 +10,12 @@ namespace FileTracert.Data.Search;
 /// tokenizer the product no longer uses. The tokenizer is the point: <c>remove_diacritics 2</c>
 /// and the <c>. _ -</c> separators decide what a search for "foto" matches, and a test that
 /// disagrees with the migration proves nothing about the product.</para>
+///
+/// <para>Step 14a — the third column, <c>tags</c>, holds no words. It holds the synthetic tokens
+/// of <see cref="FileSearchTags"/>, so a category or volume filter is answered by intersecting
+/// two doclists inside the index instead of resolving every match on <c>Files</c> and throwing
+/// most of them away. It is never full-text searched: every user MATCH is column-scoped to
+/// <c>{name path}</c>, and bm25 gives it weight 0 so it cannot move the relevance order.</para>
 /// </summary>
 public static class FileSearchIndexSchema
 {
@@ -23,6 +29,7 @@ public static class FileSearchIndexSchema
         CREATE VIRTUAL TABLE IF NOT EXISTS FileSearchIndex USING fts5(
             name,
             path,
+            tags,
             tokenize="unicode61 remove_diacritics 2 separators '\._-'"
         );
         """;
