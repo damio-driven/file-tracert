@@ -20,7 +20,13 @@ Uso personale/multimediale: si indicizzano solo i tipi di file scelti dall'utent
 
 ### Tre nodi tecnici che definiscono il prodotto
 1. **Identità dei volumi indipendente dalla lettera** (Volume GUID).
-2. **Indicizzazione efficiente e incrementale** (USN Journal su NTFS).
+2. **Indicizzazione efficiente e incrementale** (USN Journal su NTFS). Esiste
+   davvero **dallo step 14d**: `UsnDeltaApplier` + `UsnSyncWorker` applicano il
+   delta senza ricamminare l'MFT, e convergono con la scansione completa.
+   Misurato lì, su un volume intero: l'USN **pareggia** il primo scan e **vince
+   il re-scan del 17%**; **perde sui sotto-alberi**, perché lo snapshot completo
+   cammina tutta l'MFT ignorando il perimetro. Il numero contrario dello step 13
+   («l'USN non vince a nessuna scala») era un artefatto di misura.
 3. **Coda di operazioni durevole** che lavora anche con drive offline e valida
    la fattibilità (spazio) prima di eseguire.
 
@@ -188,8 +194,29 @@ remount/cambio lettera/spegnimento.
 ### Motori di scansione (entrambi)
 - **NTFS → USN Change Journal**: prima indicizzazione con `FSCTL_ENUM_USN_DATA`
   (cammino MFT, ricostruzione path da `ParentFileReferenceNumber`); incrementale
-  con `FSCTL_READ_USN_JOURNAL` persistendo l'ultimo USN. Richiede admin + NTFS.
-- **exFAT/FAT32 → enumerazione + diff** (size/timestamp). Niente journal.
+  con `FSCTL_READ_USN_JOURNAL` persistendo **la coppia** `LastUsn` +
+  `UsnJournalId` — una posizione senza l'istanza a cui appartiene non è un
+  cursore (§6, step 14d). Richiede admin + NTFS; senza privilegi l'handle di
+  volume viene rifiutato e il volume ripiega sull'enumerazione, con log e
+  Notification.
+  - **Snapshot completo** (`ScanService`): cammina l'MFT e **merge** contro il
+    catalogo. I record MFT non portano dimensione né date: le ricompra
+    `IFileMetadataReader`, una `stat` per file (fase `ReadingMetadata`).
+  - **Delta** (`UsnDeltaApplier`, guidato da `UsnSyncWorker` ogni 30 s, un volume
+    alla volta): riusa gli **stessi** pezzi dello scan — `MergeScannedFilesAsync`
+    per l'upsert (match per FRN), `DirectoryMerger` per l'albero, `ScanPerimeter`
+    + `FileFilter` per il verdetto. L'unica cosa che **non** prende in prestito è
+    il pass degli assenti: «non nominato da questo delta» non significa «non c'è
+    sul disco». L'assenza si scrive **solo contro una prova** del giornale.
+    Cursore scritto per ultimo, in transazione propria: un crash costa un delta
+    ripetuto, mai uno saltato. Giornale ricreato o posizione sorpassata → il
+    cursore viene lasciato cadere e il volume torna a `ScanWorker`.
+- **exFAT/FAT32 → enumerazione** delle sole cartelle sorvegliate, poi lo **stesso
+  merge** dello snapshot completo. *Non* c'è un diff su size/timestamp: il merge
+  riscrive i fatti fisici della riga ritrovata (match per FRN, in subordine per
+  `(DirectoryId, Name) COLLATE NOCASE`) e marca assente ciò che non ha rivisto.
+  Niente journal, quindi **nessun percorso incrementale**: qui `LastUsn` e
+  `UsnJournalId` restano nulli di proposito.
 - **No FileSystemWatcher** (inaffidabile sotto carico). Riconciliazione via USN.
 
 ### Filtri tipo file
