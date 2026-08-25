@@ -364,21 +364,38 @@ mai marcata così, e non esiste un `IsIncluded` sulle directory — step 11g) ·
 **Files**
 `Id` · `VolumeId` · `DirectoryId`→Directories · `Name` · `Extension` (lower) ·
 `Category` (derivata e persistita) · `SizeBytes` · `CreatedUtc`/`ModifiedUtc`
-(del file) · `Attributes` · `UsnFileRef?` · `QuickHash?` (size + primi/ultimi KB)
+(le date **del file**; attenzione: sono i nomi delle *colonne*, le proprietà CLR
+si chiamano `FileCreatedUtc`/`FileModifiedUtc` e le due colonne di audit stanno
+sotto `RowCreatedUtc`/`RowUpdatedUtc` — `FileEntry` è l'unica entità con questo
+scarto, e serve a non avere due `CreatedUtc` nella stessa classe) ·
+`Attributes` · `UsnFileRef?` · `QuickHash?` (size + primi/ultimi KB)
 · `Hash?` (full, lazy) · `IsIncluded` · `ExcludedByType` · `ExcludedByRoot` ·
 `ExcludedByScan` (le tre cause di §6 «Convenzioni trasversali», step 11h) ·
 `IsPresent` · `LastIndexedUtc` ·
 `PendingName?` · `PendingDirectoryId?` · `PendingState` · `PendingJobId?` + audit.
-Indici: `(VolumeId, DirectoryId)`, `Extension`, `Category`, `SizeBytes`,
-`ModifiedUtc`, `UsnFileRef` unique per volume.
+Indici, tutti in `FileEntryConfiguration` — sono nove e ognuno ha un motivo
+scritto accanto, quindi **non allargarne uno senza leggerlo**:
+`(DirectoryId, PendingDirectoryId, IsIncluded, IsPresent)` e
+`(PendingDirectoryId, IsIncluded, IsPresent)` (i due FK **covering** di 11e, che
+*sostituiscono* quelli stretti) · `(VolumeId, DirectoryId)` (la ricerca del merge:
+il suo piano è sotto guardia, `ScanMergePlanTests`) ·
+`(VolumeId, IsIncluded, IsPresent, SizeBytes)` (i contatori di Volumi/Dashboard,
+14c) · `Extension` · `Category` · `SizeBytes` · `FileModifiedUtc` ·
+`(VolumeId, UsnFileRef)` **unique** filtrato.
 
-**FileSearchIndex** — tabella virtuale **FTS5** (DB principale), colonne `name`
-(nome proiettato) + `path` (path relativo completo), `rowid = Files.Id`, tokenizer
-`unicode61` accent-insensitive (prefix query supportate). Creata via SQL raw in
-migration. **Sync esplicito** via `IFileSearchIndex` (no trigger): popolata negli
-stessi batch del `BulkIndexWriter`; `RebuildAsync` per il backfill. La ricerca
-supporta scope **solo nome** (colonna `name`) o **path completo** (entrambe le
-colonne), scelto dall'utente in UI. SQLite-specific, dietro `IFileSearchIndex`.
+**FileSearchIndex** — tabella virtuale **FTS5** (DB principale), **tre** colonne:
+`name` (nome proiettato) + `path` (path relativo completo) + `tags` (i token
+sintetici di categoria e volume introdotti da 14a — non parole, mai cercabili
+dall'utente: ogni MATCH è scopato a `{name}`/`{name path}` e `bm25` dà loro peso
+0). `rowid = Files.Id`, tokenizer `unicode61 remove_diacritics 2` con separatori
+`. _ -` (prefix query supportate). La DDL sta in un posto solo,
+`Data/Search/FileSearchIndexSchema`, che è ciò che esegue la migration. **Sync
+esplicito** via `IFileSearchIndex` (no trigger): popolata negli stessi batch del
+`BulkIndexWriter`; `RebuildAsync` per il backfill, con la guardia
+`CountEntriesAsync` che all'avvio confronta le voci dell'indice con le righe che
+ci **devono** stare (a senso unico: corto vuol dire ricostruisci, lungo no). La
+ricerca supporta scope **solo nome** (colonna `name`) o **path completo**
+(entrambe), scelto dall'utente in UI. SQLite-specific, dietro `IFileSearchIndex`.
 
 ### Dominio Operazioni
 
@@ -403,8 +420,10 @@ transazione di insert; `DependsOnJobId` è scritto dal guard di enqueue e ripunt
 **ExtensionCategories**
 `Extension` (PK) · `Category`. Seed con le estensioni comuni.
 
-**AppSettings** — singleton tipizzato: filtro default, esclusioni path, token API
-loopback, margine % spazio, `MinimumLogLevel`, retention log.
+**AppSettings** — singleton tipizzato: `DefaultExtensionFilter`, `ExcludedPaths`,
+`ApiToken` (loopback), `SpaceMarginPercent`, `MinimumLogLevel`,
+`LogRetentionDays` (14) e `LogMaxRows` (500 000) + audit. Dei due tetti sui log
+è **`LogMaxRows` a legare per primo**, misurato sul catalogo vero (step 13).
 
 ### Diagnostica
 
