@@ -824,10 +824,43 @@ Sono gli stessi ordini di grandezza misurati da 14c sulla copia (106 / 37 / 139 
 nullo. Il worker gira quindi **a vuoto**, e nessuna camminata dell'MFT parte a sorpresa. Per
 accenderlo serve una ri-scansione esplicita — vedi la roadmap.
 
+#### Il worker incrementale ha girato per la prima volta su dati veri
+Acceso **solo su `D:`** (decisione dell'utente): ri-scansione esplicita dalla API, **2,2 s**,
+motore **USN** (righe `NtfsUsnReader` nel log — il servizio gira elevato e il giornale c'è).
+Lo scan ha anche recuperato il drift accumulato da luglio: **2 610 → 3 251 file**, 80 directory
+nuove, **5 file marcati assenti** — mai cancellati.
+
+Da lì `UsnJournalId` è scritto (`134275375767659020`) e il pre-filtro è soddisfatto. `C:` e i
+due `E:` restano inelegibili con `UsnJournalId` a `NULL`, quindi **fermi**.
+
+**Un delta vuoto non logga nulla** — è `UsnSyncStatus.UpToDate`, e `CheckpointAsync` non scrive
+nemmeno la riga quando `NextUsn` non si è mosso. Il silenzio è il comportamento giusto, e va
+saputo: *(nota metodologica, costata un'inferenza sbagliata)* la colonna `UpdatedUtc` del volume
+**non** è la prova che il worker gira — la muove `VolumeSyncCycle` ogni 60 s.
+
+La prova vera è stata un file vero sotto un root sorvegliato, creato e poi cancellato:
+
+| | record di giornale | esito | ritardo |
+|---|---|---|---|
+| creazione | 3 | **1 indexed** | 25 s |
+| cancellazione | 1 | **1 absent** | 13 s |
+
+In mezzo, la Ricerca lo trovava per nome con path, categoria `Document` e 52 byte — cioè il
+**delta ha sincronizzato anche l'FTS**, non solo la tabella. Dopo, non lo trova più.
+
+E la riga finale è la semantica di 11g vista sul catalogo reale: **`IsPresent = 0` con
+`IsIncluded = 1`** e le tre cause di esclusione tutte a zero. Il file non c'è più sul disco e
+questo è tutto ciò che il catalogo afferma; non è mai stato «escluso», e la riga — con il suo
+FRN — è ancora lì. Cursore avanzato da `101092976` a `101093664`.
+
+**Residuo dichiarato**: una riga assente in più nel catalogo (6 in tutto su D:), esattamente
+come per qualunque file che l'utente cancelli davvero. Sparisce a una ri-scansione di `D:`.
+
 **Limiti noti:** il **riavvio della macchina** non è stato fatto, quindi l'avvio automatico
 resta provato solo da `sc start`; il `MinimumLogLevel` installato è **`Trace`**, e a quel
 livello il tetto che lega è `LogMaxRows` = 500 000 righe (≈184 MB, misurato allo step 13) —
-oggi il DB dei log sta a 3,9 MB.
+oggi il DB dei log sta a 3,9 MB; e **su `C:` il percorso incrementale non è ancora acceso**,
+cioè i 739 421 file che contano continuano a dipendere da una scansione completa.
 
 ### Fatto nello step 14e (2026-08-25)
 **Il brief dice la verità sul codice.** Nessuna modifica di prodotto: un audit di §3, §4,
