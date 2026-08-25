@@ -127,7 +127,7 @@ public sealed class ScanServiceTests
         {
             var sut = Build(harness, ctx,
                 new FakeVolumeProbe(ProbedFor("NTFS")),
-                new FakeUsnReader(usnEntries, nextUsn: 12345),
+                new FakeUsnReader(usnEntries, nextUsn: 12345, journalId: 0x8000_0000_0000_0001),
                 new FakeDirectoryEnumerator([]),
                 new FakeFileMetadataReader(meta));
             await sut.ScanVolumeAsync(volumeId, CancellationToken.None);
@@ -146,6 +146,12 @@ public sealed class ScanServiceTests
 
         var volume = await read.Volumes.SingleAsync();
         volume.LastUsn.Should().Be(12345);
+
+        // A position is only a cursor together with the journal it belongs to: without the id a
+        // LastUsn that looks valid can point into a journal that was deleted and recreated since.
+        // Stored as the signed reinterpretation of the native ulong, which is why the fixture uses
+        // an id with the top bit set — a value that cannot survive a lossy conversion.
+        volume.UsnJournalId.Should().Be(unchecked((long)0x8000_0000_0000_0001));
     }
 
     [Fact]
@@ -181,6 +187,10 @@ public sealed class ScanServiceTests
         volume.ScanEngine.Should().Be(VolumeScanEngine.Enumeration);
         volume.LastFullScanUtc.Should().NotBeNull();
         volume.LastUsn.Should().BeNull();
+
+        // No cursor and no journal to hang it on: the incremental path must not believe it can
+        // resume from a scan that never read the journal at all.
+        volume.UsnJournalId.Should().BeNull();
 
         // The volume still got indexed via the enumeration fallback.
         (await read.Files.Select(f => f.Name).ToListAsync()).Should().Equal("x.jpg");

@@ -1,4 +1,4 @@
-using System.Security.Principal;
+﻿using System.Security.Principal;
 using FileTracert.Contracts.Platform;
 using FileTracert.Platform;
 using FluentAssertions;
@@ -166,5 +166,35 @@ public class NtfsUsnReaderTests
         var result = reader.ReadChanges(guid, state.FirstUsn, journalId: 0xDEADBEEF, CancellationToken.None);
 
         result.RequiresFullRescan.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// The second way a cursor dies, and the one an id comparison cannot catch: the journal is
+    /// still the same instance, but it has wrapped past where we stopped reading. Everything
+    /// between our position and <c>LowestValidUsn</c> is gone, so a delta from there would be
+    /// silently incomplete — the caller has to be told to rescan, not handed the surviving tail.
+    /// </summary>
+    [Fact]
+    public void ReadChanges_from_below_the_lowest_valid_usn_requires_full_rescan()
+    {
+        if (!IsElevated() || TryGetSystemVolumeGuid() is not { } guid)
+        {
+            return;
+        }
+
+        var reader = CreateReader();
+        var state = reader.GetJournalState(guid);
+        if (state.LowestValidUsn <= 0)
+        {
+            // A journal that has never trimmed has nothing below its floor to ask for.
+            return;
+        }
+
+        var result = reader.ReadChanges(
+            guid, sinceUsn: state.LowestValidUsn - 1, state.JournalId, CancellationToken.None);
+
+        result.RequiresFullRescan.Should().BeTrue();
+        result.Changes.Should().BeEmpty("a delta that cannot be trusted must not be handed over at all");
+        result.NextUsn.Should().Be(state.NextUsn, "the caller still needs a cursor to restart from");
     }
 }

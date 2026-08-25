@@ -32,6 +32,22 @@ public class Volume : IAuditable
     public bool IsOnline { get; set; }
     public VolumeScanEngine ScanEngine { get; set; }
     public long? LastUsn { get; set; }
+
+    /// <summary>
+    /// Instance id of the USN change journal <see cref="LastUsn"/> was taken from, stored as the
+    /// signed reinterpretation of the native <c>ulong</c> (the same trick as
+    /// <see cref="FileEntry.UsnFileRef"/>: SQLite has no unsigned 64-bit type, and the value is
+    /// only ever compared for equality).
+    /// <para>A cursor is meaningless without it. Deleting and recreating a journal (or a volume
+    /// snapshot restore) restarts the numbering with a NEW id, so a <see cref="LastUsn"/> that
+    /// looks perfectly valid can point into a completely different history. The incremental read
+    /// hands both to <c>IUsnReader.ReadChanges</c>, which answers "continue" or "this is not the
+    /// journal you were reading — rescan".</para>
+    /// <para>Null on volumes indexed before this column existed, and on every non-NTFS volume:
+    /// it is populated by the first scan that checkpoints a journal position.</para>
+    /// </summary>
+    public long? UsnJournalId { get; set; }
+
     public DateTime? LastFullScanUtc { get; set; }
 
     public DateTime CreatedUtc { get; set; }

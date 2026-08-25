@@ -132,13 +132,17 @@ public sealed class ScanService
         // the time) would downgrade the volume to slow enumeration forever, with no
         // way back even after the real problem (elevation, journal state) is fixed.
         // Retrying every scan means the fast path recovers on its own next attempt.
-        long? checkpointUsn = null;
+        UsnJournalState? checkpoint = null;
         if (VolumeMapper.EngineFor(volume.FileSystem) == VolumeScanEngine.UsnJournal)
         {
             try
             {
                 _usnReader.EnsureJournal(volume.VolumeGuid);
-                checkpointUsn = _usnReader.GetJournalState(volume.VolumeGuid).NextUsn;
+
+                // Both halves of the cursor, taken together and from the same query: the position
+                // AND the journal instance it belongs to. A position without its id cannot be
+                // told apart from a position into a journal that has since been recreated.
+                checkpoint = _usnReader.GetJournalState(volume.VolumeGuid);
                 volume.ScanEngine = VolumeScanEngine.UsnJournal;
             }
             catch (Win32Exception ex)
@@ -173,7 +177,7 @@ public sealed class ScanService
         var resolvedFiles = await ResolveFilesAsync(volume, mountRoot, fileItems, categoryMap, ct);
 
         _statusTracker.SetPhase(volumeId, ScanPhase.Writing);
-        await PersistAsync(volume, dirItems, resolvedFiles, perimeter, checkpointUsn, scanStartedUtc, ct);
+        await PersistAsync(volume, dirItems, resolvedFiles, perimeter, checkpoint, scanStartedUtc, ct);
 
         _logger.LogInformation(
             "Scanned volume {VolumeId}: {Dirs} directories, {Files} files.",
@@ -465,7 +469,7 @@ public sealed class ScanService
         List<ScanItem> dirItems,
         List<ResolvedFile> files,
         ScanPerimeter perimeter,
-        long? checkpointUsn,
+        UsnJournalState? checkpoint,
         DateTime scanStartedUtc,
         CancellationToken ct)
     {
@@ -564,9 +568,10 @@ public sealed class ScanService
         await using (var tx = await _db.Database.BeginTransactionAsync(ct))
         {
             volume.LastFullScanUtc = scanStartedUtc;
-            if (checkpointUsn is { } usn)
+            if (checkpoint is { } journal)
             {
-                volume.LastUsn = usn;
+                volume.LastUsn = journal.NextUsn;
+                volume.UsnJournalId = unchecked((long)journal.JournalId);
             }
 
             await _db.SaveChangesAsync(ct);
