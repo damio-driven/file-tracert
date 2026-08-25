@@ -55,10 +55,15 @@ public sealed class FileEntryConfiguration : IEntityTypeConfiguration<FileEntry>
         builder.HasIndex(x => new { x.DirectoryId, x.PendingDirectoryId, x.IsIncluded, x.IsPresent });
         builder.HasIndex(x => new { x.PendingDirectoryId, x.IsIncluded, x.IsPresent });
 
-        // Kept as-is, and deliberately NOT widened the way the two above were: the scan merge
-        // resolves a staged row by `VolumeId = ? AND DirectoryId = ? AND Name = ?` once per file in
-        // a batch, so DirectoryId has to stay the second column or a re-scan turns each of those
-        // into a walk of the whole volume.
+        // Kept as-is, and deliberately not touched: the scan merge resolves a staged row with
+        // `VolumeId = ? AND DirectoryId = ? AND Name = ? ORDER BY Id LIMIT 1`, once per file in
+        // every batch. Because Id is the rowid and this index stops at DirectoryId, the entries of
+        // one directory are already in Id order, so that ORDER BY costs nothing and the LIMIT can
+        // stop at the first name that matches.
+        //
+        // <see cref="ScanMergePlanTests"/> asserts exactly that, because it is the plan that must
+        // NOT change and the failure mode is silent: a re-scan would simply get slower, with the
+        // suite green.
         builder.HasIndex(x => new { x.VolumeId, x.DirectoryId });
 
         // 14c — the per-volume aggregate, covering. Both Volumes screens ask the same question of
@@ -68,14 +73,26 @@ public sealed class FileEntryConfiguration : IEntityTypeConfiguration<FileEntry>
         // aggregates the SAME table — the difference was never the data.
         //
         // What it was: the list scanned IX_Files_VolumeId_DirectoryId and then fetched the table
-        // row of every file in the catalog to read two booleans, exactly the shape step 11e found on
-        // the Catalog counters one level down. Measured on eight seeded volumes: 176 000 row visits
-        // for eight numbers.
+        // row of every file in the catalog to read two booleans — the shape step 11e found on the
+        // Catalog counters one level down. SizeBytes is the last column so the detail's SUM never
+        // leaves the index either; the two screens then differ only in whether VolumeId is a seek
+        // or a scan.
         //
-        // This one is an ADDITION, not a widening, for the reason written above — which means it is
-        // paid on every row a scan inserts, and that price was measured, not assumed (see the 14c
-        // paragraph in CLAUDE.md). SizeBytes is the last column so the detail's SUM never leaves the
-        // index either; the two screens then differ only in whether VolumeId is a seek or a scan.
+        // ADDITION, not a widening, and the honest reason is not "DirectoryId must stay second":
+        // widening the index above to (VolumeId, DirectoryId, IsIncluded, IsPresent, SizeBytes)
+        // keeps it second and wins both plans at no extra B-tree, which is the trade 11e made. What
+        // it would also do is change the merge's per-staged-file lookup, on both counts that matter
+        // there: Id stops being the next sort key inside a (VolumeId, DirectoryId) group, so the
+        // ORDER BY needs a sorter, and every entry of the group carries three more columns to read
+        // while scanning it for the name. That is the hottest path of a re-scan, traded for a
+        // write-side cost that was measured and found invisible (the 14c paragraph in CLAUDE.md has
+        // the harness A/B). The alternative is written down rather than hidden, so a later hand with
+        // a measurement of that path can take it.
+        //
+        // The write side is more than inserts: the merge's UPDATE of a matched row sets DirectoryId,
+        // SizeBytes, IsIncluded and IsPresent, and FilterReconciler sets IsIncluded across a whole
+        // volume — every one of those rewrites this index entry too, inside the transaction that
+        // holds SQLite's single writer lock.
         builder.HasIndex(x => new { x.VolumeId, x.IsIncluded, x.IsPresent, x.SizeBytes });
         builder.HasIndex(x => x.Extension);
         builder.HasIndex(x => x.Category);

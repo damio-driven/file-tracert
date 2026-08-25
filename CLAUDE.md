@@ -670,20 +670,39 @@ domanda arriva al database.
   emette davvero diceva `SCAN f USING INDEX IX_Files_VolumeId_DirectoryId` — cioè: percorri l'indice
   per volume e poi **risali alla riga di tabella di ogni file del catalogo** per leggere due
   booleani. È la **stessa forma** che lo step 11e aveva trovato un piano più sotto, sui contatori del
-  Catalogo, e si misura con lo stesso attrezzo: su otto volumi seminati, **176 000 visite di riga per
-  produrre otto numeri**. Il sospetto del task («conteggi ripetuti riga per riga, 30 passate») era
-  invece **sbagliato**: la lista faceva già *una* query raggruppata, senza N+1. Il difetto non era il
-  numero di query, era che nessuna delle due restava dentro l'indice.
+  Catalogo. Una sonda usa-e-getta con lo stesso attrezzo di 11e lo quantificava: **176 000 visite di
+  riga su otto volumi seminati, per produrre otto numeri**. Quella sonda **non è stata committata**, e
+  il motivo è nel test: il contatore di righe vive in una **view** sopra `Files`, e una view forza
+  proprio l'accesso alla tabella la cui assenza è il punto — quindi può misurare il difetto ma non la
+  sua chiusura. Ciò che resta nella suite è l'asserzione sul **piano**, che è riproducibile in
+  entrambe le direzioni.
+  Il sospetto del task («conteggi ripetuti riga per riga, 30 passate») era invece **sbagliato**: la
+  lista faceva già *una* query raggruppata, senza N+1. Il difetto non era il numero di query, era che
+  nessuna delle due restava dentro l'indice.
 - **Il fix è un indice covering**: `(VolumeId, IsIncluded, IsPresent, SizeBytes)`. La lista diventa
   `SCAN … USING COVERING INDEX` con il raggruppamento soddisfatto dall'**ordine** dell'indice
   (niente temp B-tree), il dettaglio una seek sullo stesso indice con la `SUM` letta da lì.
   `SizeBytes` è l'ultima colonna proprio perché il totale in byte del dettaglio non debba uscirne.
-- **È un'AGGIUNTA, non un allargamento**, al contrario di 11e — e il motivo sta scritto accanto:
-  il merge della scansione risolve una riga in staging con
-  `VolumeId = ? AND DirectoryId = ? AND Name = ?` **una volta per file** di ogni lotto, quindi
-  `DirectoryId` deve restare la seconda colonna dell'indice esistente o un re-scan trasforma ognuna
-  di quelle domande in una camminata dell'intero volume. Si passa da 7 a 8 B-tree per riga inserita,
-  e il prezzo è stato **misurato** (sotto).
+- **È un'AGGIUNTA, non un allargamento**, al contrario di 11e — e la review ha corretto il motivo
+  che era stato scritto. Il primo testo diceva «`DirectoryId` deve restare la seconda colonna»: vero
+  ma **irrilevante**, perché allargare l'indice esistente a
+  `(VolumeId, DirectoryId, IsIncluded, IsPresent, SizeBytes)` la lascia seconda e vince gli stessi
+  due piani **senza un B-tree in più** — cioè esattamente il baratto che 11e fece un piano più sotto.
+  La ragione vera è un'altra, e riguarda il merge: la sua ricerca risolve una riga in staging con
+  `VolumeId = ? AND DirectoryId = ? AND Name = ? ORDER BY Id LIMIT 1`, **una volta per file** di ogni
+  lotto, e oggi quell'`ORDER BY` è **gratis** perché `Id` è il rowid e dentro un gruppo
+  `(VolumeId, DirectoryId)` le voci sono già in quell'ordine. Allargando, `Id` smette di essere la
+  chiave successiva — servirebbe un sorter per ogni riga in staging — e ogni voce del gruppo
+  porterebbe tre colonne in più da leggere mentre la si scandisce cercando il nome. Si è preferito
+  pagare un ottavo B-tree, il cui costo è stato **misurato e trovato invisibile**, piuttosto che
+  toccare il percorso più caldo di un re-scan sulla base di un ragionamento non misurato.
+  L'alternativa è scritta accanto al codice invece che nascosta: chi un giorno misurerà quel percorso
+  potrà prenderla.
+- **E il piano che NON deve cambiare ha ora una guardia** (`ScanMergePlanTests`, secondo rilievo
+  della review): la ricerca del merge viene esplicitata dal SQL che il writer emette davvero e deve
+  restare `SEARCH f USING INDEX IX_Files_VolumeId_DirectoryId (VolumeId=? AND DirectoryId=?)`, senza
+  `TEMP B-TREE FOR ORDER BY`. Serve perché quel guasto sarebbe **silenzioso**: i re-scan
+  rallenterebbero e basta, con la suite verde.
 - **L'aggregato della lista esce dal controller** e va in `Business/Dashboard/VolumeFileCounts`,
   accanto a `CatalogTotals` e `VolumeTotals` a cui somigliava già: una query scritta inline in un
   controller si può misurare **solo** con un test che ne tiene una propria copia, il che dimostra che
@@ -729,6 +748,12 @@ l'indice riusa le pagine libere. Harness completo sul ferro (`D:\Collaudo\A` ↔
 - **La misura dello scan è su 2 002 file**, tre ordini di grandezza sotto il volume in cui un ottavo
   B-tree per riga si vedrebbe. È la stessa avvertenza che 11e scrisse per i propri indici, e vale
   identica: quel numero dice «non c'è una regressione grossolana», non «costa zero».
+- **Il costo in scrittura non è solo l'insert** *(rilievo della review, preso)*: l'UPDATE del merge
+  su una riga ritrovata scrive `DirectoryId`, `SizeBytes`, `IsIncluded` e `IsPresent` — quattro delle
+  colonne di questo indice — e `FilterReconciler` scrive `IsIncluded` su un intero volume. Ognuna di
+  quelle riscrive anche la voce dell'indice, **dentro** la transazione che tiene l'unico write lock
+  di SQLite. L'A/B dell'harness misura proprio quel percorso (il re-scan **è** il merge), ma a
+  2 002 file.
 - **Il conteggio delle cartelle del dettaglio non è coperto.** `Directories` filtra
   `IsMaterialized`, `IsPresent` e `PendingState`, e allargare `(VolumeId, ParentId)` per coprirlo
   vorrebbe dire portare `PendingState` — una **stringa** — dentro la chiave: è la stessa decisione

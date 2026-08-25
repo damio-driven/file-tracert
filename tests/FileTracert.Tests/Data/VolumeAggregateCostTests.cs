@@ -185,26 +185,38 @@ public sealed class VolumeAggregateCostTests : IAsyncLifetime
     // ── 2. equivalence: the same numbers ──────────────────────────────────────
 
     [Fact]
-    public async Task The_counters_say_exactly_what_they_said_before()
+    public async Task The_counters_say_exactly_what_the_catalog_says()
     {
         var counts = await VolumeFileCounts.ComputeAsync(IndexedFiles(), CancellationToken.None);
 
         counts.Should().HaveCount(Volumes);
-        foreach (var id in _volumeIds)
-        {
-            counts[id].Should().Be(IncludedPerVolume,
-                "an excluded file is not part of the index count (11h), and the seeded volumes " +
-                "each carry the same number of both kinds");
-        }
 
         foreach (var id in _volumeIds)
         {
+            // Compared against the answer read straight off Files, not against the seeding
+            // constants: both aggregates take their filter from the call site, so the realistic way
+            // this breaks is BOTH acquiring the same wrong predicate — and a constant on the right
+            // of the assertion would agree with them.
+            var expectedCount = await _ctx.Files
+                .CountAsync(f => f.VolumeId == id && f.IsIncluded && f.IsPresent);
+            var expectedBytes = await _ctx.Files
+                .Where(f => f.VolumeId == id && f.IsIncluded && f.IsPresent)
+                .SumAsync(f => f.SizeBytes);
+
+            counts[id].Should().Be(expectedCount);
+
             var totals = await CatalogTotals.ComputeAsync(
                 IndexedFiles().Where(f => f.VolumeId == id), CancellationToken.None);
 
-            totals.TotalFiles.Should().Be(IncludedPerVolume);
-            totals.TotalBytes.Should().Be(IncludedPerVolume * 1024L);
+            totals.TotalFiles.Should().Be(expectedCount);
+            totals.TotalBytes.Should().Be(expectedBytes);
         }
+
+        // And the seeded shape is what the test believes it is — an excluded file is not part of
+        // the index count (11h), so the two numbers must differ by exactly the excluded ones.
+        counts.Values.Should().AllSatisfy(c => c.Should().Be(IncludedPerVolume));
+        (await _ctx.Files.CountAsync(f => !f.IsIncluded))
+            .Should().Be(ExcludedPerVolume * Volumes);
     }
 
     /// <summary>
