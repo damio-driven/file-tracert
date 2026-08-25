@@ -69,6 +69,18 @@ public sealed class RealtimeEvents
             () => _publisher.ProjectionChangedAsync(
                 new ProjectionChanged(SingleVolumeOf(job), job.Id), CancellationToken.None));
 
+    /// <summary>
+    /// The catalog of one volume moved with no job behind it — the incremental USN pass found work
+    /// done outside the application. Same message as an overlay change because it asks the client
+    /// for the same thing (re-read Catalogo/Ricerca for this volume), and it carries no job id
+    /// because there is no job: nobody queued this, the disk simply changed.
+    /// </summary>
+    public Task CatalogChangedAsync(int volumeId) =>
+        SafeAsync(
+            RealtimeMethods.ProjectionChanged,
+            () => _publisher.ProjectionChangedAsync(
+                new ProjectionChanged(volumeId, JobId: null), CancellationToken.None));
+
     public Task NotificationRaisedAsync(Notification notification) =>
         SafeAsync(
             RealtimeMethods.NotificationRaised,

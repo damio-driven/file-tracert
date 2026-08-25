@@ -1,4 +1,4 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Notifications;
 using FileTracert.Contracts.Paging;
@@ -98,6 +98,52 @@ internal sealed class FakeUsnReader(IReadOnlyList<UsnEntry> entries, long nextUs
 
     public UsnChangeResult ReadChanges(string volumeGuid, long sinceUsn, ulong journalId, CancellationToken ct) =>
         throw new NotSupportedException();
+}
+
+/// <summary>
+/// A journal that can be driven from a test: a full snapshot for the scan, then a scripted delta
+/// for the incremental pass. Records what cursor it was asked to resume from, which is how the
+/// checkpoint assertions can tell "read the delta again" from "read on from where it stopped".
+/// </summary>
+internal sealed class ScriptedUsnReader : IUsnReader
+{
+    public List<UsnEntry> Snapshot { get; init; } = [];
+    public List<UsnChangeRecord> Changes { get; set; } = [];
+    public long NextUsn { get; set; } = 500;
+    public ulong JournalId { get; set; } = 7;
+    public long LowestValidUsn { get; set; }
+
+    /// <summary>Cursors this reader was asked to resume from, oldest first.</summary>
+    public List<(long SinceUsn, ulong JournalId)> Resumed { get; } = [];
+
+    public int ReadChangesCalls => Resumed.Count;
+
+    public bool SupportsUsn(string volumeGuid) => true;
+
+    public UsnJournalState GetJournalState(string volumeGuid) =>
+        new(JournalId, FirstUsn: 0, NextUsn: NextUsn, LowestValidUsn: LowestValidUsn);
+
+    public void EnsureJournal(string volumeGuid) { }
+
+    public IEnumerable<UsnEntry> ReadFullSnapshot(string volumeGuid, CancellationToken ct) => Snapshot;
+
+    /// <summary>
+    /// The same two invalidation rules the real reader applies, so a test can trigger them by
+    /// moving the journal instead of by faking the answer.
+    /// </summary>
+    public UsnChangeResult ReadChanges(string volumeGuid, long sinceUsn, ulong journalId, CancellationToken ct)
+    {
+        Resumed.Add((sinceUsn, journalId));
+
+        if (journalId != JournalId || sinceUsn < LowestValidUsn)
+        {
+            return new UsnChangeResult([], NextUsn, RequiresFullRescan: true);
+        }
+
+        // Only what the caller has not consumed yet, so a second pass on the same cursor is empty.
+        var pending = Changes.Where(c => c.Entry.Usn >= sinceUsn).ToList();
+        return new UsnChangeResult(pending, NextUsn, RequiresFullRescan: false);
+    }
 }
 
 /// <summary>NTFS volume whose journal cannot be created/queried (e.g. not active, no elevation).</summary>

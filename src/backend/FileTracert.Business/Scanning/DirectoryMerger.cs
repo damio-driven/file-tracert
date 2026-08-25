@@ -1,4 +1,4 @@
-using FileTracert.Business.Filtering;
+﻿using FileTracert.Business.Filtering;
 using FileTracert.Contracts.Scanning;
 using FileTracert.Data.Entities;
 using FileTracert.Data.Indexing;
@@ -15,6 +15,15 @@ public readonly record struct ScannedDirectory(string Path, long? UsnFileRef);
 /// path — what the file merge needs to resolve each file's <c>DirectoryId</c>.</param>
 public sealed record DirectoryMergeResult(
     IReadOnlyDictionary<string, int> IdByPath, int Inserted, int Revived, int MarkedAbsent);
+
+/// <summary>
+/// What <see cref="DirectoryMerger.EnsureAsync"/> reconciled. Deliberately has no
+/// <c>MarkedAbsent</c>: an incremental delta names what CHANGED, so "not in this batch" says
+/// nothing at all about a directory — reading it as absence is the mistake this overload exists
+/// to make impossible.
+/// </summary>
+public sealed record DirectoryEnsureResult(
+    IReadOnlyDictionary<string, int> IdByPath, int Inserted, int Revived);
 
 /// <summary>
 /// Merges the scanned directory tree into the catalog, preserving row identities and the
@@ -50,6 +59,48 @@ public sealed class DirectoryMerger
         int volumeId, IReadOnlyCollection<ScannedDirectory> scanned, ScanPerimeter perimeter,
         int batchSize, CancellationToken ct)
     {
+        var (existing, seen, ensured) = await EnsureCoreAsync(volumeId, scanned, batchSize, ct);
+
+        var absent = await MarkAbsentAsync(
+            existing.Values.Where(r => r.IsPresent && !seen.Contains(r.Path) && perimeter.Covers(r.Path)),
+            batchSize, ct);
+
+        if (ensured.Inserted > 0 || ensured.Revived > 0 || absent > 0)
+        {
+            _logger.LogInformation(
+                "Volume {VolumeId} directory merge: {Inserted} new, {Revived} refreshed, {Absent} no longer on disk.",
+                volumeId, ensured.Inserted, ensured.Revived, absent);
+        }
+
+        return new DirectoryMergeResult(ensured.IdByPath, ensured.Inserted, ensured.Revived, absent);
+    }
+
+    /// <summary>
+    /// The same reconciliation without the absence pass, for the incremental USN path: a delta
+    /// carries the directories that CHANGED, so the ones missing from it are the overwhelming
+    /// majority that are perfectly fine. Everything else is identical — same insertion order
+    /// (shallowest first), same revive rule, same short transactions — because a directory row
+    /// written by a delta and one written by a scan have to be the same row.
+    /// </summary>
+    public async Task<DirectoryEnsureResult> EnsureAsync(
+        int volumeId, IReadOnlyCollection<ScannedDirectory> scanned, int batchSize, CancellationToken ct)
+    {
+        var (_, _, ensured) = await EnsureCoreAsync(volumeId, scanned, batchSize, ct);
+
+        if (ensured.Inserted > 0 || ensured.Revived > 0)
+        {
+            _logger.LogInformation(
+                "Volume {VolumeId} directory delta: {Inserted} new, {Revived} refreshed.",
+                volumeId, ensured.Inserted, ensured.Revived);
+        }
+
+        return ensured;
+    }
+
+    private async Task<(Dictionary<string, ExistingDirectory> Existing, HashSet<string> Seen, DirectoryEnsureResult Ensured)>
+        EnsureCoreAsync(
+            int volumeId, IReadOnlyCollection<ScannedDirectory> scanned, int batchSize, CancellationToken ct)
+    {
         var existing = await LoadExistingAsync(volumeId, ct);
 
         var idByPath = new Dictionary<string, int>(existing.Count + scanned.Count, StringComparer.OrdinalIgnoreCase);
@@ -84,18 +135,8 @@ public sealed class DirectoryMerger
 
         var inserted = await InsertMissingAsync(volumeId, toInsert, idByPath, batchSize, ct);
         var revived = await ReviveAsync(toRevive, batchSize, ct);
-        var absent = await MarkAbsentAsync(
-            existing.Values.Where(r => r.IsPresent && !seen.Contains(r.Path) && perimeter.Covers(r.Path)),
-            batchSize, ct);
 
-        if (inserted > 0 || revived > 0 || absent > 0)
-        {
-            _logger.LogInformation(
-                "Volume {VolumeId} directory merge: {Inserted} new, {Revived} refreshed, {Absent} no longer on disk.",
-                volumeId, inserted, revived, absent);
-        }
-
-        return new DirectoryMergeResult(idByPath, inserted, revived, absent);
+        return (existing, seen, new DirectoryEnsureResult(idByPath, inserted, revived));
     }
 
     // ── steps ─────────────────────────────────────────────────────────────────

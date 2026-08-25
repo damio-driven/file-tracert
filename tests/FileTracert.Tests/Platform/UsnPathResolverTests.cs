@@ -1,4 +1,4 @@
-using FileTracert.Platform.Internal;
+﻿using FileTracert.Contracts.Platform;
 using FluentAssertions;
 
 namespace FileTracert.Tests.Platform;
@@ -9,8 +9,8 @@ public class UsnPathResolverTests
 
     private static UsnPathResolver Build(
         Dictionary<ulong, FrnNode> map,
-        Func<ulong, FrnNode?>? fallback = null) =>
-        new(map, Root, fallback);
+        Func<ulong, string?>? knownPath = null) =>
+        new(map, Root, knownPath);
 
     [Fact]
     public void Root_resolves_to_empty_string()
@@ -88,19 +88,53 @@ public class UsnPathResolverTests
     }
 
     [Fact]
-    public void Fallback_resolver_supplies_parents_outside_the_map()
+    public void Known_path_fallback_supplies_parents_outside_the_map()
     {
         var map = new Dictionary<ulong, FrnNode>
         {
             [60] = new FrnNode("photo.jpg", 70, IsDirectory: false)
         };
 
-        // 70 ("Pictures") is not in the delta map; the fallback (e.g. the DB) knows it.
-        FrnNode? Fallback(ulong frn) =>
-            frn == 70 ? new FrnNode("Pictures", Root, IsDirectory: true) : null;
-
-        Build(map, Fallback).TryResolve(60, out var path).Should().BeTrue();
+        // 70 ("Pictures") is not in the delta map; the catalog already places it.
+        Build(map, frn => frn == 70 ? "Pictures" : null)
+            .TryResolve(60, out var path).Should().BeTrue();
         path.Should().Be(@"Pictures\photo.jpg");
+    }
+
+    /// <summary>
+    /// A whole chain of new directories can hang off one known ancestor: the walk keeps
+    /// collecting names until the fallback answers, then stitches the two halves together.
+    /// </summary>
+    [Fact]
+    public void Known_path_fallback_prefixes_a_chain_found_inside_the_map()
+    {
+        var map = new Dictionary<ulong, FrnNode>
+        {
+            [60] = new FrnNode("shot.raw", 61, IsDirectory: false),
+            [61] = new FrnNode("Album", 62, IsDirectory: true),
+            [62] = new FrnNode("2026", 70, IsDirectory: true),
+        };
+
+        Build(map, frn => frn == 70 ? "Pictures" : null)
+            .TryResolve(60, out var path).Should().BeTrue();
+        path.Should().Be(@"Pictures\2026\Album\shot.raw");
+    }
+
+    /// <summary>
+    /// The empty path is the volume root, and it is a real answer, not "unknown": a directory
+    /// row whose MaterializedPath is "" must not turn its children into a rooted path.
+    /// </summary>
+    [Fact]
+    public void Known_path_fallback_can_answer_with_the_volume_root()
+    {
+        var map = new Dictionary<ulong, FrnNode>
+        {
+            [60] = new FrnNode("top.jpg", 70, IsDirectory: false)
+        };
+
+        Build(map, frn => frn == 70 ? string.Empty : null)
+            .TryResolve(60, out var path).Should().BeTrue();
+        path.Should().Be("top.jpg");
     }
 
     [Fact]

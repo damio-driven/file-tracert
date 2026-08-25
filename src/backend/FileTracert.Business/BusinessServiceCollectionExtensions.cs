@@ -22,6 +22,7 @@ public static class BusinessServiceCollectionExtensions
     {
         services.AddScoped<VolumeSyncService>();
         services.AddScoped<ScanService>();
+        services.AddScoped<UsnDeltaApplier>();
         services.AddScoped<DirectoryMerger>();
 
         // The scan-progress tracker is volatile in-memory state shared across scopes:

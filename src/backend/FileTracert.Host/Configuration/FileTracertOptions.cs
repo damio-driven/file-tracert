@@ -1,4 +1,4 @@
-namespace FileTracert.Host.Configuration;
+﻿namespace FileTracert.Host.Configuration;
 
 /// <summary>
 /// Typed host configuration bound from the <c>FileTracert</c> section of
@@ -36,6 +36,14 @@ public sealed class FileTracertOptions
 
     /// <summary>How often <see cref="Workers.ScanWorker"/> looks for volumes still needing a full scan.</summary>
     public int ScanPollIntervalSeconds { get; set; } = 30;
+
+    /// <summary>
+    /// How often <see cref="Workers.UsnSyncWorker"/> asks each eligible NTFS volume what changed
+    /// since its journal checkpoint. Short, because a delta with nothing in it costs one FSCTL and
+    /// no database write at all — and because this is what makes the catalog feel live between
+    /// full scans.
+    /// </summary>
+    public int UsnSyncIntervalSeconds { get; set; } = 30;
 
     /// <summary>Graceful shutdown budget for in-flight workers.</summary>
     public int ShutdownTimeoutSeconds { get; set; } = 30;

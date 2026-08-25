@@ -1,5 +1,4 @@
 ﻿using System.ComponentModel;
-using System.Text.Json;
 using FileTracert.Business.Filtering;
 using FileTracert.Business.Volumes;
 using FileTracert.Contracts.Enums;
@@ -185,47 +184,31 @@ public sealed class ScanService
     }
 
     /// <summary>
-    /// Resolves the effective filter once per watched root. A malformed override JSON
-    /// is not silently ignored: it is logged, raised as a user-visible notification,
-    /// and the root falls back to the default filter so the scan still proceeds.
+    /// Resolves the effective filter once per watched root, through the rule the incremental path
+    /// shares (<see cref="RootFilters"/>). A malformed override JSON is not silently ignored: it is
+    /// logged, raised as a user-visible notification, and the root falls back to the default filter
+    /// so the scan still proceeds.
     /// </summary>
-    private async Task<Dictionary<string, EffectiveFilter>> ResolveRootFiltersAsync(
+    private Task<Dictionary<string, EffectiveFilter>> ResolveRootFiltersAsync(
         Volume volume,
         List<WatchedRoot> roots,
         AppSettings? settings,
-        CancellationToken ct)
-    {
-        var effectiveSettings = settings ?? new AppSettings();
-        var filters = new Dictionary<string, EffectiveFilter>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var root in roots)
+        CancellationToken ct) =>
+        RootFilters.ResolveAsync(settings, roots, async (root, ex) =>
         {
-            var key = ScanPath.Normalize(root.RelativePath);
-            try
-            {
-                filters[key] = EffectiveFilterBuilder.Build(effectiveSettings, root.FilterOverrideJson);
-            }
-            catch (JsonException ex)
-            {
-                _logger.LogWarning(
-                    ex,
-                    "Invalid filter override for root '{Root}' on volume {VolumeId}; using the default filter.",
-                    root.RelativePath, volume.Id);
+            _logger.LogWarning(
+                ex,
+                "Invalid filter override for root '{Root}' on volume {VolumeId}; using the default filter.",
+                root.RelativePath, volume.Id);
 
-                await _notifications.PublishAsync(
-                    NotificationSeverity.Warning,
-                    "Scan",
-                    $"Filtro non valido per «{root.RelativePath}» su «{volume.Label ?? volume.VolumeGuid}»",
-                    $"L'override del filtro è malformato; uso il filtro predefinito. Dettaglio: {ex.Message}",
-                    volume.Id,
-                    ct);
-
-                filters[key] = EffectiveFilterBuilder.Build(effectiveSettings, filterOverrideJson: null);
-            }
-        }
-
-        return filters;
-    }
+            await _notifications.PublishAsync(
+                NotificationSeverity.Warning,
+                "Scan",
+                $"Filtro non valido per «{root.RelativePath}» su «{volume.Label ?? volume.VolumeGuid}»",
+                $"L'override del filtro è malformato; uso il filtro predefinito. Dettaglio: {ex.Message}",
+                volume.Id,
+                ct);
+        }, ct);
 
     private (List<ScanItem> Dirs, List<ScanItem> Files, ScanPerimeter Perimeter) GatherAndFilter(
         Volume volume,

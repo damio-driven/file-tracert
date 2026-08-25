@@ -67,6 +67,7 @@ builder.Services.AddSingleton<VolumeSyncCycle>();
 builder.Services.AddHostedService<VolumeSyncWorker>();
 builder.Services.AddHostedService<DeviceWatcherWorker>();
 builder.Services.AddHostedService<ScanWorker>();
+builder.Services.AddHostedService<UsnSyncWorker>();
 builder.Services.AddHostedService<QueueProcessorWorker>();
 builder.Services.AddHostedService<LogRetentionWorker>();
 builder.Services.AddHostedService<WalCheckpointWorker>();
