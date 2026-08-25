@@ -1,4 +1,4 @@
-namespace FileTracert.Contracts.Operations;
+﻿namespace FileTracert.Contracts.Operations;
 
 /// <summary>
 /// Snapshot of the space-ledger feasibility check for one potential job.
@@ -8,7 +8,13 @@ namespace FileTracert.Contracts.Operations;
 /// <param name="ReservedBytes">Sum of active positive reservations already on the target volume.</param>
 /// <param name="AvailableEstimateBytes">Estimated bytes plannable: free − net ledger delta (clamped ≥ 0).</param>
 /// <param name="DeficitBytes">How many bytes are still missing (0 when feasible).</param>
-/// <param name="EstimateIsLive">True when the target volume is currently online (figures are fresh).</param>
+/// <param name="EstimateIsLive">
+/// True when the figures were read from the <b>device</b> in this very check. It is not
+/// "the catalog believes the volume is online": since step 11b <c>SpaceCheck</c> probes, and a
+/// volume that is flagged online but does not answer falls back to <c>FreeBytesLastKnown</c>
+/// with this flag <b>false</b>. False also covers a job that needed no space at all — there is
+/// no measurement behind a figure nobody took.
+/// </param>
 /// <param name="BlockingVolumeId">The volume that caused infeasibility; null when feasible.</param>
 /// <param name="Feasible">
 /// True when <see cref="AvailableEstimateBytes"/> ≥ <see cref="RequiredBytes"/> +
