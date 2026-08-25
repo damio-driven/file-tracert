@@ -525,7 +525,7 @@ src/app/
   `.items-center`, `.justify-between`, `.gap-2/3/4`, spacing.
 - `_components.scss` — le classi condivise vere: `.ft-btn` (+ `--primary`,
   `--ghost`), `.ft-modal*` (la shell modale estratta da 11d/11f), `.ft-skel`
-  (skeleton), `.ft-table` (+ `--kv`), `.ft-h`, `.ft-sub`, `.ft-stale`, `.ft-rise`.
+  (skeleton), `.ft-table` (+ `--kv`), `.ft-h1`, `.ft-sub`, `.ft-stale`, `.ft-rise`.
   **`ft-panel`, `ft-pill` e `ft-card` non sono classi**: sono componenti Angular
   in `shared/components/`, e si usano come elementi (`<ft-panel>`). Il mixin
   `panel`/`pill` in `_mixins.scss` è ciò che li veste.
