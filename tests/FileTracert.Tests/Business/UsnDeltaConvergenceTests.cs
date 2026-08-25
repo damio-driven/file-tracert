@@ -1,4 +1,4 @@
-using FileTracert.Business.Scanning;
+﻿using FileTracert.Business.Scanning;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Platform;
 using FileTracert.Contracts.Scanning;
@@ -155,7 +155,7 @@ public sealed class UsnDeltaConvergenceTests
     }
 
     [Fact]
-    public async Task A_file_moved_into_a_hidden_folder_converges_to_excluded_not_absent()
+    public async Task A_file_moved_into_a_hidden_folder_converges_to_absent_at_its_old_path()
     {
         var before = new List<Item>(StartingWorld()) { Dir(130, 100, @"Photos\Private") };
         var hidden = before.Single(i => i.Frn == 130) with
@@ -173,7 +173,16 @@ public sealed class UsnDeltaConvergenceTests
             Change(after, 130, UsnReason.BasicInfoChange | UsnReason.Close),
             Change(before, 200, UsnReason.RenameOldName, oldName: "a.jpg"),
             Change(after, 200, UsnReason.RenameNewName | UsnReason.Close),
-        ]);
+        ],
+        extra: async db =>
+        {
+            // Named, not left to the equivalence: convergence alone would be satisfied by both
+            // roads being wrong in the same way. The row is at its OLD path as far as the catalog
+            // is concerned, and the file is not there any more — so this is absence, not exclusion.
+            var moved = await db.Files.SingleAsync(f => f.UsnFileRef == 200);
+            moved.IsPresent.Should().BeFalse();
+            moved.ExcludedByScan.Should().BeFalse("nothing excluded the row where it still sits");
+        });
     }
 
     [Fact]

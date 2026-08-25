@@ -146,16 +146,18 @@ public sealed class UsnDeltaApplier
         }
         catch (Win32Exception ex)
         {
-            // Resilience, not silence (§9): the journal became unreadable (handle refused, journal
-            // disabled). The caller turns this into a full scan and a user-visible notification —
-            // this layer only reports, it does not decide.
+            // Resilience, not silence (§9): the volume handle was refused, or the journal is
+            // momentarily unreadable. The cursor is deliberately KEPT — nothing here says our
+            // position is gone, only that we could not look, and throwing a valid cursor away
+            // would sentence a multi-million-row volume to a full re-scan for a transient failure.
+            // The next cycle simply tries again; the warning is what makes a persistent failure
+            // visible.
             _logger.LogWarning(
                 ex,
-                "Journal read failed for volume {VolumeId} ({Guid}); a full scan is required.",
+                "Journal read failed for volume {VolumeId} ({Guid}); the cursor is kept and the next cycle will retry.",
                 volumeId, volume.VolumeGuid);
-            await InvalidateCursorAsync(volume, ct);
             return new UsnSyncResult(
-                UsnSyncStatus.RescanRequired,
+                UsnSyncStatus.NotEligible,
                 $"the change journal could not be read: {ex.Message} (code {ex.NativeErrorCode})");
         }
 
@@ -348,7 +350,7 @@ public sealed class UsnDeltaApplier
             items.Add(new PlacedItem(entry, ScanPath.Join(parentPath, entry.Name), parentPath, parentId, existing));
         }
 
-        return new PlacedDelta(items, catalogDirectories, catalogFiles, unresolved);
+        return new PlacedDelta(items, unresolved);
     }
 
     /// <summary>
@@ -535,8 +537,14 @@ public sealed class UsnDeltaApplier
             var deletedFiles = await LoadFilesByFrnAsync(volumeId, deletedFrns, ct);
             goneFileIds.AddRange(deletedFiles.Values.Where(f => f.IsIncluded).Select(f => f.Id));
 
+            // Directories are addressed by the path their own row records, which is the only place
+            // a deleted folder still exists — and the perimeter is asked about it for the same
+            // reason DirectoryMerger asks: a folder the user has told us not to look at is not one
+            // any scan would report as gone, so the delta must not either.
             var deletedDirectories = await LoadDirectoriesByFrnAsync(volumeId, deletedFrns, ct);
-            goneDirectoryIds.AddRange(deletedDirectories.Values.Where(d => d.IsPresent).Select(d => d.Id));
+            goneDirectoryIds.AddRange(deletedDirectories.Values
+                .Where(d => d.IsPresent && perimeter.Covers(d.Path))
+                .Select(d => d.Id));
         }
 
         foreach (var item in outside)
@@ -773,9 +781,5 @@ public sealed class UsnDeltaApplier
         string Extension = "",
         FileCategory Category = FileCategory.Other);
 
-    private sealed record PlacedDelta(
-        List<PlacedItem> Items,
-        Dictionary<ulong, CatalogDirectory> Directories,
-        Dictionary<ulong, CatalogFile> Files,
-        int Unresolved);
+    private sealed record PlacedDelta(List<PlacedItem> Items, int Unresolved);
 }
