@@ -738,9 +738,13 @@ decisione di prodotto o fase 2.
   cambia `CatalogChildrenDto` e la schermata.
 - **Filtro dimensione in Ricerca** — `SizeBytesMin/Max` esistono nell'API e nello store,
   non hanno un controllo a video (§8).
-- **Distribuire il build corrente sul catalogo reale** — il servizio installato è
-  indietro di quattro giri, e con esso il worker incrementale non ha mai girato sui
-  742 033 file veri.
+- ~~**Distribuire il build corrente sul catalogo reale**~~ — **fatto il 2026-08-25**,
+  vedi «Deploy» qui sotto. Resta la conseguenza: il worker incrementale **non ha ancora
+  girato** sui 742 033 file veri, perché `UsnSyncWorker` pretende `UsnJournalId != null`
+  e la migration lo backfilla nullo. Si accende **solo dopo una ri-scansione esplicita**
+  del volume, che su `C:` costa una camminata completa dell'MFT per indicizzare tre
+  sottoalberi — il caso che 14d ha misurato come perdente. È una decisione, non un
+  automatismo.
 - **Il riavvio vero della macchina** non è mai stato fatto: è l'unica cosa che manca
   alla prova dell'avvio automatico del servizio (step 13).
 
@@ -774,6 +778,56 @@ vero · **14a** filtro categoria della Ricerca · **14b** annullabilità delle q
 **14c** le due schermate Volumi · **14d** l'USN incrementale · **14e** questo
 allineamento. I finding della review del 2026-07-12 stanno in
 `CODE-REVIEW-HANDOFF.md`, che porta in cima il proprio stato aggiornato.
+
+### Deploy sul catalogo reale (2026-08-25, build `49619b5`)
+**Il servizio installato è passato da 14a a 14e**, e i numeri di 14c sono ora provati sul
+catalogo vero invece che su una copia.
+
+**Il brief diceva il falso anche qui, e l'ha scoperto la ricognizione**: ogni paragrafo da
+14a a 14d chiude con «il servizio installato non è stato aggiornato». Vero quando è stato
+scritto — ma **14a è stato distribuito dall'utente** il 24/08 alle 17:35, con tanto di
+`filetracert.db.pre14a` accanto al database. Lo dice la sonda: l'ultima migration applicata
+era `20260824131723_AddFtsTagsColumn`. Quei paragrafi restano come sono: sono storia, ed
+erano veri all'ora in cui sono stati scritti.
+
+**Stato di partenza, verificato prima di toccare qualcosa**: servizio `Stopped`, porta
+libera, **0 job non terminali e 0 overlay pendenti** — cioè niente da riprendere a metà.
+Backup: snapshot dei 76,4 MB di `Program Files` più `filetracert.db.pre14e`, sha256
+identico all'originale.
+
+**Due migration, entrambe additive**: `VolumeAggregateCoveringIndex` (14c) e
+`AddVolumeUsnJournalId` (14d). Publish + install: **24 s** in tutto. **Nessun rebuild FTS**
+— l'indice era già a 742 033 voci, e la guardia a senso unico di 14a ha taciuto, che è
+esattamente ciò che quella guardia deve fare al secondo avvio su un database sano.
+
+**Verificato sul ferro**: servizio `Running`/`Automatic`, in ascolto **solo** su `127.0.0.1`
+e `::1`, UI 200 col token nel `<meta>`, **401** senza token, catalogo intatto (742 033 file ·
+114 132 directory · 742 033 righe FTS · 22 volumi · 468 861 553 711 byte), il piano della
+lista volumi è `SCAN Files USING COVERING INDEX
+IX_Files_VolumeId_IsIncluded_IsPresent_SizeBytes`, e **zero Error** nel log dall'avvio (gli
+unici Warning sono gli `FirstOrDefault senza OrderBy` di EF, pre-esistenti).
+
+**I tempi, attraverso l'API, mediana di 5 a caldo** — «step 13» è il soak sul build vecchio,
+«oggi» è il servizio installato adesso:
+
+| endpoint | step 13 | oggi |
+|---|---|---|
+| `GET /api/dashboard` | 373 ms | **119 ms** |
+| **`GET /api/volumes`** | **1 571 ms** | **45 ms** |
+| **`GET /api/volumes/{id}`** (739 421 file) | **1 768 ms** | **176 ms** |
+
+Sono gli stessi ordini di grandezza misurati da 14c sulla copia (106 / 37 / 139 ms), il che
+è la conferma che quella misura non era un artefatto della copia.
+
+**Cosa NON è stato acceso**: i quattro volumi con un cursore USN hanno `UsnJournalId` a
+`NULL` (il backfill della migration), e il pre-filtro di `UsnSyncWorker` lo pretende non
+nullo. Il worker gira quindi **a vuoto**, e nessuna camminata dell'MFT parte a sorpresa. Per
+accenderlo serve una ri-scansione esplicita — vedi la roadmap.
+
+**Limiti noti:** il **riavvio della macchina** non è stato fatto, quindi l'avvio automatico
+resta provato solo da `sc start`; il `MinimumLogLevel` installato è **`Trace`**, e a quel
+livello il tetto che lega è `LogMaxRows` = 500 000 righe (≈184 MB, misurato allo step 13) —
+oggi il DB dei log sta a 3,9 MB.
 
 ### Fatto nello step 14e (2026-08-25)
 **Il brief dice la verità sul codice.** Nessuna modifica di prodotto: un audit di §3, §4,
