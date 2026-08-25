@@ -65,29 +65,35 @@ nella **root** (descrive entrambi i mondi).
 filetracert/                         (root repo — qui sta questo CLAUDE.md)
 ├── src/
 │   ├── backend/
-│   │   ├── FileTracert.sln
+│   │   ├── FileTracert.slnx
 │   │   ├── Directory.Build.props
 │   │   ├── FileTracert.Contracts/    // net10.0          — DTO, enum, port interfaces, SignalR msg. Nessuna dipendenza.
 │   │   ├── FileTracert.Data/         // net10.0          — DbContext, entity, IEntityTypeConfiguration, migrations
 │   │   ├── FileTracert.Platform/     // net10.0-windows  — Interop Win32 (implementa le port interface)
 │   │   ├── FileTracert.Business/     // net10.0          — Service + Orchestrator, queue engine, space ledger
-│   │   └── FileTracert.Host/         // net10.0-windows  — Web API + Windows Service + SignalR hub + BackgroundServices
+│   │   ├── FileTracert.Host/         // net10.0-windows  — Web API + Windows Service + SignalR hub + BackgroundServices
+│   │   └── FileTracert.HardwareSmoke/ // net10.0-windows — harness di collaudo sul ferro (scenari PASS/FAIL su file veri)
 │   └── frontend/                     // Angular 21
 └── tests/
-    ├── FileTracert.Tests/            // net10.0-windows  — xUnit unit + integration (nella .sln)
+    ├── FileTracert.Tests/            // net10.0-windows  — xUnit unit + integration (nella solution)
+    ├── FileTracert.PoolProbe/        // net10.0          — eseguibile a parte: prova la corsa sui pool SQLite (11i)
     └── e2e/                          // Playwright (node)
 ```
 
-5 progetti .NET + 2 di test, nessuna over-ingegnerizzazione.
+6 progetti .NET sotto `src/backend` + 3 di test, nessuna over-ingegnerizzazione.
+`HardwareSmoke` sta accanto ai progetti di prodotto e non sotto `tests/` perché è un
+**eseguibile** che gira sul ferro, non una suite; `PoolProbe` è un eseguibile per lo stesso
+motivo (11i: il difetto che prova è chiamare una API *per processo* dentro il test host).
 
 ### Grafo dei riferimenti (RISPETTARE)
 ```
-Contracts  → (nessuno)
-Data       → Contracts
-Platform   → Contracts
-Business   → Contracts, Data
-Host       → Contracts, Data, Platform, Business
-Tests      → Contracts, Data, Platform, Business, Host
+Contracts     → (nessuno)
+Data          → Contracts
+Platform      → Contracts
+Business      → Contracts, Data
+Host          → Contracts, Data, Platform, Business
+HardwareSmoke → Contracts, Data, Platform, Business, Host
+Tests         → Contracts, Data, Platform, Business, Host, HardwareSmoke, PoolProbe
 ```
 
 ### Regole di layering
@@ -96,9 +102,11 @@ Tests      → Contracts, Data, Platform, Business, Host
   SignalR **e le port interface verso la piattaforma** (`IVolumeProbe`,
   `IUsnReader`, `IFileMover`, `IDeviceWatcher`) con i loro DTO di scambio.
   Ci stanno anche gli **helper di dominio puri** che più layer devono spellare
-  allo stesso modo — oggi `ScanPath` (path relativi al volume: normalize, join,
-  parent, contenimento), usato da `Business`, `Host` e `Platform`. Non dipende
-  da nulla: solo tipi BCL, mai un'entità.
+  allo stesso modo — oggi `Scanning/ScanPath` (path relativi al volume: normalize,
+  join, parent, contenimento), usato da `Business`, `Host` e `Platform`, e
+  `Platform/UsnPathResolver` (ricostruzione del path da un FRN di padre), portato
+  qui allo step 14d quando lo stesso algoritmo è servito allo snapshot completo e
+  al delta incrementale. Non dipendono da nulla: solo tipi BCL, mai un'entità.
 - **Tutta** la P/Invoke vive in `Platform`, che **implementa** le port interface
   definite in `Contracts`. `Business` dipende solo da `Contracts` + `Data`
   (mai da `Platform`): resta `net10.0` puro, non vede chiamate native, è
@@ -136,9 +144,16 @@ Tests      → Contracts, Data, Platform, Business, Host
 - **Windows Service elevato** (serve per USN/MFT e operazioni sui file).
 - **Kestrel su loopback** (`127.0.0.1`), porta fissa. Niente binding esterno.
 - **Security locale**: token generato all'avvio, richiesto in header dalle
-  chiamate UI. Single-user, sufficiente.
-- BackgroundServices: `ScanWorker`, `UsnSyncWorker`, `DeviceWatcherWorker`,
-  `QueueProcessorWorker`.
+  chiamate UI — **oppure** in query string `?access_token=…`, ma **solo** su
+  `/hubs/*` (§7: l'handshake WebSocket del browser non può mettere header custom).
+  Single-user, sufficiente.
+- BackgroundServices, nell'ordine di registrazione di `Program.cs` (che è anche
+  l'ordine di stop, al contrario — vedi 11c e 14b): `LogFlushService`,
+  `ReadCancellationLifetime`, `VolumeSyncWorker`, `DeviceWatcherWorker`,
+  `ScanWorker`, `UsnSyncWorker`, `QueueProcessorWorker`, `LogRetentionWorker`,
+  `WalCheckpointWorker`. I primi due non sono worker di dominio: drenano la coda
+  dei log e accendono il segnale di annullamento delle letture, e stanno in cima
+  proprio perché devono fermarsi per ultimi.
 
 ### Concorrenza
 - Queue processor MVP = **sequenziale** (FIFO, un job alla volta).
