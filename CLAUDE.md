@@ -302,7 +302,8 @@ stato fisico (ultima scansione) **+ overlay delle operazioni in coda**.
 `IsRemovable` · `PhysicalDiskId?` · `LastDriveLetter?` · `CapacityBytes` ·
 `FreeBytesLastKnown` · `LastSeenUtc` · `IsOnline` · `ScanEngine` ·
 `Kind` (VolumeKind) · `IsCatalogable` (default da Kind; override utente preservato) ·
-`LastUsn?` · `LastFullScanUtc?` + audit.
+`LastUsn?` · `UsnJournalId?` (l'istanza del giornale a cui `LastUsn` appartiene: una posizione
+senza il suo id non è un cursore) · `LastFullScanUtc?` + audit.
 
 **WatchedRoots**
 `Id` · `VolumeId`→Volumes · `RelativePath` · `IsActive` · `FilterOverrideJson?`
@@ -643,6 +644,12 @@ il paragrafo «Fatto nello step 11h».
 Dashboard, Volumi, scansione) e **12b** (recinto della sandbox, Catalogo, Ricerca, accodamento con
 proiezione, Coda, realtime). **Con lo step 12 si chiude l'MVP**: tutte e dodici le voci del §10
 sono fatte. Vedi il paragrafo «Fatto nello step 12b».
+~~**Step 13 — servizio installato e catalogo vero**~~ — **CHIUSO**, e ha aperto lo **step 14**, che
+paga i difetti che il catalogo vero ha reso visibili: **14a** (il filtro per categoria della
+Ricerca), **14b** (annullabilità delle query lunghe), **14c** (le due schermate Volumi), **14d**
+(l'USN fatto sul serio: dimensioni misurate, id del giornale, worker incrementale) — **fatti**.
+Con **14d** il nodo tecnico n° 2 del §1 esiste davvero: `UsnSyncWorker` non è più una promessa
+del §3. Resta il solo **14e** (allineamento del brief), che questo paragrafo anticipa in parte.
 
 Cosa resta aperto, e **non è più MVP** — sono debiti datati e roadmap di fase 2:
 1. **La corsa dell'auto-selezione su Volumi** (difetto di prodotto trovato dal 12a e lasciato lì:
@@ -654,12 +661,178 @@ Cosa resta aperto, e **non è più MVP** — sono debiti datati e roadmap di fas
    ~~il **filtro per categoria** della Ricerca costa come l'insieme dei match e non come il
    risultato~~ **chiuso allo step 14a**; ~~una **query lunga non si annulla**,
    quindi tiene lo shutdown oltre lo `ShutdownTimeout`~~ **chiusa allo step 14b**;
-   ~~**lista e dettaglio Volumi** stanno oltre il secondo~~ **chiusa allo step 14c**; il motore **USN non ha le dimensioni dei file** e le ricompra con una `stat` per file,
-   che è il motivo per cui non batte l'enumerazione; **manca l'id del giornale** in `Volumes`, e
-   senza quello il worker incrementale non è scrivibile.
-5. **Il percorso incrementale USN non esiste**: `ReadChanges` è implementato e testato, ma nessun
-   consumatore lo chiama e il `UsnSyncWorker` del §3 non è mai stato scritto. Ogni scansione è piena.
+   ~~**lista e dettaglio Volumi** stanno oltre il secondo~~ **chiusa allo step 14c**;
+   ~~il motore **USN non ha le dimensioni dei file** e le ricompra con una `stat` per file, che è il
+   motivo per cui non batte l'enumerazione~~ — **la premessa era un artefatto di misura, chiusa
+   allo step 14d**: in A/B nello stesso processo l'USN pareggia il primo scan e vince il re-scan;
+   la `stat` costa 0,27–0,87 s su 52 233 file e non è il termine che decide. Resta vero, e scritto
+   in 14d, che l'USN **perde sui sotto-alberi** perché cammina tutta l'MFT ignorando il perimetro;
+   ~~**manca l'id del giornale** in `Volumes`~~ **chiuso allo step 14d**.
+5. ~~**Il percorso incrementale USN non esiste**~~ — **chiuso allo step 14d**: `UsnDeltaApplier` +
+   `UsnSyncWorker` esistono, girano, e convergono con la scansione completa.
 6. La **fase 2** del §11, nell'ordine che l'utente deciderà.
+
+### Fatto nello step 14d (2026-08-25, commit `626a42f`…`9383f00`)
+**Il percorso incrementale USN esiste, e concorda con la scansione completa.** Chiude le voci 4 e 5
+del lavoro lasciato dallo step 13, e rende vero il nodo tecnico n° 2 del §1 — che fino a ieri il
+prodotto non aveva. Con un colpo di scena: **il difetto che il task esisteva per chiudere non
+c'era**, ed era un artefatto di misura.
+
+#### Checkpoint 1 — la premessa era sbagliata, e la misura lo dimostra
+Il task partiva dal «fatto n° 1» dello step 13: *l'USN non vince a nessuna scala* (4,88 s contro
+3,74 s su `D:`), quindi bisogna leggere le dimensioni dall'MFT o il motore non ha motivo di
+esistere. Quel confronto metteva però una sessione **elevata** contro una **non elevata**, prese in
+momenti diversi e con cache diverse. Rifatto in **A/B dentro lo stesso processo elevato** — sonda
+usa-e-getta che gira il `ScanService` vero su un DB usa-e-getta, con l'enumerazione forzata facendo
+fallire `EnsureJournal`, cioè esattamente il caso non-elevato — su `D:` (52 233 file + 6 859
+directory, 59 439 voci MFT), **10 campioni per motore**, mediane:
+
+| | primo scan | re-scan | gather | meta |
+|---|---|---|---|---|
+| **USN** | **5,14 s** | **3,71 s** | 0,18 s | 0,27 s (0,87 a freddo) |
+| Enumerazione | 5,26 s | 4,48 s | 0,94 s | 0 |
+
+Sul re-scan i due intervalli **non si sovrappongono** (USN 3,18–4,42, enum 4,23–5,38), e il
+controllo con l'ordine invertito dà lo stesso quadro. Sul volume intero l'USN quindi **pareggia il
+primo scan e vince il re-scan del 17%**, oggi, senza toccare una riga.
+
+Dove perde è un altro posto, e l'MFT non c'entra. Su un **sotto-albero** (`D:\DeployProd`, 5 557
+file, 3 campioni): USN 1,16 s / 0,88 s contro enumerazione **1,05 s / 0,71 s**, perché
+`FSCTL_ENUM_USN_DATA` cammina **tutta** l'MFT del volume ignorando il perimetro — 59 439 voci per
+indicizzarne 6 189. È il caso d'uso reale del prodotto (§1: cartelle di media), ed è il termine che
+un parser `$MFT` **non** toccherebbe: lì la `stat` costa 0,02 s.
+
+E lo scan è **DB-bound**: 4,5 s dei 5,2 s sono filtro + merge + scrittura. Qualunque lavoro sul lato
+lettura si muove dentro un secondo.
+
+**Decisione dell'utente**, presa su questi numeri: niente parser `$MFT` (il rapporto fra un parser
+NTFS di strutture su disco — con la sua classe di guasti silenziosi: dimensione sbagliata = catalogo
+sbagliato — e un guadagno del 7% sul primo scan non regge), si va dritti ai checkpoint 2 e 3, che
+sono dove sta l'ordine di grandezza. La sonda **non è stata committata**: ha prodotto i numeri qui
+sopra e ha finito il suo lavoro.
+
+#### Checkpoint 2 — `Volumes` ricorda il giornale
+Colonna `UsnJournalId` (+ migration `AddVolumeUsnJournalId`, backfill nullo). Una posizione senza
+l'istanza a cui appartiene **non è un cursore**: cancellare e ricreare un giornale (`fsutil`, un
+ripristino da snapshot) riparte con un id nuovo, quindi un `LastUsn` perfettamente valido può
+puntare dentro una storia completamente diversa. Le due metà si prendono ora dalla **stessa**
+`FSCTL_QUERY_USN_JOURNAL` e si checkpointano insieme, nella transazione che già scriveva `LastUsn`.
+Salvata come reinterpretazione con segno dell'`ulong` nativo, lo stesso trucco di
+`FileEntry.UsnFileRef` — SQLite non ha un intero a 64 bit senza segno e il valore si confronta solo
+per uguaglianza. **Nulla** dopo una scansione a enumerazione: niente deve credere di poter riprendere
+da uno scan che il giornale non l'ha mai letto.
+
+#### Checkpoint 3 — `UsnDeltaApplier` + `UsnSyncWorker`
+`IUsnReader.ReadChanges` era implementato e testato **senza un solo chiamante di prodotto**, e il
+`UsnSyncWorker` che il §3 elenca fra i BackgroundServices non era mai stato scritto. Ora esistono
+entrambi (worker ogni 30 s, un volume alla volta, `UsnSyncIntervalSeconds`).
+
+- **Le due strade devono concordare, e lo fanno per costruzione.** Tutto ciò che è durevole passa
+  dai pezzi che usa la scansione: `MergeScannedFilesAsync` per l'upsert (che matcha per **FRN**,
+  quindi un rename fatto fuori dall'app atterra sulla riga che c'era già), `DirectoryMerger.EnsureAsync`
+  per l'albero, `ScanPerimeter` + `FileFilter` per il verdetto. L'unica cosa che il delta **non può
+  prendere in prestito** è il pass degli **assenti**: quel pass legge «non toccato da questo giro»
+  come «non c'è sul disco», che è vero di una scansione (ha guardato ovunque) e falso di un delta
+  (ha guardato ciò che è cambiato).
+- **L'assenza si scrive solo contro una prova**: il giornale dice che il file è stato cancellato,
+  oppure dice che non è più dove la riga lo colloca. Mai perché il delta non l'ha nominato. Tutto il
+  resto fuori perimetro è `IsIncluded = false` con la causa vera e `IsPresent` **intatto**, cioè la
+  semantica di 11g/11h.
+- **I path si ricostruiscono dal FRN del padre** attraverso lo stesso `UsnPathResolver` dello
+  snapshot completo: la sua mappa contiene le directory **del delta** (così una catena appena creata
+  si risolve contro sé stessa) e il suo fallback risponde dalle righe `Directories` del catalogo. Un
+  padre che non sta in nessuna delle due è una cartella che la scansione non ha mai indicizzato — e
+  **non è un guasto, è il meccanismo**: è così che il delta eredita l'esclusione di sottoalbero di
+  C16 senza leggere un byte dal disco.
+- **Il cursore si scrive per ULTIMO**, in transazione propria, come il checkpoint di 9a. Tutto ciò
+  che il delta fa è idempotente (il merge matcha sul FRN, i flag si settano a costanti), quindi un
+  crash costa un delta ripetuto e mai uno saltato. L'ordine opposto lascerebbe dichiarato consumato
+  un delta mai applicato, e nessuno tornerebbe più a prenderlo.
+- **L'invalidazione è rumorosa e una volta sola**: giornale ricreato o posizione sorpassata → il
+  cursore viene **lasciato cadere**, il volume torna a `ScanWorker` via `IScanScheduler`, con log e
+  Notification. Senza il drop ogni ciclo riscoprirebbe lo stesso cursore morto e rifarebbe la stessa
+  richiesta.
+- **`UsnPathResolver` si sposta in `Contracts`** per il motivo per cui ci si spostò `ScanPath` (§3):
+  ora due layer spellano la stessa regola, ed è BCL puro. Il suo fallback `FrnNode?` — codice morto,
+  mai usato — diventa quello **per path** che il caso incrementale chiedeva davvero. La risoluzione
+  dei filtri per root esce da `ScanService` in `RootFilters`, così scan e delta non possono divergere
+  su quale filtro governa cosa.
+- **Il catalogo cambia senza che nessuno l'abbia chiesto**, quindi il delta alza `ProjectionChanged`
+  (`RealtimeEvents.CatalogChangedAsync`): dallo step 10c le schermate non pollano più, e senza quel
+  messaggio Catalogo e Ricerca resterebbero ferme su dati vecchi fino a un refresh a mano.
+
+#### Verifica
+xUnit **832 verdi** (+19 su 813), build backend pulita (warnings-as-errors). Frontend non toccato.
+
+**La prova che conta è la convergenza**, e ha una forma precisa: ogni caso apre **due** database
+dalla **stessa** scansione completa di un mondo di partenza, poi porta l'uno attraverso una
+ri-scansione completa del mondo cambiato e l'altro attraverso il delta che descrive lo stesso
+cambiamento, e pretende righe **identiche**. Due scansioni e non «una scansione vergine dello stato
+finale» di proposito: un catalogo ha una storia — un file cancellato lascia una riga marcata
+assente, uno escluso conserva la sua identità — e confrontare con un database vergine lascerebbe il
+delta sbagliare proprio dove conta. Dodici casi: create, rename, move, delete, cartella nuova con
+file dentro, rename fuori dall'allow-list, move dentro una cartella nascosta, catalogo intatto,
+cursore, replay idempotente, invalidazione, non-idoneità.
+
+**RED dimostrato tre volte**, rompendo il prodotto: coalescing a «primo record vince» invece di
+«ultimo» → **4 rossi mirati** (rename, move, rename-fuori-filtro, cartella nascosta) e 8 verdi;
+`UsnSyncWorker` non registrato → **4 su 4** dei test Host rossi; e il probe che disattivava del tutto
+la riconciliazione **non compila** sotto warnings-as-errors, il che è di per sé una guardia.
+
+**Sul ferro, elevato** (`D:\Collaudo\A` ↔ `C:\Collaudo\B`): **50 scenari, 50 PASS, 0 FAIL** — la
+baseline di 47 più le tre coppie del nuovo `usn-incremental-sync`. Quello scenario è l'unico livello
+che legge il **giornale vero**: scansione completa di una fixture, poi un file creato, uno rinominato
+e uno cancellato con normali chiamate BCL, poi **solo** il delta. Due asserzioni portano il peso —
+`LastFullScanUtc` non deve essersi mosso (altrimenti la convergenza sarebbe una scansione, e lo
+scenario misurerebbe la strada sbagliata), e il file rinominato deve **conservare l'identità della
+riga**, perché il FRN è il vero nome del file per NTFS e un rename fatto alle nostre spalle deve
+atterrare sulla riga che un'operazione in coda già punta (§5). Su `C:` il delta ha portato **851
+record** di traffico di sistema estraneo e ne è uscito `indexed=2 absent=1 unplaced=103`: cento
+record di oggetti che questo catalogo non ha mai indicizzato, scavalcati senza danno, che è il
+comportamento su cui il progetto è costruito. `appsettings.json` dell'harness rimesso byte-identico
+(sha256 `653f5990…` verificato).
+
+La **code review finale** di questo giro **è stata fatta da me sul diff, non da un agente
+indipendente** (il harness di questa sessione vieta di lanciare sotto-agenti senza richiesta
+esplicita dell'utente) — scritto qui invece di essere presentato come ciò che non è. Ha trovato
+**tre** cose, tutte corrette in `9383f00`. La prima ha i denti: una `Win32Exception` sulla lettura
+del giornale **buttava via il cursore** e chiedeva una scansione completa — ma un handle di volume
+rifiutato non dice che la nostra posizione è persa, dice solo che non abbiamo potuto guardare, e su
+un volume da milioni di righe quello barattava un guasto transitorio con una camminata completa
+dell'MFT più un avviso a video. Ora il cursore si tiene, il fallimento si riporta come «non idoneo
+adesso», e il ciclo successivo ritenta; un fallimento persistente resta visibile perché l'applier lo
+logga per intero ogni volta. La seconda: una **directory cancellata fuori perimetro** veniva marcata
+assente, dove una scansione la lascia stare (`DirectoryMerger` guarda `perimeter.Covers`); ora il
+delta pone la stessa domanda, sul path che la riga stessa registra. La terza è un test il cui **nome
+affermava il contrario di ciò che il prodotto fa** — `converges_to_excluded_not_absent` per un file
+spostato in una cartella nascosta: è **assente**, e correttamente, perché la riga descrive il vecchio
+path e lì il file non c'è più; l'asserzione di equivalenza da sola sarebbe stata soddisfatta anche da
+due strade sbagliate allo stesso modo. Rinominato, e il verdetto ora è asserito per nome.
+
+#### Limiti noti e accettati
+- **Una cartella già indicizzata che *diventa* nascosta non ri-esclude il proprio sottoalbero.** Il
+  caso *dentro* il delta è coperto (il record di cambio attributi arriva, `ExcludeSubtree` scatta, e
+  i file dello stesso delta sotto di lei diventano esclusi o assenti); le righe **già** a catalogo
+  che il delta non nomina restano incluse fino alla scansione successiva. Chiuderlo vuol dire un
+  update ricorsivo di sottoalbero dentro un tick di sync: è un giro a sé.
+- **Il verso opposto — una cartella che smette di essere nascosta — non è nemmeno rilevabile** dal
+  delta (un record di cartella che passa il filtro e non ha riga è indistinguibile da una cartella
+  nuova), e i file che contiene non generano record propri. Serve una scansione, che è esattamente
+  ciò che 11g già scriveva.
+- **L'USN perde ancora sui sotto-alberi** (misura sopra), perché lo snapshot completo ignora il
+  perimetro. Non è stato toccato: sceglierlo per rapporto fra sotto-albero e MFT sarebbe scope in più
+  rispetto a questo task, ed è il candidato ovvio del giro che vorrà chiudere quel divario.
+- **Il delta ricompra dimensioni e date con una `stat` per file cambiato.** È corretto qui — un delta
+  nomina una manciata di file — ed è la stessa lettura che sullo snapshot completo costa una syscall
+  per file del volume.
+- **`ReadChanges` è sincrona** e gira sul thread del worker, come `ReadFullSnapshot` nello
+  `ScanService`: un delta enorme dopo un lungo spegnimento blocca quel thread. Il token è onorato
+  dentro il loop nativo, quindi non tiene lo shutdown.
+- **Il servizio installato non è stato aggiornato**: gira ancora il build precedente sul catalogo
+  reale, che non è stato toccato. Distribuire questo giro — e con esso far girare per la prima volta
+  il worker incrementale sui 742 033 file veri — resta una decisione dell'utente (voce aperta da 14a).
+- **E2E non eseguiti**: il loro `globalSetup` si rifiuta di partire da elevato (12a) e questa sessione
+  era elevata per necessità.
 
 ### Fatto nello step 14c (2026-08-25, commit `11a80ae`…`13f7c2d`)
 **Le due schermate Volumi stanno sotto il decimo di secondo, non sotto il secondo.** Chiude la voce
