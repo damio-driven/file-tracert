@@ -88,7 +88,17 @@ builder.Services
         o.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter()));
 
 builder.Services.Configure<HostOptions>(o =>
-    o.ShutdownTimeout = TimeSpan.FromSeconds(options.ShutdownTimeoutSeconds));
+{
+    o.ShutdownTimeout = TimeSpan.FromSeconds(options.ShutdownTimeoutSeconds);
+
+    // Two guarantees of this host are ORDERING guarantees, and both are silently void if the
+    // hosted services stop in parallel: the log queue drains last (11c) and the read-cancellation
+    // signal fires only once every worker is stopped (14b). Stated rather than inherited from
+    // whatever the current default happens to be — a default that changes would turn both into
+    // races, and a race that loses looks exactly like a rare flaky test.
+    o.ServicesStopConcurrently = false;
+    o.ServicesStartConcurrently = false;
+});
 
 // Bind Kestrel to loopback only, on the fixed configured port. No external binding.
 builder.WebHost.UseUrls();

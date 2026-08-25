@@ -41,8 +41,6 @@ public sealed class FileTracertAppFactory : WebApplicationFactory<global::Progra
     public IDeviceWatcher DeviceWatcher { get; set; } = new FakeDeviceWatcher();
     public Func<FileTracertDbContext, CancellationToken, Task>? Seed { get; set; }
 
-    /// <summary>Extra registrations for one test (e.g. a probe hosted service).</summary>
-    public Action<IServiceCollection>? ExtraServices { get; set; }
 
     public int VolumeSyncIntervalSeconds { get; set; } = 1;
     public int ScanPollIntervalSeconds { get; set; } = 1;
@@ -126,8 +124,6 @@ public sealed class FileTracertAppFactory : WebApplicationFactory<global::Progra
             {
                 RemoveHostedService<DeviceWatcherWorker>(services);
             }
-
-            ExtraServices?.Invoke(services);
         });
     }
 

@@ -4,12 +4,14 @@ using FileTracert.Data;
 using FileTracert.Data.Cancellation;
 using FileTracert.Data.Entities;
 using FileTracert.Tests.Data;
+using FileTracert.Host.Infrastructure;
 using FileTracert.Tests.Infrastructure;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 using Xunit.Abstractions;
 
 namespace FileTracert.Tests.Host;
@@ -151,50 +153,52 @@ public sealed class QueryShutdownTests : IAsyncLifetime
     /// <summary>
     /// WHEN it fires is half the design. <c>ApplicationStopping</c> is raised while every worker is
     /// still running on a token that has not been cancelled yet, so a read interrupted there throws
-    /// an <see cref="OperationCanceledException"/> the workers' <c>when (ct.IsCancellationRequested)</c>
-    /// filters do not match — a clean stop during a scan would be logged as a failure and raise a
-    /// user-facing Notification. The signal therefore rides on a hosted service registered third, so
-    /// it runs after every worker has stopped.
+    /// an <see cref="OperationCanceledException"/> the workers'
+    /// <c>when (ct.IsCancellationRequested)</c> filters do not match — a clean stop during a scan
+    /// would be logged as a failure and raise a user-facing Notification, i.e. an interruption
+    /// dressed up as an error (§9).
     ///
-    /// <para>The probe is registered last (test services come after the host's own), so it stops
-    /// FIRST — standing in for the workers. If it sees the signal already cancelled, the ordering is
-    /// wrong.</para>
+    /// <para>The guarantee is made of two facts, and both are asserted: the host stops its hosted
+    /// services SEQUENTIALLY, in reverse registration order (pinned in <c>HostOptions</c> rather
+    /// than inherited from whatever the current default is), and
+    /// <c>ReadCancellationLifetime</c> is registered BEFORE every worker. Together those say it
+    /// stops after all of them. This is asserted structurally, on the registration order itself,
+    /// because the emergent thing — "watch a probe stop first" — is not the invariant and is not
+    /// stable in a re-hosted test server, where even <c>GenericWebHostService</c> lands in a
+    /// different position than it does in production.</para>
     /// </summary>
     [Fact]
-    public async Task The_signal_fires_after_the_workers_have_stopped_not_before()
+    public async Task The_signal_is_registered_to_fire_after_every_worker_and_does_fire()
     {
-        var probe = new StopOrderProbe();
-        _factory.ExtraServices = services => services.AddSingleton<IHostedService>(sp =>
+        var hosted = _factory.Services.GetServices<IHostedService>().ToList();
+        var order = hosted.Select(h => h.GetType()).ToList();
+
+        var options = _factory.Services.GetRequiredService<IOptions<HostOptions>>().Value;
+        options.ServicesStopConcurrently.Should().BeFalse(
+            "reverse registration order only means anything if the services stop one at a time");
+
+        var signalIndex = order.FindIndex(t => t == typeof(ReadCancellationLifetime));
+        signalIndex.Should().BeGreaterThanOrEqualTo(0, "the Host must register it at all");
+
+        var workers = order
+            .Select((t, i) => (Type: t, Index: i))
+            .Where(x => x.Type.IsSubclassOf(typeof(BackgroundService)))
+            .ToList();
+
+        workers.Should().NotBeEmpty("otherwise this test asserts an ordering against nothing");
+        foreach (var (type, index) in workers)
         {
-            probe.Signal = sp.GetRequiredService<DatabaseShutdownSignal>();
-            return probe;
-        });
-
-        var host = _factory.RunningHost;
-        var signal = _factory.Services.GetRequiredService<DatabaseShutdownSignal>();
-
-        await host.StopAsync(TimeSpan.FromSeconds(30));
-
-        probe.Stopped.Should().BeTrue("the probe has to have taken part in the stop sequence");
-        probe.SignalWasCancelled.Should().BeFalse(
-            "a worker still stopping must not have its reads interrupted underneath it");
-        signal.Token.IsCancellationRequested.Should().BeTrue(
-            "and by the end of the stop sequence the signal must have fired");
-    }
-
-    private sealed class StopOrderProbe : IHostedService
-    {
-        public DatabaseShutdownSignal? Signal { get; set; }
-        public bool Stopped { get; private set; }
-        public bool SignalWasCancelled { get; private set; }
-
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-
-        public Task StopAsync(CancellationToken cancellationToken)
-        {
-            Stopped = true;
-            SignalWasCancelled = Signal?.Token.IsCancellationRequested ?? false;
-            return Task.CompletedTask;
+            index.Should().BeGreaterThan(signalIndex,
+                $"{type.Name} must stop BEFORE the read-cancellation signal fires, or its own reads " +
+                "are interrupted underneath it while its token is still live");
         }
+
+        var signal = _factory.Services.GetRequiredService<DatabaseShutdownSignal>();
+        signal.Token.IsCancellationRequested.Should().BeFalse();
+
+        await _factory.RunningHost.StopAsync(TimeSpan.FromSeconds(30));
+
+        signal.Token.IsCancellationRequested.Should().BeTrue(
+            "and by the end of the stop sequence it must have fired");
     }
 }
