@@ -531,7 +531,7 @@ src/app/
   `panel`/`pill` in `_mixins.scss` è ciò che li veste.
 - **Layout in flexbox**. Liste enormi (Catalogo/Ricerca) → **CDK Virtual Scroll**.
 - Tipografia: IBM Plex Sans + IBM Plex Mono (per path, GUID, valori tecnici).
-- **Tema dark**. Vedi mockup di riferimento (`filetracert-mockup.html`).
+- **Tema dark**. Vedi mockup di riferimento (`src/frontend/filetracert-mockup.html`).
 - ⚠️ **Usare la skill `impeccable` per la realizzazione del frontend.**
 
 ### Schermate (7 in barra + 1 fase 2)
@@ -576,9 +576,10 @@ Sette route in `app.routes.ts`, tutte raggiungibili dalla barra di navigazione.
 
 ## 10. Ordine di implementazione suggerito (MVP)
 
-0. **Scaffold** monorepo + solution (5+2 progetti, riferimenti, TFM, file di
-   supporto, scaffold Angular). Skeleton-only, deve compilare a vuoto.
-   → vedi `TASK-step0-scaffold.md`.
+0. **Scaffold** monorepo + solution (riferimenti, TFM, file di supporto, scaffold
+   Angular). Skeleton-only, deve compilare a vuoto. *(Il `TASK-step0-scaffold.md`
+   che questa riga citava non è nel repo: lo step è chiuso da tempo e il layout
+   vero è quello di §3.)*
 1. `Data` + entity + configurations + migrations + seed `ExtensionCategories`.
 2. `Platform`: `IVolumeProbe` (enumerazione volumi + identità GUID).
 3. `Platform`: `IUsnReader` (full enum + incrementale) e fallback enumerazione.
@@ -642,8 +643,9 @@ Sette route in `app.routes.ts`, tutte raggiungibili dalla barra di navigazione.
 ---
 
 ## 12. Riferimenti
-- Mockup UI navigabile: `filetracert-mockup.html`.
-- Primo task (scaffold): `TASK-step0-scaffold.md`.
+- Mockup UI navigabile: `src/frontend/filetracert-mockup.html`.
+- I task per step vivono nella root come `TASK-stepNN*.md`; quello dello step 0
+  non esiste più.
 - Palette brand FAD.iT: teal `#2ec4b6`, lime `#a8e063`.
 
 ---
