@@ -652,14 +652,125 @@ Cosa resta aperto, e **non è più MVP** — sono debiti datati e roadmap di fas
 3. **Classificazione Cloud non affidabile** (§11, debito datato allo step 6.7).
 4. **Trovati dallo step 13, sul catalogo vero da 742 033 file** — nessuno è MVP, tutti sono reali:
    ~~il **filtro per categoria** della Ricerca costa come l'insieme dei match e non come il
-   risultato~~ **chiuso allo step 14a**; una **query lunga non si annulla**,
-   quindi tiene lo shutdown oltre lo `ShutdownTimeout`; **lista e dettaglio Volumi** stanno oltre il
-   secondo; il motore **USN non ha le dimensioni dei file** e le ricompra con una `stat` per file,
+   risultato~~ **chiuso allo step 14a**; ~~una **query lunga non si annulla**,
+   quindi tiene lo shutdown oltre lo `ShutdownTimeout`~~ **chiusa allo step 14b**;
+   **lista e dettaglio Volumi** stanno oltre il secondo; il motore **USN non ha le dimensioni dei file** e le ricompra con una `stat` per file,
    che è il motivo per cui non batte l'enumerazione; **manca l'id del giornale** in `Volumes`, e
    senza quello il worker incrementale non è scrivibile.
 5. **Il percorso incrementale USN non esiste**: `ReadChanges` è implementato e testato, ma nessun
    consumatore lo chiama e il `UsnSyncWorker` del §3 non è mai stato scritto. Ogni scansione è piena.
 6. La **fase 2** del §11, nell'ordine che l'utente deciderà.
+
+### Fatto nello step 14b (2026-08-25, commit `dec0f21`…`3007cb1`)
+**Una lettura annullata smette di lavorare, invece di smettere soltanto di essere attesa.** Chiude la
+voce n° 2 dello step 13: la conseguenza che il difetto di 14a aveva rivelato, cioè che **un guasto di
+prestazioni diventava un guasto di spegnimento**.
+
+- **La causa, in una riga**: `Microsoft.Data.Sqlite` implementa `DbCommand.Cancel()` come **no-op** e
+  non guarda più il token una volta che `sqlite3_step` è partito. `RequestAborted` era quindi onorato
+  fra un `await` e l'altro e in nessun altro posto. Sul servizio installato: **+147 s di CPU in 119 s
+  di orologio** dopo che il client si era sganciato, per oltre venti minuti, e uno `sc stop` fermo in
+  `StopPending` per **oltre 270 s** contro i 30 s che il §3 promette.
+- **Il ponte è `sqlite3_interrupt`**, e la sicurezza sta nella **vita della registrazione**: dura
+  esattamente quanto la chiamata ADO.NET. Un interrupt sollevato mentre nessuno statement gira è un
+  **no-op documentato**, e `CancellationTokenRegistration.Dispose` **blocca** finché una callback in
+  volo non è rientrata: quando il metodo ritorna, nessun interrupt può essere ancora in aria contro
+  una connessione che sta per tornare nel pool. **Niente qui tocca la vita dei pool** — l'incidente
+  di 11i non è raggiungibile da questo codice. `SQLITE_INTERRUPT` viene **tradotto** in
+  `OperationCanceledException`, così ASP.NET Core e il logging di EF lo leggono per ciò che è (§9), e
+  la traduzione è condizionata al fatto che sia stato **questo** guard a sparare.
+- **Il perimetro è un allow-list su `CommandSource`, e la review ha dimostrato perché non poteva
+  essere dedotto.** La prima versione ragionava così: «le scritture passano dal ramo non-query, e
+  comunque portano una `DbTransaction`». **Sono false entrambe insieme**: EF manda un batch di
+  `SaveChanges` attraverso `ExecuteReaderAsync` (deve rileggere `changes()`/`RETURNING`) e, con
+  `AutoTransactionBehavior.WhenNeeded`, un batch da **un solo** comando **non apre alcuna
+  transazione**. Cioè esattamente la forma del checkpoint della coda: `JobExecutionEngine` salva una
+  riga di item con un token annullabile. Uno shutdown avrebbe potuto interrompere un checkpoint — il
+  solo divieto esplicito del task. Ora si guardano **solo** `LinqQuery` e `FromSqlQuery`; il test non
+  assume la premessa, la **asserisce** (il batch viaggia sul ramo reader, non ha transazione, e non
+  è guardato). Resta anche il secondo recinto indipendente: una lettura che porta una
+  `DbTransaction` non si tocca.
+- **Chi passa `CancellationToken.None` viene lasciato finire.** È deliberato in tutta la coda, e
+  resta deliberato: se il token del chiamante non è annullabile, il guard **non viene nemmeno
+  installato** e non costa nulla.
+- **`WHEN` il segnale di shutdown si accende è metà del progetto.** `ApplicationStopping` era il
+  momento sbagliato: viene alzato mentre **ogni worker gira ancora** su un token non ancora
+  annullato, quindi una lettura interrotta lì dentro lancia una `OperationCanceledException` che i
+  filtri `when (ct.IsCancellationRequested)` dei worker **non intercettano** — uno stop pulito
+  durante una scansione sarebbe finito a log come *«Scansione fallita»* con tanto di Notification a
+  video: un'interruzione travestita da errore, cioè il contrario del §9. Il segnale viaggia ora su un
+  hosted service registrato **terzo**: i servizi si fermano in ordine inverso, quindi si accende
+  **dopo che ogni worker è stato fermato** e **prima** del drain di Kestrel — che è registrato per
+  primo e quindi drena per ultimo. È la fessura in cui viveva l'attesa da 270 s: i worker non ci sono
+  più, e ciò che tiene il servizio sono le richieste HTTP in volo.
+- **Anche i percorsi raw sono guardati** — Ricerca e lista Log costruiscono `SqliteCommand` a mano e
+  non passano dagli interceptor di EF. Il log store riceve il segnale **dal costruttore**: è
+  costruito prima che il container esista, perché è il sink attraverso cui logga anche l'avvio. E il
+  **ciclo del reader gira dentro il guard**, non solo `ExecuteReaderAsync`: quella chiamata esegue
+  **solo il primo** `sqlite3_step`, e su una scansione `LIKE` ogni riga successiva costa un altro
+  pezzo di tabella.
+
+**Verifica.** xUnit **807 verdi** (+11 su 796), build backend pulita (warnings-as-errors). Frontend
+non toccato. **RED dimostrato quattro volte**, e l'unità non è il millisecondo ma le **righe
+visitate** (`Files` ombreggiata da una view che porta una UDF, la tecnica di 11e/14a — con
+un'aggiunta: **è la UDF stessa a cancellare**, così l'annullamento cade *dentro* uno statement in
+esecuzione e non quando il thread pool si degna, che è la differenza fra provare una cosa e sperarla):
+- guard tolto → una ricerca annullata percorre **400 000 righe invece di 1 000** (lo statement di
+  conteggio arriva in fondo e solo allora il controllo pre-esecuzione di ADO.NET si accorge del
+  token), e una lettura EF **400 000 invece di 1 000**;
+- allow-list tolta → il batch `SaveChanges` **viene guardato**;
+- segnale rimesso su `ApplicationStopping` → la sonda che sta per i worker lo trova **già acceso**.
+
+I controlli restano verdi in tutti e quattro i casi: una scrittura annullata a riga 1 000 di 200 000
+**inserisce comunque tutte le righe**, una lettura in transazione **cammina tutte** le 200 000, una
+query mai annullata dà **le stesse righe** per 50 volte di fila, e il guard costa **104 B per
+comando** (0 quando il token non è annullabile).
+
+**Sul ferro, su una copia del catalogo reale** (742 033 file, 731 MB — mai il database del servizio),
+attraverso l'API, con **150 letture pesanti concorrenti** (`a` su path più un filtro di estensione
+che non combacia: l'insieme dei match va percorso tutto). «Prima» è il **Host costruito da `9ce3691`**
+in un worktree separato, stessa macchina, stessa copia, stesso script.
+
+| | prima | dopo |
+|---|---|---|
+| CPU mentre serve | +55,2 s in 5 s | +48,7 s in 5 s |
+| **CPU dopo che il client si è sganciato** | **+19,1 s in 20,0 s** | **+1,6 s in 20,0 s** |
+| stop con 150 letture in volo | 7,1 s | 7,1 s |
+
+La prima riga dice che il carico era lo stesso; la seconda è il difetto e la sua chiusura — circa
+**un core** che continuava a girare per nessuno, contro nulla. È la stessa firma dei +147 s in 119 s
+dello step 13.
+
+**Sul tempo di stop va detta la verità intera**: nella coppia sopra vale **7,1 s in entrambi i
+casi**, perché su una macchina a riposo quelle 150 letture finiscono comunque prima che il drain le
+aspetti. Il numero grosso si è visto una volta sola e **non in coppia**: sulla stessa macchina in
+stato degradato (quello documentato dal 12b, creazione processi a decine di secondi) il build
+**pre-14b** ha impiegato **109,5 s** dal segnale, contro i **~1,7 s** del build nuovo in una prova a
+6 concorrenti. Vale come indizio, non come misura appaiata, ed è scritto qui invece di essere
+presentato come tale. Ciò che è **provato** è la garanzia sottostante: il segnale dell'host raggiunge
+uno statement in corso (1 000 righe su 100 000, attraverso il grafo DI vero) e si accende **solo dopo
+che i worker sono fermi**.
+
+**Limiti noti e accettati:**
+- **`TestServer` non trattiene l'host sulle richieste in volo** come fa Kestrel, quindi nessun test
+  in-process può riprodurre onestamente l'attesa da 270 s. I test provano il meccanismo e l'ordine;
+  il cronometro sta sul ferro.
+- **Per le query EF il guard copre il primo `sqlite3_step`**, non l'intero reader: fra una riga e
+  l'altra il token è già onorato da ADO.NET, e una singola riga molto costosa (un `ORDER BY` che
+  materializza) è coperta perché quel lavoro sta tutto nel primo step. I due percorsi raw sono invece
+  guardati per l'intero ciclo.
+- **`sc stop` sul servizio installato non è stato rieseguito**: distribuire il nuovo build sul
+  catalogo reale resta una decisione dell'utente (voce aperta da 14a). La misura è su una copia, con
+  l'Host in console e un `CTRL_BREAK` — che passa dalla **stessa** sequenza di stop del generic host.
+  *(Nota operativa costata un'ora: `CTRL_C` non arriva affatto se lo si manda da una shell il cui
+  gruppo di processi ha il Ctrl+C disabilitato, e fa sembrare bloccato uno spegnimento che nessuno
+  ha mai chiesto.)*
+- **Nessuna migration, nessuna colonna nuova**: questo giro non tocca lo schema.
+- **Harness sul ferro non rieseguito** in questo giro: nessuno di questi fix cambia il comportamento
+  su file veri, e il task non lo chiedeva.
+- **Un rosso isolato e non riprodotto** su una passata piena (`SqliteConnectionPoolScopeTests`, il
+  probe temporale che 11i documenta come l'unico test che possa cadere per lentezza): verde in
+  isolamento e verde nelle passate successive, 807/807.
 
 ### Fatto nello step 14a (2026-08-24, commit `df2ec7c`…`986bbf6`)
 **Il filtro della Ricerca costa quanto il risultato, non quanto l'insieme dei match.** Chiude il
@@ -985,8 +1096,8 @@ Nota di igiene: i **7,56 s** su 2 002 file del collaudo del 2026-08-21 **non son
   Un avvio fallito con quella firma va letto come «macchina in ginocchio», non come servizio rotto.
 
 **Cosa il soak lascia come lavoro successivo**, in ordine di gravità: ~~(1) il filtro per categoria
-della Ricerca~~ *(chiuso allo step 14a)*; (2) l'annullabilità delle query lunghe, che oggi trasforma
-un guasto di prestazioni in uno di shutdown; (3) i due endpoint di Volumi oltre il secondo; (4) le
+della Ricerca~~ *(chiuso allo step 14a)*; ~~(2) l'annullabilità delle query lunghe, che oggi trasforma
+un guasto di prestazioni in uno di shutdown~~ *(chiusa allo step 14b)*; (3) i due endpoint di Volumi oltre il secondo; (4) le
 dimensioni dall'MFT, senza le quali il motore USN non ha un motivo per esistere; (5) la colonna con
 l'id del giornale, senza la quale il worker incrementale non si può nemmeno cominciare.
 
