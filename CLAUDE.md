@@ -452,15 +452,25 @@ UI): `Id` · `TimestampUtc` · `Severity` (Info|Warning|Error) · `Source` ·
 
 - **Paging/sort/filtro lato server ovunque** (milioni di righe). Pattern condiviso
   `PagedRequest` / `PagedResult<T>` (skip/take o cursore, `sortBy`).
+  **Un'eccezione nota, non chiusa**: la lista delle **sottocartelle** del Catalogo
+  non è paginata (`CatalogChildrenDto`). Chiuderla è un cambio di contratto + UI,
+  quindi una decisione di prodotto — vedi la roadmap.
 - **Endpoint preview/dry-run**: `POST /operations/preview` esegue la logica del
   ledger e ritorna la fattibilità **senza creare il job** (riusa il motore
   dell'enqueue). Serve alla UI per dire "ci sta / non ci sta / stima offline"
   prima di confermare.
-- DTO con **freschezza del dato**: `lastSeenUtc`, `isStale`/`dataIsLive`,
-  `estimateIsLive` dove i dati provengono da un volume offline.
+- DTO con **freschezza del dato**: `lastSeenUtc`, `dataIsLive`, `estimateIsLive`
+  dove i dati provengono da un volume offline. **Un flag solo, non due**:
+  `isStale` era la negazione letterale di `dataIsLive` e non lo leggeva nessuno —
+  tolto allo step 11f (K13). `estimateIsLive` significa «questo numero l'ha
+  risposto il **dispositivo** adesso», non «il catalogo crede il volume online»:
+  la differenza è di 11b ed è il punto di quel giro.
 - Fattibilità come **oggetto**, non booleano:
   `{ requiredBytes, reservedBytes, availableEstimateBytes, deficitBytes,
-  estimateIsLive, blockingVolumeId }`.
+  estimateIsLive, blockingVolumeId, feasible, marginBytes }`. `marginBytes` è
+  separato da `requiredBytes` di proposito (11b): il richiesto resta la dimensione
+  onesta dell'operazione, e il deficit — che il margine lo **contiene** — si può
+  spiegare a video invece di sembrare un difetto dell'app.
 - Navigazione catalogo = **albero lazy** (figli on-demand), distinta dalla ricerca.
 
 ### SignalR hub — messaggi tipizzati
@@ -484,15 +494,21 @@ serializzati **come stringhe**, date **UTC**. Il contratto sta in `Contracts/Rea
 ### Struttura (standalone-first)
 ```
 src/app/
-├── core/            // servizi singleton, interceptor, auth token, signalr client
-├── shared/          // componenti riutilizzabili, direttive, pipe
-├── styles/          // _tokens.scss, _mixins.scss, _utilities.scss
+├── core/            // api, config, http (interceptor + traduzione errori), logging,
+│                    // models, realtime (client SignalR + bridge), toast
+├── shared/          // componenti riutilizzabili, pipe, date, selection, validation
+├── styles/          // _tokens.scss, _mixins.scss, _utilities.scss,
+│                    // _components.scss (.ft-*), _data-views.scss
 └── features/        // feature lazy-loaded per dominio
     ├── dashboard/
     ├── volumes/
+    ├── setup/
     ├── catalog/
     ├── search/
-    └── queue/
+    ├── queue/
+    ├── logs/
+    ├── notifications/   // solo store (la campanella vive in shared/components)
+    └── scans/           // solo store (l'indicatore vive nella shell)
 ```
 - **Feature lazy-loaded** per dominio (route `loadComponent`/`loadChildren`).
   NIENTE NgModule.
@@ -507,23 +523,36 @@ src/app/
 - `_mixins.scss` — `@mixin panel`, `@mixin pill($color)`, `@mixin flex-center`…
 - `_utilities.scss` — classi flex riutilizzabili: `.flex`, `.flex-col`,
   `.items-center`, `.justify-between`, `.gap-2/3/4`, spacing.
-- Classi componente condivise: `.ft-panel`, `.ft-btn`, `.ft-pill`, `.ft-card`.
+- `_components.scss` — le classi condivise vere: `.ft-btn` (+ `--primary`,
+  `--ghost`), `.ft-modal*` (la shell modale estratta da 11d/11f), `.ft-skel`
+  (skeleton), `.ft-table` (+ `--kv`), `.ft-h`, `.ft-sub`, `.ft-stale`, `.ft-rise`.
+  **`ft-panel`, `ft-pill` e `ft-card` non sono classi**: sono componenti Angular
+  in `shared/components/`, e si usano come elementi (`<ft-panel>`). Il mixin
+  `panel`/`pill` in `_mixins.scss` è ciò che li veste.
 - **Layout in flexbox**. Liste enormi (Catalogo/Ricerca) → **CDK Virtual Scroll**.
 - Tipografia: IBM Plex Sans + IBM Plex Mono (per path, GUID, valori tecnici).
 - **Tema dark**. Vedi mockup di riferimento (`filetracert-mockup.html`).
 - ⚠️ **Usare la skill `impeccable` per la realizzazione del frontend.**
 
-### Schermate (6 + 1 fase 2)
+### Schermate (7 in barra + 1 fase 2)
+Sette route in `app.routes.ts`, tutte raggiungibili dalla barra di navigazione.
 1. **Dashboard** — card riassuntive + tabella volumi con stato live/stale.
 2. **Volumi** — dettaglio per volume (GUID, serial, FS, disco fisico, cartelle,
    filtri, indice/USN), azioni (ri-scansiona, modifica cartelle/filtri).
-3. **Catalogo** — browser ad albero lazy che **funziona offline**; selezione
+3. **Setup** — cartelle monitorate (albero del filesystem) e filtro dei tipi,
+   globale o per singolo root. È da qui che si allarga o si restringe il
+   perimetro, quindi è la schermata che innesca le riconciliazioni di 11g/11h.
+4. **Catalogo** — browser ad albero lazy che **funziona offline**; selezione
    multipla → accoda operazione; badge di stato proiettato.
-4. **Ricerca** — FTS5 sul nome proiettato + filtri (categoria, dimensione, data,
-   volume, solo-online); risultati con volume e stato.
-5. **Coda** — tabella job con stato, progress, colonna fattibilità (delta
+5. **Ricerca** — FTS5 sul nome proiettato + filtri (categoria, data, volume,
+   solo-online); risultati con volume e stato. **La dimensione non ha un
+   controllo**: `SizeBytesMin/Max` esistono nell'API e nello store, non a video —
+   vedi la roadmap.
+6. **Coda** — tabella job con stato, progress, colonna fattibilità (delta
    mancante, volume in attesa).
-6. **Regole** — fase 2.
+7. **Log** — lista del DB log dedicato con filtri (livello, categoria, ricerca
+   testuale) e cambio a caldo del `MinimumLogLevel`.
+8. **Regole** — fase 2.
 
 ---
 
