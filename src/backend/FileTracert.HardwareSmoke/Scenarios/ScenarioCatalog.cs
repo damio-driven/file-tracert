@@ -1,4 +1,4 @@
-namespace FileTracert.HardwareSmoke.Scenarios;
+﻿namespace FileTracert.HardwareSmoke.Scenarios;
 
 /// <summary>The scenarios the harness knows about, and the config-driven selection over them.</summary>
 public static class ScenarioCatalog
@@ -25,6 +25,7 @@ public static class ScenarioCatalog
         new JobDependenciesScenario(),
         new RescanPreservesOverlayScenario(),
         new ExclusionVsAbsenceScenario(),
+        new UsnIncrementalSyncScenario(),
         new IndexUpdateFailOnceScenario(),
         new PhantomReservationScenario(),
         new InsufficientSpaceScenario(),
