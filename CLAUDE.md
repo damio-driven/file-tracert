@@ -654,12 +654,93 @@ Cosa resta aperto, e **non è più MVP** — sono debiti datati e roadmap di fas
    ~~il **filtro per categoria** della Ricerca costa come l'insieme dei match e non come il
    risultato~~ **chiuso allo step 14a**; ~~una **query lunga non si annulla**,
    quindi tiene lo shutdown oltre lo `ShutdownTimeout`~~ **chiusa allo step 14b**;
-   **lista e dettaglio Volumi** stanno oltre il secondo; il motore **USN non ha le dimensioni dei file** e le ricompra con una `stat` per file,
+   ~~**lista e dettaglio Volumi** stanno oltre il secondo~~ **chiusa allo step 14c**; il motore **USN non ha le dimensioni dei file** e le ricompra con una `stat` per file,
    che è il motivo per cui non batte l'enumerazione; **manca l'id del giornale** in `Volumes`, e
    senza quello il worker incrementale non è scrivibile.
 5. **Il percorso incrementale USN non esiste**: `ReadChanges` è implementato e testato, ma nessun
    consumatore lo chiama e il `UsnSyncWorker` del §3 non è mai stato scritto. Ogni scansione è piena.
 6. La **fase 2** del §11, nell'ordine che l'utente deciderà.
+
+### Fatto nello step 14c (2026-08-25, commit `11a80ae`)
+**Le due schermate Volumi stanno sotto il decimo di secondo, non sotto il secondo.** Chiude la voce
+n° 3 dello step 13. Nessuna riga di ciò che le schermate mostrano è cambiata: è cambiato **come** la
+domanda arriva al database.
+
+- **La diagnosi è stata letta, non ipotizzata.** `EXPLAIN QUERY PLAN` sullo statement che il prodotto
+  emette davvero diceva `SCAN f USING INDEX IX_Files_VolumeId_DirectoryId` — cioè: percorri l'indice
+  per volume e poi **risali alla riga di tabella di ogni file del catalogo** per leggere due
+  booleani. È la **stessa forma** che lo step 11e aveva trovato un piano più sotto, sui contatori del
+  Catalogo, e si misura con lo stesso attrezzo: su otto volumi seminati, **176 000 visite di riga per
+  produrre otto numeri**. Il sospetto del task («conteggi ripetuti riga per riga, 30 passate») era
+  invece **sbagliato**: la lista faceva già *una* query raggruppata, senza N+1. Il difetto non era il
+  numero di query, era che nessuna delle due restava dentro l'indice.
+- **Il fix è un indice covering**: `(VolumeId, IsIncluded, IsPresent, SizeBytes)`. La lista diventa
+  `SCAN … USING COVERING INDEX` con il raggruppamento soddisfatto dall'**ordine** dell'indice
+  (niente temp B-tree), il dettaglio una seek sullo stesso indice con la `SUM` letta da lì.
+  `SizeBytes` è l'ultima colonna proprio perché il totale in byte del dettaglio non debba uscirne.
+- **È un'AGGIUNTA, non un allargamento**, al contrario di 11e — e il motivo sta scritto accanto:
+  il merge della scansione risolve una riga in staging con
+  `VolumeId = ? AND DirectoryId = ? AND Name = ?` **una volta per file** di ogni lotto, quindi
+  `DirectoryId` deve restare la seconda colonna dell'indice esistente o un re-scan trasforma ognuna
+  di quelle domande in una camminata dell'intero volume. Si passa da 7 a 8 B-tree per riga inserita,
+  e il prezzo è stato **misurato** (sotto).
+- **L'aggregato della lista esce dal controller** e va in `Business/Dashboard/VolumeFileCounts`,
+  accanto a `CatalogTotals` e `VolumeTotals` a cui somigliava già: una query scritta inline in un
+  controller si può misurare **solo** con un test che ne tiene una propria copia, il che dimostra che
+  la copia è pianificata bene — non il prodotto (l'argomento di 14a).
+
+**Verifica.** xUnit **812 verdi** (+5), build backend pulita (warnings-as-errors). Frontend non
+toccato. **I test asseriscono il PIANO, non i millisecondi**, e deve essere il piano: il contatore di
+righe visitate di 11e/14a vive in una **view** sopra `Files`, e una view **forza** proprio l'accesso
+alla tabella la cui assenza è il punto. **RED con l'indice tolto**: entrambi i piani ricadono su
+`IX_Files_VolumeId_DirectoryId` e i due test cadono, mentre i tre di equivalenza restano verdi.
+L'equivalenza sta accanto al costo: gli stessi contatori, nei casi che 11h ha reso distinti — un file
+**escluso** e uno **assente** escono dal conteggio per porte diverse, e un volume senza nulla di
+indicizzato mostra comunque **zero** invece di sparire dall'elenco.
+
+**Sul ferro, su una copia del catalogo reale** (742 033 file, 22 volumi; il più grande ne ha 739 421),
+attraverso l'API, mediana di 5 a caldo. «Prima» è il Host costruito da `6a8fb4e` in un worktree
+separato, **sulla stessa copia**, misurato **per primo** perché è la migration di questo giro a
+creare l'indice.
+
+| endpoint | step 13 | prima (oggi) | dopo |
+|---|---|---|---|
+| `GET /api/dashboard` | 373 ms | 252 ms | **106 ms** |
+| **`GET /api/volumes`** | **1 571 ms** | 1 163 ms | **37 ms** |
+| **`GET /api/volumes/{id}`** | **1 768 ms** | 1 246 ms | **139 ms** |
+
+Entrambi sotto i 300 ms chiesti dal task, con un margine largo. I numeri di oggi sono più bassi di
+quelli dello step 13 sulle stesse query perché quelli furono presi su un servizio sotto carico a
+cache fredda: ciò che conta è la **colonna prima contro la colonna dopo**, prese di fila sulla stessa
+copia. La **Dashboard migliora senza essere stata toccata** — aggrega la stessa tabella con lo stesso
+filtro, quindi eredita l'indice.
+
+**Quanto costa l'indice, misurato invece che affermato.** *Costruirlo*: sul catalogo vero non è
+separabile dal rumore di avvio — il build nuovo su una copia vergine serve in **2,7 s** contro i
+**3,8 s** del build precedente che la migration non ce l'ha. *Tenerlo aggiornato*: A/B con l'harness
+sul ferro (`D:\Collaudo\A`, 2 002 file, tre passate per build, alternate) — primo scan **1,33–1,67 s**
+prima e **1,24–1,52 s** dopo, re-scan **0,80–1,13 s** prima e **0,81–0,93 s** dopo: nessuna
+differenza attribuibile. *Spazio*: il file del database resta **731 619 328 byte** identico, perché
+l'indice riusa le pagine libere. Harness completo sul ferro (`D:\Collaudo\A` ↔ `C:\Collaudo\B`):
+**47 scenari, 47 PASS, 0 FAIL**; `appsettings.json` dell'harness rimesso byte-identico
+(sha256 `653f5990…` verificato).
+
+**Limiti noti e accettati:**
+- **La misura dello scan è su 2 002 file**, tre ordini di grandezza sotto il volume in cui un ottavo
+  B-tree per riga si vedrebbe. È la stessa avvertenza che 11e scrisse per i propri indici, e vale
+  identica: quel numero dice «non c'è una regressione grossolana», non «costa zero».
+- **Il conteggio delle cartelle del dettaglio non è coperto.** `Directories` filtra
+  `IsMaterialized`, `IsPresent` e `PendingState`, e allargare `(VolumeId, ParentId)` per coprirlo
+  vorrebbe dire portare `PendingState` — una **stringa** — dentro la chiave: è la stessa decisione
+  che 11e prese e lasciò scritta. Su 114 132 directory il residuo è dentro i 139 ms, quindi non è
+  stato pagato quel prezzo per un numero che è già sotto obiettivo.
+- **`USE TEMP B-TREE FOR GROUP BY` resta nel piano del dettaglio**: è il `GroupBy(_ => 1)` di
+  `CatalogTotals`, cioè **un solo gruppo**. Toglierlo cambierebbe l'idioma condiviso di §«un
+  aggregato per tabella» per guadagnare una riga di temporaneo.
+- **Nessun `ANALYZE`**, come il task vincola: tutte le misure valgono per un database senza
+  statistiche, che è quello che l'applicazione produce.
+- **Il servizio installato non è stato aggiornato**: la misura è su una copia, e distribuire il nuovo
+  build sul catalogo reale resta una decisione dell'utente (voce aperta da 14a).
 
 ### Fatto nello step 14b (2026-08-25, commit `dec0f21`…`d7a60ee`)
 **Una lettura annullata smette di lavorare, invece di smettere soltanto di essere attesa.** Chiude la
@@ -1107,7 +1188,7 @@ Nota di igiene: i **7,56 s** su 2 002 file del collaudo del 2026-08-21 **non son
 
 **Cosa il soak lascia come lavoro successivo**, in ordine di gravità: ~~(1) il filtro per categoria
 della Ricerca~~ *(chiuso allo step 14a)*; ~~(2) l'annullabilità delle query lunghe, che oggi trasforma
-un guasto di prestazioni in uno di shutdown~~ *(chiusa allo step 14b)*; (3) i due endpoint di Volumi oltre il secondo; (4) le
+un guasto di prestazioni in uno di shutdown~~ *(chiusa allo step 14b)*; ~~(3) i due endpoint di Volumi oltre il secondo~~ *(chiusa allo step 14c)*; (4) le
 dimensioni dall'MFT, senza le quali il motore USN non ha un motivo per esistere; (5) la colonna con
 l'id del giornale, senza la quale il worker incrementale non si può nemmeno cominciare.
 
