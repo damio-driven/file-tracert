@@ -55,7 +55,28 @@ public sealed class FileEntryConfiguration : IEntityTypeConfiguration<FileEntry>
         builder.HasIndex(x => new { x.DirectoryId, x.PendingDirectoryId, x.IsIncluded, x.IsPresent });
         builder.HasIndex(x => new { x.PendingDirectoryId, x.IsIncluded, x.IsPresent });
 
+        // Kept as-is, and deliberately NOT widened the way the two above were: the scan merge
+        // resolves a staged row by `VolumeId = ? AND DirectoryId = ? AND Name = ?` once per file in
+        // a batch, so DirectoryId has to stay the second column or a re-scan turns each of those
+        // into a walk of the whole volume.
         builder.HasIndex(x => new { x.VolumeId, x.DirectoryId });
+
+        // 14c — the per-volume aggregate, covering. Both Volumes screens ask the same question of
+        // this table: "how many included, still-present files does volume V hold" (the list, for
+        // every volume at once) and "and how many bytes" (the detail, for one). On the real
+        // 742 033-file catalog those cost 1 571 ms and 1 768 ms against 373 ms for a Dashboard that
+        // aggregates the SAME table — the difference was never the data.
+        //
+        // What it was: the list scanned IX_Files_VolumeId_DirectoryId and then fetched the table
+        // row of every file in the catalog to read two booleans, exactly the shape step 11e found on
+        // the Catalog counters one level down. Measured on eight seeded volumes: 176 000 row visits
+        // for eight numbers.
+        //
+        // This one is an ADDITION, not a widening, for the reason written above — which means it is
+        // paid on every row a scan inserts, and that price was measured, not assumed (see the 14c
+        // paragraph in CLAUDE.md). SizeBytes is the last column so the detail's SUM never leaves the
+        // index either; the two screens then differ only in whether VolumeId is a seek or a scan.
+        builder.HasIndex(x => new { x.VolumeId, x.IsIncluded, x.IsPresent, x.SizeBytes });
         builder.HasIndex(x => x.Extension);
         builder.HasIndex(x => x.Category);
         builder.HasIndex(x => x.SizeBytes);

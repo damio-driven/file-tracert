@@ -33,11 +33,8 @@ public sealed class VolumesController : ControllerBase
     [HttpGet]
     public async Task<ActionResult<IReadOnlyList<VolumeDto>>> Get(CancellationToken ct)
     {
-        var counts = await _db.Files
-            .Where(f => f.IsIncluded && f.IsPresent)
-            .GroupBy(f => f.VolumeId)
-            .Select(g => new { VolumeId = g.Key, Count = g.Count() })
-            .ToDictionaryAsync(x => x.VolumeId, x => x.Count, ct);
+        var counts = await VolumeFileCounts.ComputeAsync(
+            _db.Files.Where(f => f.IsIncluded && f.IsPresent), ct);
 
         var volumes = await _db.Volumes
             .AsNoTracking()
