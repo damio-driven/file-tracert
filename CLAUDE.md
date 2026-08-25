@@ -661,7 +661,7 @@ Cosa resta aperto, e **non è più MVP** — sono debiti datati e roadmap di fas
    consumatore lo chiama e il `UsnSyncWorker` del §3 non è mai stato scritto. Ogni scansione è piena.
 6. La **fase 2** del §11, nell'ordine che l'utente deciderà.
 
-### Fatto nello step 14c (2026-08-25, commit `11a80ae`)
+### Fatto nello step 14c (2026-08-25, commit `11a80ae`…`13f7c2d`)
 **Le due schermate Volumi stanno sotto il decimo di secondo, non sotto il secondo.** Chiude la voce
 n° 3 dello step 13. Nessuna riga di ciò che le schermate mostrano è cambiata: è cambiato **come** la
 domanda arriva al database.
@@ -708,7 +708,7 @@ domanda arriva al database.
   controller si può misurare **solo** con un test che ne tiene una propria copia, il che dimostra che
   la copia è pianificata bene — non il prodotto (l'argomento di 14a).
 
-**Verifica.** xUnit **812 verdi** (+5), build backend pulita (warnings-as-errors). Frontend non
+**Verifica.** xUnit **813 verdi** (+6), build backend pulita (warnings-as-errors). Frontend non
 toccato. **I test asseriscono il PIANO, non i millisecondi**, e deve essere il piano: il contatore di
 righe visitate di 11e/14a vive in una **view** sopra `Files`, e una view **forza** proprio l'accesso
 alla tabella la cui assenza è il punto. **RED con l'indice tolto**: entrambi i piani ricadono su
