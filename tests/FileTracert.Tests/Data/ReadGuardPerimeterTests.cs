@@ -5,6 +5,7 @@ using FileTracert.Data.Entities;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Xunit.Abstractions;
 
 namespace FileTracert.Tests.Data;
@@ -171,6 +172,50 @@ public sealed class ReadGuardPerimeterTests : IAsyncLifetime
         view.Visits.Should().BeGreaterThan(full / 2,
             "and the statement must actually have run to the end — an assertion on the exception " +
             "alone would also pass if it had never started");
+    }
+
+    /// <summary>
+    /// The perimeter is an allow-list on <see cref="CommandSource"/>,
+    /// and this is why it cannot be inferred from the execution path instead.
+    ///
+    /// <para>EF sends a <c>SaveChanges</c> batch down the SAME reader path a query uses — it has to
+    /// read back <c>changes()</c> / <c>RETURNING</c> — and under the default
+    /// <c>AutoTransactionBehavior.WhenNeeded</c> a batch of one command opens no transaction at all.
+    /// Both facts are asserted here rather than assumed, because together they describe the queue's
+    /// own checkpoint write: <c>JobExecutionEngine</c> saves a single item row and passes a
+    /// cancellable token. Guarding that would let a shutdown interrupt a checkpoint, which is exactly
+    /// what the task forbids.</para>
+    /// </summary>
+    [Fact]
+    public async Task A_SaveChanges_batch_travels_the_reader_path_untransacted_and_is_not_guarded()
+    {
+        var observer = new GuardedCommandObserver();
+        await using var ctx = _harness.CreateContext(observer);
+
+        var volume = await ctx.Volumes.SingleAsync();
+
+        // A query first: the control. Same connection, same token shape, and it IS guarded.
+        using var cts = new CancellationTokenSource();
+        observer.Reset();
+        _ = await ctx.Volumes.Where(v => v.Id == volume.Id).ToListAsync(cts.Token);
+
+        observer.Seen.Should().ContainSingle().Which
+            .Should().Match<(CommandSource Source, bool Guarded, bool InTransaction)>(
+                x => x.Source == CommandSource.LinqQuery && x.Guarded);
+
+        // Now one modified entity, saved with a cancellable token, exactly as the engine checkpoints.
+        volume.Label = "checkpoint";
+        observer.Reset();
+        await ctx.SaveChangesAsync(cts.Token);
+
+        var save = observer.Seen.Should().ContainSingle().Which;
+        save.Source.Should().Be(CommandSource.SaveChanges,
+            "this is the premise: a write does travel the reader path");
+        save.InTransaction.Should().BeFalse(
+            "and a single-command batch opens no transaction, so 'has no DbTransaction' cannot be " +
+            "what keeps writes out");
+        save.Guarded.Should().BeFalse(
+            "the queue's checkpoint writes must stay outside this mechanism");
     }
 
     /// <summary>

@@ -41,6 +41,9 @@ public sealed class FileTracertAppFactory : WebApplicationFactory<global::Progra
     public IDeviceWatcher DeviceWatcher { get; set; } = new FakeDeviceWatcher();
     public Func<FileTracertDbContext, CancellationToken, Task>? Seed { get; set; }
 
+    /// <summary>Extra registrations for one test (e.g. a probe hosted service).</summary>
+    public Action<IServiceCollection>? ExtraServices { get; set; }
+
     public int VolumeSyncIntervalSeconds { get; set; } = 1;
     public int ScanPollIntervalSeconds { get; set; } = 1;
 
@@ -57,6 +60,28 @@ public sealed class FileTracertAppFactory : WebApplicationFactory<global::Progra
     public bool DisableDeviceWatcher { get; set; }
 
     public string Token => Services.GetRequiredService<IApiTokenAccessor>().Token!;
+
+    /// <summary>
+    /// The host itself, so a test can run its real STOP sequence. <c>Dispose</c> only disposes the
+    /// host (see step 11i), and nothing here calls <c>RunAsync</c>, so <c>StopApplication</c> has no
+    /// listener: a test about what happens while the host stops has to stop it by hand.
+    /// </summary>
+    public IHost RunningHost
+    {
+        get
+        {
+            _ = Services; // forces the host to be built
+            return _host ?? throw new InvalidOperationException("the host has not been created");
+        }
+    }
+
+    private IHost? _host;
+
+    protected override IHost CreateHost(IHostBuilder builder)
+    {
+        _host = base.CreateHost(builder);
+        return _host;
+    }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -101,6 +126,8 @@ public sealed class FileTracertAppFactory : WebApplicationFactory<global::Progra
             {
                 RemoveHostedService<DeviceWatcherWorker>(services);
             }
+
+            ExtraServices?.Invoke(services);
         });
     }
 

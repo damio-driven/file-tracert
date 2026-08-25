@@ -341,10 +341,16 @@ public sealed class FileSearchIndex : IFileSearchIndex
                 foreach (var (n, v) in filterParams) cmd.Parameters.AddWithValue(n, v);
                 cmd.Parameters.AddWithValue("$take", paged.Take);
                 cmd.Parameters.AddWithValue("$skip", paged.Skip);
-                await using var reader = await SqliteReadGuard.ExecuteAsync(
-                    cmd, ct, _shutdown.Token, _logger, c => cmd.ExecuteReaderAsync(c));
-                while (await reader.ReadAsync(ct))
-                    ids.Add(reader.GetInt32(0));
+                // The whole loop runs inside the guard, not just ExecuteReaderAsync: that call
+                // performs only the FIRST sqlite3_step, and every later Read() steps again. Between
+                // rows the token is honoured by ADO.NET itself; inside a step only the interrupt is.
+                await SqliteReadGuard.ExecuteAsync(cmd, ct, _shutdown.Token, _logger, async c =>
+                {
+                    await using var reader = await cmd.ExecuteReaderAsync(c);
+                    while (await reader.ReadAsync(c))
+                        ids.Add(reader.GetInt32(0));
+                    return 0;
+                });
             }
 
             return new PagedResult<int>(ids, total, paged.Skip, paged.Take);

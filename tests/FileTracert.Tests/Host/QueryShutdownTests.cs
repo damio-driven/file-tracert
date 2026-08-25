@@ -15,16 +15,17 @@ using Xunit.Abstractions;
 namespace FileTracert.Tests.Host;
 
 /// <summary>
-/// Step 14b, the wiring half: the token the read guard watches has to be the host's real
-/// <c>ApplicationStopping</c>, or the guarantee is a unit test about a class nobody connected.
+/// Step 14b, the wiring half: the token the read guard watches has to be the host's own stop
+/// signal, fired at the one moment that is right, or the guarantee is a unit test about a class
+/// nobody connected.
 ///
 /// <para>What step 13 saw on the installed service was an <c>sc stop</c> stuck in
 /// <c>StopPending</c> for over 270 s against the 30 s <c>ShutdownTimeout</c> of §3, held by a
-/// search that could not be stopped. <c>TestServer</c> does not hold its host on in-flight
-/// requests the way Kestrel does, so no in-process test can reproduce that wait honestly; what is
-/// provable here — and what the wait was made of — is that the host's own stop signal reaches a
-/// running statement and stops it. The stopwatch half lives on the hardware, in the closing
-/// measurement of this step.</para>
+/// search that could not be stopped. <c>TestServer</c> does not hold its host on in-flight requests
+/// the way Kestrel does, so no in-process test can reproduce that wait honestly; what is provable
+/// here — and what the wait was made of — is that the host's stop signal reaches a running
+/// statement, and that it does so only once every worker has already been stopped. The stopwatch
+/// half lives on the hardware, in the closing measurement of this step.</para>
 /// </summary>
 public sealed class QueryShutdownTests : IAsyncLifetime
 {
@@ -104,15 +105,17 @@ public sealed class QueryShutdownTests : IAsyncLifetime
             null, false, SearchSort.Relevance, false, 0, 50);
 
     [Fact]
-    public async Task The_hosts_stopping_signal_reaches_a_running_read()
+    public async Task The_hosts_stop_signal_reaches_a_running_read()
     {
         _ = _factory.Token; // starts the host: migrations, seed, FTS backfill.
 
-        var lifetime = _factory.Services.GetRequiredService<IHostApplicationLifetime>();
+        var source = _factory.Services.GetRequiredService<DatabaseShutdownSource>();
         var signal = _factory.Services.GetRequiredService<DatabaseShutdownSignal>();
 
-        signal.Token.Should().Be(lifetime.ApplicationStopping,
-            "the Host must replace the do-nothing signal AddDataServices binds by default");
+        signal.Should().BeSameAs(source.Signal,
+            "the Host must hand the guard the signal it actually fires, not the do-nothing one " +
+            "AddDataServices binds by default");
+        signal.Token.IsCancellationRequested.Should().BeFalse();
 
         using var scope = _factory.Services.CreateScope();
         var ctx = scope.ServiceProvider.GetRequiredService<FileTracertDbContext>();
@@ -130,7 +133,7 @@ public sealed class QueryShutdownTests : IAsyncLifetime
         // A request's own token, alive and never cancelled: what stops this read is the host.
         using var request = new CancellationTokenSource();
         await using var view = await FilesShadowView.InstallAsync(
-            ctx, row => { if (row == CancelAtRow) lifetime.StopApplication(); });
+            ctx, row => { if (row == CancelAtRow) source.Stop(); });
 
         var act = async () => await index.SearchAsync(LongQuery(), request.Token);
         var thrown = (await act.Should().ThrowAsync<OperationCanceledException>()).Which;
@@ -140,8 +143,58 @@ public sealed class QueryShutdownTests : IAsyncLifetime
         thrown.InnerException.Should().BeOfType<SqliteException>()
             .Which.SqliteErrorCode.Should().Be(SQLitePCL.raw.SQLITE_INTERRUPT);
         view.Visits.Should().BeLessThan(full / 10,
-            "a read still stepping when the host starts stopping is what held the service past its "
+            "a read still stepping when the host stops is what held the service past its "
             + "ShutdownTimeout");
         request.IsCancellationRequested.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// WHEN it fires is half the design. <c>ApplicationStopping</c> is raised while every worker is
+    /// still running on a token that has not been cancelled yet, so a read interrupted there throws
+    /// an <see cref="OperationCanceledException"/> the workers' <c>when (ct.IsCancellationRequested)</c>
+    /// filters do not match — a clean stop during a scan would be logged as a failure and raise a
+    /// user-facing Notification. The signal therefore rides on a hosted service registered third, so
+    /// it runs after every worker has stopped.
+    ///
+    /// <para>The probe is registered last (test services come after the host's own), so it stops
+    /// FIRST — standing in for the workers. If it sees the signal already cancelled, the ordering is
+    /// wrong.</para>
+    /// </summary>
+    [Fact]
+    public async Task The_signal_fires_after_the_workers_have_stopped_not_before()
+    {
+        var probe = new StopOrderProbe();
+        _factory.ExtraServices = services => services.AddSingleton<IHostedService>(sp =>
+        {
+            probe.Signal = sp.GetRequiredService<DatabaseShutdownSignal>();
+            return probe;
+        });
+
+        var host = _factory.RunningHost;
+        var signal = _factory.Services.GetRequiredService<DatabaseShutdownSignal>();
+
+        await host.StopAsync(TimeSpan.FromSeconds(30));
+
+        probe.Stopped.Should().BeTrue("the probe has to have taken part in the stop sequence");
+        probe.SignalWasCancelled.Should().BeFalse(
+            "a worker still stopping must not have its reads interrupted underneath it");
+        signal.Token.IsCancellationRequested.Should().BeTrue(
+            "and by the end of the stop sequence the signal must have fired");
+    }
+
+    private sealed class StopOrderProbe : IHostedService
+    {
+        public DatabaseShutdownSignal? Signal { get; set; }
+        public bool Stopped { get; private set; }
+        public bool SignalWasCancelled { get; private set; }
+
+        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            Stopped = true;
+            SignalWasCancelled = Signal?.Token.IsCancellationRequested ?? false;
+            return Task.CompletedTask;
+        }
     }
 }

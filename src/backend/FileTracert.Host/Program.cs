@@ -36,20 +36,27 @@ var connectionString = DatabaseLocation.ConnectionString(databasePath);
 // is bootstrapped before anything writes; the console sink (added by the default
 // builder) stays active so early-startup logs are never lost. A runtime level
 // switch gates every provider so changing the level takes effect without a restart.
-var logStore = new SqliteLogStore(DatabaseLocation.ConnectionString(DatabaseLocation.ResolveLogs(databasePath)));
+// 14b — the read guard's "the process is going down" token. Built here, before anything that needs
+// it: the log store is constructed before the container exists and takes it as an argument. The
+// hosted service below is what fires it, and WHEN it fires is the whole point — see
+// ReadCancellationLifetime. Registered third, so it stops after every worker and before Kestrel's
+// request drain.
+var readCancellation = new DatabaseShutdownSource();
+builder.Services.AddSingleton(readCancellation);
+builder.Services.AddSingleton(readCancellation.Signal);
+
+var logStore = new SqliteLogStore(
+    DatabaseLocation.ConnectionString(DatabaseLocation.ResolveLogs(databasePath)),
+    readCancellation.Signal);
 logStore.EnsureSchema();
 var logProcessor = builder.AddSqliteLogging(
     logStore,
     new LogLevelSwitch(),
     TimeSpan.FromSeconds(options.LogDrainTimeoutSeconds));
 
+builder.Services.AddHostedService<ReadCancellationLifetime>();
+
 builder.Services.AddDataServices(connectionString);
-// 14b — reads stop when the host starts stopping. Replace, not Add: AddDataServices bound a signal
-// that never fires, for compositions with no host. Waiting for RequestAborted instead would be too
-// late by construction — Kestrel only aborts an in-flight request once the shutdown budget has
-// already been spent, and that budget is the thing §3 promises to respect.
-builder.Services.Replace(ServiceDescriptor.Singleton(sp =>
-    new DatabaseShutdownSignal(sp.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping)));
 builder.Services.AddPlatformServices();
 builder.Services.AddBusinessServices();
 

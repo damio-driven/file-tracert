@@ -20,8 +20,15 @@ public sealed class SqliteLogStore : ILogStore
 {
     private const string TimeFormat = "o";
     private readonly string _connectionString;
+    private readonly DatabaseShutdownSignal _shutdown;
 
-    public SqliteLogStore(string connectionString) => _connectionString = connectionString;
+    /// <param name="shutdown">14b — handed in rather than resolved: this store is constructed before
+    /// the container exists. Optional so a test can build it from a connection string alone.</param>
+    public SqliteLogStore(string connectionString, DatabaseShutdownSignal? shutdown = null)
+    {
+        _connectionString = connectionString;
+        _shutdown = shutdown ?? DatabaseShutdownSignal.None;
+    }
 
     public void EnsureSchema()
     {
@@ -90,10 +97,10 @@ public sealed class SqliteLogStore : ILogStore
     /// The one READ this store serves. 14b — both statements go through
     /// <see cref="SqliteReadGuard"/>: a <c>LIKE '%…%'</c> over a log database that step 13 found
     /// holding 500 000 rows is a full scan, i.e. exactly the shape that used to keep burning a core
-    /// after the screen that asked for it had gone away. No shutdown signal is threaded here: this
+    /// after the screen that asked for it had gone away. The shutdown signal reaches here too: the
     /// store is built before the container exists (it has to be — it is the sink everything logs
-    /// through, including startup), so it has none to link, and its only caller is an HTTP request
-    /// whose own token covers the observed failure. No logger either, for the obvious reason.
+    /// through, including startup), so the signal is handed to the constructor instead of resolved.
+    /// No logger, for the obvious reason: this store cannot log through itself.
     /// </summary>
     public async Task<PagedResult<LogEntryDto>> QueryAsync(LogQuery query, CancellationToken ct)
     {
@@ -105,7 +112,7 @@ public sealed class SqliteLogStore : ILogStore
         countCmd.CommandText = $"SELECT COUNT(*) FROM LogEntries{where};";
         AddParameters(countCmd, parameters);
         var total = Convert.ToInt32((long)(await SqliteReadGuard.ExecuteAsync(
-            countCmd, ct, default, null, c => countCmd.ExecuteScalarAsync(c)))!);
+            countCmd, ct, _shutdown.Token, null, c => countCmd.ExecuteScalarAsync(c)))!);
 
         await using var pageCmd = conn.CreateCommand();
         pageCmd.CommandText =
@@ -120,9 +127,12 @@ public sealed class SqliteLogStore : ILogStore
         pageCmd.Parameters.AddWithValue("$skip", query.Skip < 0 ? 0 : query.Skip);
 
         var items = new List<LogEntryDto>();
-        await using var reader = await SqliteReadGuard.ExecuteAsync(
-            pageCmd, ct, default, null, c => pageCmd.ExecuteReaderAsync(c));
-        while (await reader.ReadAsync(ct))
+        // The loop is inside the guard: ExecuteReaderAsync performs only the first step, and on a
+        // LIKE scan each of the remaining 49 costs a slice of the table.
+        await SqliteReadGuard.ExecuteAsync(pageCmd, ct, _shutdown.Token, null, async c =>
+        {
+        await using var reader = await pageCmd.ExecuteReaderAsync(c);
+        while (await reader.ReadAsync(c))
         {
             items.Add(new LogEntryDto(
                 Id: reader.GetInt64(0),
@@ -134,6 +144,8 @@ public sealed class SqliteLogStore : ILogStore
                 EventId: reader.IsDBNull(6) ? null : reader.GetInt32(6),
                 Scope: reader.IsDBNull(7) ? null : reader.GetString(7)));
         }
+            return 0;
+        });
 
         return new PagedResult<LogEntryDto>(items, total, query.Skip, query.Take);
     }

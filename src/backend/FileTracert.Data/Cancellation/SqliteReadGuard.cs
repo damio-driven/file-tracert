@@ -78,8 +78,7 @@ public static class SqliteReadGuard
         // cancelled never reaches this line and is left to finish.
         if (shutdownToken.IsCancellationRequested)
         {
-            throw new OperationCanceledException(
-                "The read was not started: the host is shutting down.", shutdownToken);
+            throw Refused(command, shutdownToken, logger);
         }
 
         var interrupter = new Interrupter(handle, logger);
@@ -90,6 +89,17 @@ public static class SqliteReadGuard
         using var onShutdown = shutdownToken.CanBeCanceled
             ? shutdownToken.Register(interrupter.Fire)
             : default;
+
+        // Re-asked AFTER both registrations: a shutdown that landed in between would have run the
+        // callback against an idle connection -- a no-op by SQLite's own contract -- and armed
+        // nothing, so the statement below would have run to the end with no way to stop it. The
+        // caller's token is re-asked with it for the same reason.
+        if (shutdownToken.IsCancellationRequested)
+        {
+            throw Refused(command, shutdownToken, logger);
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
 
         try
         {
@@ -105,6 +115,20 @@ public static class SqliteReadGuard
             throw new OperationCanceledException(
                 "The read was interrupted because it was cancelled.", ex, cancellationToken);
         }
+    }
+
+    /// <summary>
+    /// A read the host will not let start. Logged, because during a shutdown this is what every
+    /// guarded read hits and "the host refused N reads while stopping" must not be invisible (§9).
+    /// </summary>
+    private static OperationCanceledException Refused(
+        DbCommand command, CancellationToken shutdownToken, ILogger? logger)
+    {
+        logger?.LogInformation(
+            "SQLite read not started: the host is shutting down. {Sql}", command.CommandText);
+
+        return new OperationCanceledException(
+            "The read was not started: the host is shutting down.", shutdownToken);
     }
 
     /// <summary>
