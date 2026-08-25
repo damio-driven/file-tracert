@@ -661,7 +661,7 @@ Cosa resta aperto, e **non è più MVP** — sono debiti datati e roadmap di fas
    consumatore lo chiama e il `UsnSyncWorker` del §3 non è mai stato scritto. Ogni scansione è piena.
 6. La **fase 2** del §11, nell'ordine che l'utente deciderà.
 
-### Fatto nello step 14b (2026-08-25, commit `dec0f21`…`3007cb1`)
+### Fatto nello step 14b (2026-08-25, commit `dec0f21`…`d7a60ee`)
 **Una lettura annullata smette di lavorare, invece di smettere soltanto di essere attesa.** Chiude la
 voce n° 2 dello step 13: la conseguenza che il difetto di 14a aveva rivelato, cioè che **un guasto di
 prestazioni diventava un guasto di spegnimento**.
@@ -699,10 +699,18 @@ prestazioni diventava un guasto di spegnimento**.
   filtri `when (ct.IsCancellationRequested)` dei worker **non intercettano** — uno stop pulito
   durante una scansione sarebbe finito a log come *«Scansione fallita»* con tanto di Notification a
   video: un'interruzione travestita da errore, cioè il contrario del §9. Il segnale viaggia ora su un
-  hosted service registrato **terzo**: i servizi si fermano in ordine inverso, quindi si accende
-  **dopo che ogni worker è stato fermato** e **prima** del drain di Kestrel — che è registrato per
-  primo e quindi drena per ultimo. È la fessura in cui viveva l'attesa da 270 s: i worker non ci sono
-  più, e ciò che tiene il servizio sono le richieste HTTP in volo.
+  hosted service registrato **prima di ogni worker**: i servizi si fermano in ordine inverso, quindi
+  si accende **dopo che ogni worker è stato fermato**. È la fessura in cui viveva l'attesa da 270 s:
+  i worker non ci sono più, e ciò che tiene il servizio sono le richieste HTTP in volo.
+- **E l'ordine di stop è ora *dichiarato*, non ereditato** (`ServicesStopConcurrently = false`).
+  **Due** garanzie di questo host sono garanzie di ordine — il drain della coda di log per ultimo
+  (11c) e questo segnale — ed entrambe sono nulle, in silenzio, se i servizi si fermano in parallelo.
+  Il test lo ha dimostrato prima ancora del codice: la prima versione guardava una sonda fermarsi per
+  prima e perdeva quella corsa **circa una passata su tre**. Ora asserisce l'**invariante**
+  (registrato prima di ogni `BackgroundService`, stop sequenziale in ordine inverso) invece del
+  comportamento emergente. Nota per chi fosse tentato di tornare alla sonda: in un TestServer
+  ri-ospitato perfino `GenericWebHostService` finisce in una posizione di registrazione diversa da
+  quella di produzione, quindi l'ordine emergente **lì** non è l'ordine di produzione.
 - **Anche i percorsi raw sono guardati** — Ricerca e lista Log costruiscono `SqliteCommand` a mano e
   non passano dagli interceptor di EF. Il log store riceve il segnale **dal costruttore**: è
   costruito prima che il container esista, perché è il sink attraverso cui logga anche l'avvio. E il
@@ -768,9 +776,11 @@ che i worker sono fermi**.
 - **Nessuna migration, nessuna colonna nuova**: questo giro non tocca lo schema.
 - **Harness sul ferro non rieseguito** in questo giro: nessuno di questi fix cambia il comportamento
   su file veri, e il task non lo chiedeva.
-- **Un rosso isolato e non riprodotto** su una passata piena (`SqliteConnectionPoolScopeTests`, il
-  probe temporale che 11i documenta come l'unico test che possa cadere per lentezza): verde in
-  isolamento e verde nelle passate successive, 807/807.
+- **Due rossi isolati, entrambi pre-esistenti e su test temporali**, incontrati durante le passate
+  ripetute di questo giro: `SqliteConnectionPoolScopeTests` (il probe di 11i, l'unico test che la sua
+  nota dichiara possa cadere per lentezza) e `RootsBySpecificityTests.Resolving_a_million_items_allocates_nothing`
+  (il contatore di allocazioni di 11e, che sotto carico raccoglie anche allocazioni non sue). Verdi
+  in isolamento; nessuno dei due tocca il codice di questo giro.
 
 ### Fatto nello step 14a (2026-08-24, commit `df2ec7c`…`986bbf6`)
 **Il filtro della Ricerca costa quanto il risultato, non quanto l'insieme dei match.** Chiude il
