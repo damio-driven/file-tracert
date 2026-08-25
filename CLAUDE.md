@@ -703,66 +703,137 @@ rilievo è stato lasciato consapevolmente).
   terminale, per condizioni recuperabili (spazio, offline, collisione).
 
 ## Roadmap (ordine di lavoro)
-Stato: WP3 (perdita dati), WP1 (crash-safe), WP2 (offline gate), **fix UX date/UTC**
-(#12, #11, C31), **step 9a** (merge dello scan + transazioni corte), **step 9b**
-(proiezione: overlay scritto/letto/pulito), **step 9c** (dipendenze tra job + guard
-unificato, WP4 intero), **step 10a** (device watcher: il remount è un push, non un poll),
-**step 10b** (hub SignalR + messaggi tipizzati, lato server), **step 10c** (il frontend
-ascolta invece di pollare) — **fatti**. Gli **step 9 e 10 sono chiusi**.
-~~**Work package minori**~~ — **CHIUSI**: indice/ricerca (WP5, step 11a), spazio (WP6,
-step 11b), logging/shutdown (WP8, step 11c), frontend/UX (WP7, step 11d), efficienza
-(WP9, step 11e), cleanup e discrepanze di layering (WP10, step 11f). Le due discrepanze
-§3 sono chiuse **con codice e brief concordi**: `ScanPath` è stato **spostato** in
-`Contracts/Scanning`; `IBulkIndexWriter` **resta** in `Data/Indexing` e il brief è stato
-corretto (parla in entità EF: portarlo in `Contracts` ci trascinerebbe il modello).
-~~**La suite perde 1–2 test a caso sotto carico concorrente**~~ *(aperta da 11e, incontrata di
-nuovo da 11f e 11g)* — **chiusa allo step 11i**: era `SqliteConnection.ClearAllPools()` nei
-teardown, che è **per processo**, più una seconda corsa in `CatalogApiTests`. Vedi il paragrafo
-«Fatto nello step 11i».
-~~**Decisione di prodotto — `IsPresent=false` usato come «escluso dal filtro»**~~ *(posta
-allo step 11f, **decisa dall'utente il 2026-08-19**, implementata nello **step 11g**)*: vince
-l'opzione (b) — le esclusioni da filtro o da perimetro si marcano `IsIncluded=false`,
-`IsPresent` torna a significare soltanto «non c'è più sul disco». Vedi §6 e il paragrafo
-«Fatto nello step 11g».
-~~**`FilterReconciler` non sa perché una riga è esclusa**~~ *(aperta dalla review dello step 11g)* —
-**chiusa allo step 11h**, insieme alle due lacune collegate della stessa voce (l'FTS non
-risincronizzata dalla riconciliazione, e i contatori file/cartelle della pagina Volumi che
-descrivevano perimetri diversi). Una riga porta ora le **tre cause** di §6 e la riconciliazione
-disfa solo le due che può conoscere. Resta aperta la terza metà di quella voce: **`ExcludedPaths`
-non ha una riconciliazione propria** — togliere un segmento escluso dice onestamente `NeedsScan`
-(11g) e non riammette nulla senza scansione, il che è corretto ma non è una riconciliazione. Vedi
-il paragrafo «Fatto nello step 11h».
-~~**Step 12 — test UI end-to-end**~~ — **CHIUSO**: **12a** (infrastruttura Playwright, avvio/auth,
-Dashboard, Volumi, scansione) e **12b** (recinto della sandbox, Catalogo, Ricerca, accodamento con
-proiezione, Coda, realtime). **Con lo step 12 si chiude l'MVP**: tutte e dodici le voci del §10
-sono fatte. Vedi il paragrafo «Fatto nello step 12b».
-~~**Step 13 — servizio installato e catalogo vero**~~ — **CHIUSO**, e ha aperto lo **step 14**, che
-paga i difetti che il catalogo vero ha reso visibili: **14a** (il filtro per categoria della
-Ricerca), **14b** (annullabilità delle query lunghe), **14c** (le due schermate Volumi), **14d**
-(l'USN fatto sul serio: dimensioni misurate, id del giornale, worker incrementale) — **fatti**.
-Con **14d** il nodo tecnico n° 2 del §1 esiste davvero: `UsnSyncWorker` non è più una promessa
-del §3. Resta il solo **14e** (allineamento del brief), che questo paragrafo anticipa in parte.
 
-Cosa resta aperto, e **non è più MVP** — sono debiti datati e roadmap di fase 2:
-1. **La corsa dell'auto-selezione su Volumi** (difetto di prodotto trovato dal 12a e lasciato lì:
-   selezione automatica e clic dell'utente producono due richieste, vince l'ultima risposta che
-   atterra). Primo candidato per il giro che tocca quella schermata.
-2. **`ExcludedPaths` non ha una riconciliazione propria** (terza metà della voce chiusa da 11h).
-3. **Classificazione Cloud non affidabile** (§11, debito datato allo step 6.7).
-4. **Trovati dallo step 13, sul catalogo vero da 742 033 file** — nessuno è MVP, tutti sono reali:
-   ~~il **filtro per categoria** della Ricerca costa come l'insieme dei match e non come il
-   risultato~~ **chiuso allo step 14a**; ~~una **query lunga non si annulla**,
-   quindi tiene lo shutdown oltre lo `ShutdownTimeout`~~ **chiusa allo step 14b**;
-   ~~**lista e dettaglio Volumi** stanno oltre il secondo~~ **chiusa allo step 14c**;
-   ~~il motore **USN non ha le dimensioni dei file** e le ricompra con una `stat` per file, che è il
-   motivo per cui non batte l'enumerazione~~ — **la premessa era un artefatto di misura, chiusa
-   allo step 14d**: in A/B nello stesso processo l'USN pareggia il primo scan e vince il re-scan;
-   la `stat` costa 0,27–0,87 s su 52 233 file e non è il termine che decide. Resta vero, e scritto
-   in 14d, che l'USN **perde sui sotto-alberi** perché cammina tutta l'MFT ignorando il perimetro;
-   ~~**manca l'id del giornale** in `Volumes`~~ **chiuso allo step 14d**.
-5. ~~**Il percorso incrementale USN non esiste**~~ — **chiuso allo step 14d**: `UsnDeltaApplier` +
-   `UsnSyncWorker` esistono, girano, e convergono con la scansione completa.
-6. La **fase 2** del §11, nell'ordine che l'utente deciderà.
+**Dove siamo.** L'**MVP è chiuso** (tutte e dodici le voci del §10, con lo step 12).
+Il prodotto è **installato come servizio** e gira su un catalogo vero da 742 033 file
+(step 13). Gli step **14a–14e** hanno pagato i difetti che quel catalogo ha reso
+visibili. **Non c'è lavoro obbligatorio aperto**: tutto ciò che segue è debito datato,
+decisione di prodotto o fase 2.
+
+### A. Difetti veri, in ordine di fastidio *(nessuno è MVP)*
+1. **La corsa dell'auto-selezione su Volumi** — selezione automatica e clic dell'utente
+   producono due richieste, vince l'ultima risposta che atterra. Trovato dal 12a e
+   lasciato lì apposta. Primo candidato per il giro che tocca quella schermata.
+2. **`ExcludedPaths` non ha una riconciliazione propria** — togliere un segmento escluso
+   dice onestamente `NeedsScan` (11g) e non riammette nulla senza scansione: corretto,
+   ma non è una riconciliazione. Terza metà della voce chiusa da 11h.
+3. **Una cartella che *diventa* nascosta non ri-esclude il proprio sottoalbero già a
+   catalogo**, e il verso opposto non è nemmeno rilevabile dal delta (14d). Serve un
+   update ricorsivo dentro un tick di sync, oppure una scansione.
+4. **L'USN perde sui sotto-alberi** — `FSCTL_ENUM_USN_DATA` cammina tutta l'MFT
+   ignorando il perimetro (misurato in 14d). Scegliere il motore per rapporto fra
+   sotto-albero e MFT è il candidato ovvio.
+5. **Classificazione Cloud non affidabile** (§11, debito datato allo step 6.7). Coperto
+   dall'esclusione manuale, che funziona.
+6. **Un job ripreso da un checkpoint non ri-controlla lo spazio** — il ricontrollo hard
+   sta dentro il ramo `Pending` (11b). È l'ultimo buco nel «mai copiare sulla fiducia di
+   una stima».
+7. **C32** — la risposta di enqueue porta `SourceVolumeLabel`/`TargetVolumeLabel` null
+   (quel percorso non fa `Include` dei volumi). Innocuo: il picker la scarta.
+8. **P1** — hard link nello snapshot MFT: `nodes[frn]` è last-write-wins, quindi
+   sopravvive un solo path. Mai indagato.
+
+### B. Decisioni di prodotto, non difetti *(vedi «Cosa resta all'umano»)*
+- **Paging delle sottocartelle del Catalogo** — oggi illimitato (E5, §7). Chiuderlo
+  cambia `CatalogChildrenDto` e la schermata.
+- **Filtro dimensione in Ricerca** — `SizeBytesMin/Max` esistono nell'API e nello store,
+  non hanno un controllo a video (§8).
+- **Distribuire il build corrente sul catalogo reale** — il servizio installato è
+  indietro di quattro giri, e con esso il worker incrementale non ha mai girato sui
+  742 033 file veri.
+- **Il riavvio vero della macchina** non è mai stato fatto: è l'unica cosa che manca
+  alla prova dell'avvio automatico del servizio (step 13).
+
+### C. Igiene nota, tollerata
+- **`%TEMP%` accumula `ft-test-*-logs.db`**: `WebApplicationFactory.Dispose` non ferma
+  l'host, quindi il drain dei log non avviene (11i). Costa una `StopAsync` sul factory.
+- **`ScenarioEnvironment` pulisce ancora *tutti* i pool SQLite** — innocuo (processo
+  suo, single-threaded) ed è l'unica eccezione ammessa dal guard di 11i.
+- **`IndexUpdater` valuta `IsIncluded` col filtro di default** quando la destinazione di
+  un rename/move è fuori da ogni root attivo (11g): si ripara alla scansione successiva.
+- **Gate offline e guard di enqueue girano *prima* del refresh degli snapshot** (11a):
+  un job può restare parcheggiato per un'operazione eseguibile finché non si fa
+  «Riprova». Riordinarli tocca la macchina della coda.
+- **Gli E2E non girano da elevato** (per scelta, 12a), quindi non provano il percorso
+  USN; l'harness sì, dal collaudo del 2026-08-21.
+
+### D. Fase 2
+Il §11, nell'ordine che l'utente deciderà.
+
+### Storia — cosa è stato chiuso, e dove leggerlo
+I paragrafi «Fatto nello step N» qui sotto sono la memoria del progetto e restano.
+In ordine: **WP3** (perdita dati), **WP1** (crash-safe), **WP2** (offline gate),
+**giro date/UTC** (#12, #11, C31) · **9a** merge dello scan e transazioni corte ·
+**9b** proiezione · **9c** dipendenze fra job (WP4) · **10a** device watcher ·
+**10b** hub SignalR · **10c** il frontend ascolta · **11a** indice/ricerca (WP5) ·
+**11b** spazio (WP6) · **11c** logging/shutdown (WP8) · **11d** frontend/UX (WP7) ·
+**11e** efficienza (WP9) · **11f** cleanup e layering (WP10) · **11g** esclusione vs
+assenza · **11h** perché una riga è esclusa · **11i** le corse sui pool SQLite ·
+**12a/12b** end-to-end (con cui l'MVP si chiude) · **13** servizio installato e catalogo
+vero · **14a** filtro categoria della Ricerca · **14b** annullabilità delle query ·
+**14c** le due schermate Volumi · **14d** l'USN incrementale · **14e** questo
+allineamento. I finding della review del 2026-07-12 stanno in
+`CODE-REVIEW-HANDOFF.md`, che porta in cima il proprio stato aggiornato.
+
+### Fatto nello step 14e (2026-08-25)
+**Il brief dice la verità sul codice.** Nessuna modifica di prodotto: un audit di §3, §4,
+§5, §6, §7 e §8 contro il codice su `develop`, più il riallineamento di
+`CODE-REVIEW-HANDOFF.md` e la riorganizzazione di questa roadmap.
+
+**Diciannove discrepanze**, ognuna con la prova nel messaggio di commit che la chiude.
+Le cinque che avrebbero fatto sbagliare qualcuno:
+- **§4 diceva che exFAT/FAT32 fa «enumerazione + diff (size/timestamp)»**. Non esiste
+  alcun diff: si enumerano le cartelle sorvegliate e si passa dallo **stesso merge** del
+  percorso NTFS. Chi si fosse fidato avrebbe cercato codice mai esistito — o peggio,
+  l'avrebbe scritto credendo di ripristinare un comportamento voluto.
+- **§6 descriveva una tabella FTS5 a due colonne**. Ne ha tre da 14a, e la terza
+  (`tags`) è sicura **solo** finché ogni MATCH resta scopato per colonna: una quarta
+  strada di ricerca scritta contro il §6 vecchio renderebbe i token cercabili.
+- **§7 elencava ancora `isStale`**, tolto da 11f — la cui stessa scheda K13 annotava che
+  «§7 lo elenca», senza che nessuno correggesse §7.
+- **`Files.CreatedUtc`/`ModifiedUtc` sono nomi di *colonna*, non di proprietà**: in LINQ
+  le date del file si leggono da `FileCreatedUtc`/`FileModifiedUtc`, mentre
+  `f.CreatedUtc` è la colonna di **audit** — e non dà errore.
+- **Il commento di `FeasibilityResult.EstimateIsLive`** diceva «true quando il volume è
+  online», cioè il significato che 11b ha *smesso* di avere: da allora è «il dispositivo
+  ha risposto adesso». Unica modifica al codice di questo giro, commento e basta, come
+  il task permette.
+
+Le altre: la solution è `FileTracert.slnx` (non `.sln`); l'albero di §3 ignorava
+`FileTracert.HardwareSmoke` — citato altrove dalle regole di test dello stesso
+documento — e `tests/FileTracert.PoolProbe`; §3 elencava quattro BackgroundService su
+nove; il paragrafo dello shared kernel diceva «oggi `ScanPath`» dopo che 14d ci ha
+portato `UsnPathResolver`; §3 prometteva il token «in header» senza la forma in query
+string dei soli `/hubs/*`; l'elenco degli indici di `Files` ne dava cinque su nove, e
+uno con un nome di colonna inesistente; `AppSettings` non nominava `LogMaxRows`; la
+fattibilità non nominava `feasible` né `marginBytes`; §8 dava cinque feature su nove e
+sei schermate su sette (mancavano **Setup** e **Log**); `.ft-panel`/`.ft-pill`/
+`.ft-card` erano descritte come classi CSS e sono **componenti Angular**;
+`TASK-step0-scaffold.md` non esiste e il mockup sta in `src/frontend/`.
+
+**Dove il codice era indietro e il brief avanti**, si è tenuto il brief e si è aperta una
+voce di roadmap invece di riscrivere il testo: il **filtro dimensione** di §8 (esiste
+nell'API, non a video) e il **paging delle sottocartelle** di §7 (E5, mai chiuso). È la
+scorciatoia che il task chiedeva di non prendere.
+
+**`CODE-REVIEW-HANDOFF.md`**: dieci dei quindici finding della TOP 15 e quattro righe C
+erano ancora scritte come aperte, chiuse nei fatti dai WP1–WP3 e dal giro date/UTC di
+mesi fa — cioè il file avrebbe fatto rifare lavoro finito, l'esatto contrario del suo
+scopo. Ogni chiusura porta ora il commit **e** un punto di codice verificato su HEAD.
+Restano aperti **due soli** finding (C32 e P1) più la metà di E5 lasciata come decisione
+di prodotto; tre schede (K12, E3, E5) descrivevano codice che 14a e 14c hanno mosso di
+nuovo.
+
+**Verifica**: build backend pulita (warnings-as-errors), xUnit **832 verdi** — nessun
+test toccato, perché il solo cambiamento di codice è un commento XML. Frontend non
+toccato. Harness sul ferro non rieseguito e non richiesto: questo giro non cambia il
+comportamento su un solo byte.
+
+**Limiti noti:** l'audit ha coperto §3–§8, cioè le sezioni che descrivono componenti e
+comportamenti, come chiedeva il task; §5 (proiezione) è stato verificato e trovato
+esatto. I paragrafi storici «Fatto nello step N» **non** sono stati riverificati riga per
+riga: sono la memoria di ciò che era vero quando è stato scritto, e riscriverli
+significherebbe cancellare la storia invece di allinearla.
 
 ### Fatto nello step 14d (2026-08-25, commit `626a42f`…`9383f00`)
 **Il percorso incrementale USN esiste, e concorda con la scansione completa.** Chiude le voci 4 e 5
