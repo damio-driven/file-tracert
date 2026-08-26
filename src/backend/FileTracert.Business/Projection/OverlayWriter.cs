@@ -185,12 +185,12 @@ public sealed class OverlayWriter
         var targetDir = await _directories.FindOrCreateProjectedAsync(
             job.TargetVolumeId.Value, ScanPath.Parent(job.TargetRelativePath!), job.Id, ct);
 
-        var projected = await ProjectCopyAsync(source, targetDir, ScanPath.Name(job.TargetRelativePath!), job, ct);
-        await _db.SaveChangesAsync(ct);
+        var projected = await ProjectCopiesAsync(
+            job, [(source, targetDir, ScanPath.Name(job.TargetRelativePath!))], ct);
 
         // §5 — the projected name is what gets indexed, so the copy is findable the moment it is
         // queued rather than only once the bytes land.
-        await SyncFtsAsync(projected is null ? [] : [projected.Id], ct);
+        await SyncFtsAsync([.. projected.Select(r => r.Id)], ct);
     }
 
     /// <summary>
@@ -229,7 +229,7 @@ public sealed class OverlayWriter
         // One resolve per distinct destination directory: a folder copy lands thousands of files
         // into a handful of them.
         var dirCache = new Dictionary<string, DirectoryNode>(StringComparer.OrdinalIgnoreCase);
-        var projectedIds = new List<int>(fileItems.Count);
+        var plan = new List<(FileEntry Source, DirectoryNode TargetDir, string Name)>(fileItems.Count);
 
         foreach (var item in fileItems)
         {
@@ -243,22 +243,26 @@ public sealed class OverlayWriter
                 dirCache[dirPath] = targetDir;
             }
 
-            var projected = await ProjectCopyAsync(
-                source, targetDir, ScanPath.Name(item.TargetRelativePath), job, ct);
-            if (projected is not null) projectedIds.Add(projected.Id);
+            plan.Add((source, targetDir, ScanPath.Name(item.TargetRelativePath)));
         }
 
-        await _db.SaveChangesAsync(ct);
-        await SyncFtsAsync(projectedIds, ct);
+        var projected = await ProjectCopiesAsync(job, plan, ct);
+        await SyncFtsAsync([.. projected.Select(r => r.Id)], ct);
     }
 
     /// <summary>
-    /// The destination row of one copied file. Returns the row (existing or new) so the caller can
-    /// index it; null only when the destination is not nameable.
+    /// The destination rows of a batch of copied files. Returns them (existing or new) so the
+    /// caller can index them.
+    ///
+    /// <para><b>One query and one save for the whole batch</b>, not per file. This runs inside the
+    /// enqueue's transaction, which holds SQLite's single write lock, and a folder copy expands to
+    /// one item per file in the subtree: a lookup plus a <c>SaveChanges</c> each would put
+    /// thousands of round trips under that lock, on the path where a copying job's own checkpoints
+    /// are waiting for it. The rows are added first and their ids read after the single save.</para>
     ///
     /// <para>Idempotent like the rest of <see cref="ApplyAsync"/> — a retry re-runs it and must
-    /// find its own row rather than add a second one, so an existing row already owned by this job
-    /// at this path is reused.</para>
+    /// find its own rows rather than add a second set, so rows this job already owns at these
+    /// places are reused.</para>
     ///
     /// <para>What is copied from the source and what is NOT: name, size, dates and attributes are
     /// what the copy is going to produce, so they describe the promise honestly. The hashes are
@@ -275,22 +279,73 @@ public sealed class OverlayWriter
     /// in the Catalog and in the search index comes from <c>IsMaterialized = false</c>, not from
     /// inclusion.</para>
     /// </summary>
-    private async Task<FileEntry?> ProjectCopyAsync(
-        FileEntry source, DirectoryNode targetDir, string name, OperationJob job, CancellationToken ct)
+    private async Task<IReadOnlyList<FileEntry>> ProjectCopiesAsync(
+        OperationJob job,
+        IReadOnlyList<(FileEntry Source, DirectoryNode TargetDir, string Name)> plan,
+        CancellationToken ct)
     {
-        if (string.IsNullOrEmpty(name))
+        if (plan.Count == 0) return [];
+
+        // Everything this job may already have projected, in ONE query — the retry case. Scoped by
+        // DIRECTORY and not by PendingJobId alone: PendingJobId carries no index, so the plain
+        // form is a scan of Files (742 033 rows on the real catalog) run inside the enqueue's
+        // write transaction, and for a first application it would scan all of that to find
+        // nothing. DirectoryId is the leading column of the covering indexes of 11e/14c, so this
+        // is a handful of seeks over the destination folders instead.
+        var targetDirIds = plan.Select(x => x.TargetDir.Id).Distinct().ToList();
+        var owned = await _db.Files
+            .Where(f => targetDirIds.Contains(f.DirectoryId) && f.PendingJobId == job.Id)
+            .ToListAsync(ct);
+        var existingByPlace = new Dictionary<(int, string), FileEntry>(PlaceComparer.Instance);
+        foreach (var row in owned)
+            existingByPlace.TryAdd((row.DirectoryId, row.Name), row);
+
+        var result = new List<FileEntry>(plan.Count);
+
+        foreach (var (source, targetDir, name) in plan)
         {
-            _logger.LogWarning(
-                "Job {Id} ({Type}): a copy item has no destination file name — no projection row created.",
-                job.Id, job.Type);
-            return null;
+            if (string.IsNullOrEmpty(name))
+            {
+                _logger.LogWarning(
+                    "Job {Id} ({Type}): a copy item has no destination file name — no projection row created.",
+                    job.Id, job.Type);
+                continue;
+            }
+
+            if (existingByPlace.TryGetValue((targetDir.Id, name), out var already))
+            {
+                result.Add(already);
+                continue;
+            }
+
+            var created = NewProjectedCopy(source, targetDir, name, job);
+            _db.Files.Add(created);
+            existingByPlace[(targetDir.Id, name)] = created;
+            result.Add(created);
         }
 
-        var existing = await _db.Files.FirstOrDefaultAsync(
-            f => f.PendingJobId == job.Id && f.DirectoryId == targetDir.Id && f.Name == name, ct);
-        if (existing is not null) return existing;
+        // The single save of the batch: every id below is assigned here.
+        await _db.SaveChangesAsync(ct);
+        return result;
+    }
 
-        var row = new FileEntry
+    /// <summary>Case-insensitive on the name, the way this catalog compares file names everywhere.</summary>
+    private sealed class PlaceComparer : IEqualityComparer<(int DirectoryId, string Name)>
+    {
+        public static readonly PlaceComparer Instance = new();
+
+        public bool Equals((int DirectoryId, string Name) a, (int DirectoryId, string Name) b) =>
+            a.DirectoryId == b.DirectoryId &&
+            string.Equals(a.Name, b.Name, StringComparison.OrdinalIgnoreCase);
+
+        public int GetHashCode((int DirectoryId, string Name) x) =>
+            HashCode.Combine(x.DirectoryId, x.Name.ToUpperInvariant());
+    }
+
+    private static FileEntry NewProjectedCopy(
+        FileEntry source, DirectoryNode targetDir, string name, OperationJob job)
+    {
+        return new FileEntry
         {
             VolumeId = targetDir.VolumeId,
             DirectoryId = targetDir.Id,
@@ -312,10 +367,6 @@ public sealed class OverlayWriter
             PendingState = EntityPendingState.PendingCreate,
             PendingJobId = job.Id,
         };
-
-        _db.Files.Add(row);
-        await _db.SaveChangesAsync(ct);
-        return row;
     }
 
     // ── clear ─────────────────────────────────────────────────────────────────

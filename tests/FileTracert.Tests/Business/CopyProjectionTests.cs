@@ -57,6 +57,20 @@ public sealed class CopyProjectionTests : IDisposable
         return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
     }
 
+    private readonly CountingCommandInterceptor _sql = new();
+
+    private QueueService CountingSvc()
+    {
+        var db = _harness.CreateContext(_sql);
+        return new QueueService(db, _ledger, TestProjection.Space(db, _ledger), _cancellation,
+            NSubstitute.Substitute.For<FileTracert.Contracts.Platform.IFileMover>(),
+            new QueueSignal(),
+            TestProjection.Index(db), TestProjection.Overlay(db),
+            TestProjection.Unblocker(db),
+            TestProjection.Revaluator(db, _ledger),
+            TestProjection.Realtime(), NullLogger<QueueService>.Instance);
+    }
+
     private QueueService Svc()
     {
         var db = _harness.CreateContext();
@@ -101,6 +115,79 @@ public sealed class CopyProjectionTests : IDisposable
     };
 
     private static CancellationToken None => CancellationToken.None;
+
+    // ── what the projection COSTS ──────────────────────────────────────
+
+    /// <summary>
+    /// The projection of a folder copy must not grow a query and a save PER FILE. It is written
+    /// inside the enqueue's transaction, which holds SQLite's only write lock, and a folder copy
+    /// expands to one item per file in the subtree — per-file round trips there would sit under
+    /// that lock while a copying job's own checkpoints wait for it.
+    ///
+    /// <para>Statements, not milliseconds (the unit of step 11e): this goes red the moment someone
+    /// puts a query back inside the loop, on any machine.</para>
+    /// </summary>
+    [Fact]
+    public async Task The_folder_copy_projection_does_not_grow_a_round_trip_per_file()
+    {
+        await SeedManyAsync(60);
+
+        _sql.Reset();
+        await CountingSvc().EnqueueAsync(new CreateJobRequest
+        {
+            Type = JobType.CopyFolder,
+            SourceDirectoryId = SubId,
+            TargetVolumeId = Vol2Id,
+            TargetRelativePath = "Archivio",
+        }, None);
+        var withSixtyOne = _sql.Count;
+        var readsWithSixtyOne = _sql.Commands.Count(c => c.TrimStart().StartsWith("SELECT"));
+
+        // The same shape with one file. The DIFFERENCE is what a per-file round trip would show
+        // up as; the handful of statements that do scale come from the OperationJobItems the
+        // enqueue writes, which EF batches.
+        await ResetQueueStateAsync();
+
+        _sql.Reset();
+        await CountingSvc().EnqueueAsync(new CreateJobRequest
+        {
+            Type = JobType.CopyFolder,
+            SourceDirectoryId = SubId,
+            TargetVolumeId = Vol2Id,
+            TargetRelativePath = "Archivio2",
+        }, None);
+        var withOne = _sql.Count;
+        var readsWithOne = _sql.Commands.Count(c => c.TrimStart().StartsWith("SELECT"));
+
+        // EF emits one INSERT per row whatever we do — the enqueue already pays that for its own
+        // OperationJobItems, and 61 of each is the provider's behaviour, not a loop of ours. What
+        // must NOT scale is the READS: a lookup per projected row is the shape this asserts away.
+        readsWithSixtyOne.Should().Be(readsWithOne,
+            $"the projection must resolve what it already owns in ONE query, not one per file "
+            + $"(61 files: {readsWithSixtyOne} reads of {withSixtyOne} statements, "
+            + $"1 file: {readsWithOne} of {withOne})");
+    }
+
+    private async Task SeedManyAsync(int count)
+    {
+        using var db = _harness.CreateContext();
+        for (int i = 0; i < count; i++)
+            db.Files.Add(NewFile(100 + i, SubId, $"bulk{i}.txt", 10));
+        await db.SaveChangesAsync();
+    }
+
+    /// <summary>Back to "one file under Sub, nothing queued", so the second measure is comparable.</summary>
+    private async Task ResetQueueStateAsync()
+    {
+        using var db = _harness.CreateContext();
+        await db.Files.Where(f => !f.IsMaterialized).ExecuteDeleteAsync();
+        await db.Files.Where(f => f.DirectoryId == SubId && f.Name != "data.csv").ExecuteDeleteAsync();
+        await db.OperationJobItems.ExecuteDeleteAsync();
+        await db.SpaceLedgerEntries.ExecuteDeleteAsync();
+        await db.OperationJobs.ExecuteDeleteAsync();
+        await db.Directories.Where(d => d.VolumeId == Vol2Id && d.MaterializedPath != "").ExecuteDeleteAsync();
+    }
+
 
     // ── the destination row appears ───────────────────────────────────────────
 
