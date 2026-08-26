@@ -69,6 +69,26 @@ public class FileEntry : IAuditable
     /// </summary>
     public bool ExcludedByScan { get; set; }
 
+    /// <summary>
+    /// The file exists ON DISK. False only for a row a queued Copy has projected at its
+    /// destination (step 15a): §5 says queuing an operation mutates the projection at once, and a
+    /// copy is the one operation whose result is a NEW entity — there is no existing row whose
+    /// <c>Pending*</c> fields could carry it, so the destination row is created ahead of the file,
+    /// exactly as <see cref="DirectoryNode.IsMaterialized"/> already does for folders.
+    ///
+    /// <para>Distinct from <see cref="IsPresent"/> on purpose, and the two are not
+    /// interchangeable: <c>IsPresent = false</c> means "a scan looked for it and did not find it"
+    /// (§6), a statement about the disk that only a scan may write. <c>IsMaterialized = false</c>
+    /// means "nothing has created it yet" — no scan has ever looked. A projected row carries both
+    /// as false and is promoted to both true by the job that lands the bytes.</para>
+    ///
+    /// <para>Defaults to <c>true</c> — in the CLR and in the column — because every other writer
+    /// of this table describes a file it has just seen on disk (the scan merge, the USN delta,
+    /// the bulk insert). Only the projection deliberately says otherwise, and it says so
+    /// explicitly.</para>
+    /// </summary>
+    public bool IsMaterialized { get; set; } = true;
+
     public bool IsPresent { get; set; }
     public DateTime LastIndexedUtc { get; set; }
 

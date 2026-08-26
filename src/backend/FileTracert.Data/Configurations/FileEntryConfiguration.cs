@@ -16,6 +16,11 @@ public sealed class FileEntryConfiguration : IEntityTypeConfiguration<FileEntry>
         builder.Property(x => x.Category).HasConversion<string>();
         builder.Property(x => x.PendingState).HasConversion<string>();
 
+        // 15a — a projected Copy destination row is the only FileEntry that does not stand for a
+        // file on disk, so every row that predates the column, and every row any other writer
+        // inserts without naming it, must read as materialized.
+        builder.Property(x => x.IsMaterialized).HasDefaultValue(true);
+
         // FileAttributes is a [Flags] enum → store as int.
         builder.Property(x => x.Attributes).HasConversion<int>();
 

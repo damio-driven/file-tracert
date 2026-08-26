@@ -371,6 +371,13 @@ scarto, e serve a non avere due `CreatedUtc` nella stessa classe) ·
 `Attributes` · `UsnFileRef?` · `QuickHash?` (size + primi/ultimi KB)
 · `Hash?` (full, lazy) · `IsIncluded` · `ExcludedByType` · `ExcludedByRoot` ·
 `ExcludedByScan` (le tre cause di §6 «Convenzioni trasversali», step 11h) ·
+`IsMaterialized` (default `true`; **il file esiste sul disco**. Falso solo per la riga che
+una **Copy** in coda proietta alla destinazione — step 15a: una copia è l'unica operazione il
+cui risultato è un'entità *nuova*, quindi non esiste una riga i cui `Pending*` possano
+portarla, ed è lo stesso mestiere che `IsMaterialized` fa da sempre sulle directory. **Non è
+un sinonimo di `IsPresent`**: `IsPresent = false` dice «una scansione l'ha cercato e non l'ha
+trovato», `IsMaterialized = false` dice «nessuno l'ha ancora creato», cioè nessuna scansione
+ha mai guardato) ·
 `IsPresent` · `LastIndexedUtc` ·
 `PendingName?` · `PendingDirectoryId?` · `PendingState` · `PendingJobId?` + audit.
 Indici, tutti in `FileEntryConfiguration` — sono nove e ognuno ha un motivo
@@ -440,7 +447,9 @@ UI): `Id` · `TimestampUtc` · `Severity` (Info|Warning|Error) · `Source` ·
 - `VolumeScanEngine` { UsnJournal, Enumeration }
 - `VolumeKind` { Fixed, Removable, Cloud, System, Unknown }
 - `FileCategory` { Image, Video, Audio, Document, Archive, Other }
-- `JobType` { CreateFolder, RenameFile, RenameFolder, MoveFile, MoveFolder } *(Copy → fase 2)*
+- `JobType` { CreateFolder, RenameFile, RenameFolder, MoveFile, MoveFolder, CopyFile, CopyFolder }
+  (le due Copy dallo step 15a: **due tipi, non uno**, perché §5 elenca le operazioni per *entità*
+  e ogni switch del backend è scritto così)
 - `JobState` { Pending, SpaceReserved, Copying, Verifying, DeletingSource, Completed, Blocked, Failed, Cancelled }
 - `JobBlockReason` { None, InsufficientSpace, TargetVolumeOffline, SourceVolumeOffline, NameCollision, DependencyPending, DependencyCancelled }
 - `JobItemState` { Pending, Copying, Copied, Verified, Done, Failed, Skipped }
