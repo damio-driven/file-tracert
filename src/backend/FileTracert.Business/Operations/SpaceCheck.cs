@@ -188,10 +188,16 @@ public sealed class SpaceCheck
     /// <summary>
     /// The hard re-check for a job that is about to run (or that a revaluation wants to release).
     /// A job that needs no space on a target volume passes without touching the device.
+    ///
+    /// <para>The guard MIRRORS <see cref="SpaceLedger.ReservationFor"/> and must keep doing so:
+    /// two spellings of "this job needs space" mean the queue can reserve for a job the engine
+    /// waves through, or check a job nothing reserved for. Step 15a dropped
+    /// <c>job.IsIntraVolume</c> from both at once — an intra-volume COPY consumes room on its own
+    /// volume, so the geometry was never the question; the demand is.</para>
     /// </summary>
     public async Task<HardSpaceVerdict> EvaluateHardAsync(OperationJob job, CancellationToken ct)
     {
-        if (job.IsIntraVolume || job.RequiredBytesTarget <= 0 || job.TargetVolume is null)
+        if (job.RequiredBytesTarget <= 0 || job.TargetVolume is null)
             return NothingToCheck;
 
         var volume = job.TargetVolume;

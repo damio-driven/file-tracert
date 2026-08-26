@@ -140,15 +140,23 @@ public sealed class SpaceLedger : ISpaceLedger
     /// be written out at both call sites that re-queue a job, and a job the two judged differently
     /// would end up reserved twice or not at all.
     ///
-    /// <para>Null for a job that needs no room on any target: an intra-volume operation moves
-    /// nothing between volumes, a zero-byte demand asks for nothing, and a job with no target
-    /// volume has nowhere to ask. Those are also exactly the cases
+    /// <para>Null for a job that needs no room on any target: a zero-byte demand asks for nothing,
+    /// and a job with no target volume has nowhere to ask. Those are also exactly the cases
     /// <see cref="SpaceCheck.EvaluateHardAsync"/> waves through without touching the device — one
     /// definition of "this job needs space", or the queue reserves for a job the engine never
     /// checks.</para>
+    ///
+    /// <para><b>Step 15a — the question is the demand, not the geometry.</b> This used to start
+    /// with <c>!job.IsIntraVolume</c>, which was a shortcut for "an operation that stays on one
+    /// volume moves nothing between volumes, so it needs no room". True of every operation that
+    /// existed then, and false of a <see cref="JobType.CopyFile"/> or
+    /// <see cref="JobType.CopyFolder"/> that stays put: a copy writes a SECOND set of bytes onto
+    /// the volume it reads from. <c>RequiredBytesTarget &gt; 0</c> answers the question that was
+    /// always meant — and it still says no to an intra-volume move, whose demand is zero by
+    /// construction (the enqueue never runs the demand routine for it).</para>
     /// </summary>
     public static JobReservation? ReservationFor(OperationJob job) =>
-        !job.IsIntraVolume && job.RequiredBytesTarget > 0 && job.TargetVolumeId.HasValue
+        job.RequiredBytesTarget > 0 && job.TargetVolumeId.HasValue
             ? new JobReservation(
                 job.Id, job.SequenceOrder, job.TargetVolumeId.Value,
                 job.RequiredBytesTarget, job.SourceVolumeId, job.FreedBytesSource)

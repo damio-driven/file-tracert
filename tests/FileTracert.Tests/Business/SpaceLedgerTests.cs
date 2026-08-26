@@ -503,21 +503,31 @@ public sealed class SpaceLedgerTests : IDisposable
     /// <summary>
     /// The guard that used to be spelled out at both re-queue call sites. Null means "this job
     /// needs no room anywhere" — and it must agree with <see cref="SpaceCheck.EvaluateHardAsync"/>,
-    /// which waves exactly these three cases through without touching the device. A job the two
-    /// judged differently would be reserved for something the engine never re-checks.
+    /// which waves exactly these cases through without touching the device. A job the two judged
+    /// differently would be reserved for something the engine never re-checks.
+    ///
+    /// <para>Step 15a moved the line. The rule used to begin with <c>!IsIntraVolume</c> and this
+    /// theory used to assert it, on the reasoning that an operation staying on one volume moves
+    /// nothing between volumes. A COPY that stays on one volume writes a second set of bytes onto
+    /// it, so the geometry never was the question — the demand is. The intra-volume row now
+    /// expects a reservation, and the "no" for an intra-volume move is carried by its demand
+    /// being zero, which is how the enqueue builds it.</para>
     /// </summary>
     [Theory]
-    [InlineData(false, 500, 2, true)]    // cross-volume, real demand, a target: a reservation
-    [InlineData(true, 500, 2, false)]    // intra-volume moves nothing between volumes
-    [InlineData(false, 0, 2, false)]     // nothing to ask for
+    [InlineData(false, 500, 2, true)]     // cross-volume, real demand, a target: a reservation
+    [InlineData(true, 500, 2, true)]      // intra-volume COPY: same volume, and still a demand
+    [InlineData(true, 0, 2, false)]       // intra-volume move: no demand, so no reservation
+    [InlineData(false, 0, 2, false)]      // nothing to ask for
     [InlineData(false, 500, null, false)] // nowhere to ask
-    public void ReservationFor_answers_the_three_no_space_cases_with_null(
+    public void ReservationFor_answers_the_no_space_cases_with_null(
         bool intraVolume, long requiredBytes, int? targetVolumeId, bool expected)
     {
         var job = new FileTracert.Data.Entities.OperationJob
         {
             Id = 7,
-            Type = FileTracert.Contracts.Enums.JobType.MoveFile,
+            Type = intraVolume
+                ? FileTracert.Contracts.Enums.JobType.CopyFile
+                : FileTracert.Contracts.Enums.JobType.MoveFile,
             State = FileTracert.Contracts.Enums.JobState.Pending,
             SequenceOrder = 3,
             IsIntraVolume = intraVolume,

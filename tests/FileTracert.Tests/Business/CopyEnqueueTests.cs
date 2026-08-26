@@ -322,6 +322,76 @@ public sealed class CopyEnqueueTests : IDisposable
             .WithMessage("*gia in questa posizione*");
     }
 
+    // ── the ledger guard, in both directions ──────────────────────────────
+
+    [Fact]
+    public async Task Intra_volume_copy_takes_a_reservation()
+    {
+        var dto = await Svc().EnqueueAsync(new CreateJobRequest
+        {
+            Type = JobType.CopyFile,
+            SourceFileId = File1Id,
+            TargetVolumeId = Vol1Id,
+            TargetRelativePath = @"Docs\Sub"
+        }, None);
+
+        using var db = _harness.CreateContext();
+        var entries = await db.SpaceLedgerEntries
+            .Where(e => e.JobId == dto.Id && e.IsActive)
+            .ToListAsync();
+
+        // Exactly one row: the +reservation on the target. No -liberation, because nothing is
+        // freed — and the target volume is also the source volume, which is the case
+        // SpaceLedger.ReservationFor used to answer "no" to on sight.
+        entries.Should().ContainSingle();
+        entries[0].VolumeId.Should().Be(Vol1Id);
+        entries[0].DeltaBytes.Should().Be(1_000);
+    }
+
+    [Fact]
+    public async Task Intra_volume_move_still_takes_no_reservation()
+    {
+        var dto = await Svc().EnqueueAsync(new CreateJobRequest
+        {
+            Type = JobType.MoveFile,
+            SourceFileId = File1Id,
+            TargetVolumeId = Vol1Id,
+            TargetRelativePath = @"Docs\Sub"
+        }, None);
+
+        using var db = _harness.CreateContext();
+        var entries = await db.SpaceLedgerEntries.Where(e => e.JobId == dto.Id).ToListAsync();
+
+        // Today RequiredBytesTarget is 0 for this job by construction; this test is what fixes
+        // that fact in place, so a later hand cannot make the intra-volume move start reserving
+        // by widening the demand routine.
+        entries.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task The_hard_recheck_agrees_with_the_ledger_about_an_intra_volume_copy()
+    {
+        var dto = await Svc().EnqueueAsync(new CreateJobRequest
+        {
+            Type = JobType.CopyFile,
+            SourceFileId = File1Id,
+            TargetVolumeId = Vol1Id,
+            TargetRelativePath = @"Docs\Sub"
+        }, None);
+
+        using var db = _harness.CreateContext();
+        var job = await db.OperationJobs
+            .Include(j => j.TargetVolume)
+            .FirstAsync(j => j.Id == dto.Id);
+
+        // "Needs space" must have ONE definition (SpaceLedger.ReservationFor's doc says so):
+        // if the queue reserves for a job the engine waves through without looking at the drive,
+        // the two have drifted. The verdict here is a real check, not NothingToCheck — which is
+        // what a non-live, non-measured space figure would look like.
+        var verdict = await TestProjection.Space(db, _ledger).EvaluateHardAsync(job, None);
+        verdict.Feasibility.RequiredBytes.Should().Be(1_000);
+    }
+
     // ── preview ───────────────────────────────────────────────────────────────
 
     [Fact]
