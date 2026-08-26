@@ -725,6 +725,12 @@ public sealed class QueueService : IQueueService
             case JobType.MoveFolder:
                 shouldReserve = await BuildMoveFolderAsync(request, job, items, committedDemandOnTarget, ct);
                 break;
+            case JobType.CopyFile:
+                shouldReserve = await BuildCopyFileAsync(request, job, items, committedDemandOnTarget, ct);
+                break;
+            case JobType.CopyFolder:
+                shouldReserve = await BuildCopyFolderAsync(request, job, items, committedDemandOnTarget, ct);
+                break;
             default:
                 throw new InvalidOperationException($"Unsupported job type: {request.Type}");
         }
@@ -917,8 +923,8 @@ public sealed class QueueService : IQueueService
         job.TargetRelativePath = dstPath;
         job.IsIntraVolume = intra;
 
-        bool shouldReserve = !intra && await ApplyCrossVolumeDemandAsync(
-            job, targetVol, file.SizeBytes, committedDemandOnTarget, ct);
+        bool shouldReserve = !intra && await ApplyTargetDemandAsync(
+            job, targetVol, file.SizeBytes, committedDemandOnTarget, freesSource: true, ct);
 
         items.Add(new OperationJobItem
         {
@@ -933,9 +939,16 @@ public sealed class QueueService : IQueueService
     }
 
     /// <summary>
-    /// Records what a cross-volume job demands, judges whether it fits, and answers whether the
-    /// enqueue must reserve for it. K4 — one routine for MoveFile and MoveFolder, which held two
-    /// copies of the same decision.
+    /// Records what a job demands of its TARGET volume, judges whether it fits, and answers
+    /// whether the enqueue must reserve for it. K4 — one routine for MoveFile and MoveFolder,
+    /// which held two copies of the same decision; step 15a adds the two Copy types to it rather
+    /// than writing a third.
+    ///
+    /// <para>Renamed from <c>ApplyCrossVolumeDemandAsync</c> in step 15a, because the old name
+    /// would now lie. A move between volumes is not the only operation that consumes bytes: an
+    /// <b>intra-volume copy</b> consumes them on the very volume it reads from, so this runs for
+    /// it too. <c>IsIntraVolume</c> stopped being a synonym for "free" the moment Copy existed,
+    /// and the name had to move with it.</para>
     ///
     /// <para>The demand is weighed together with everything this batch has already promised to the
     /// same volume (0 for a lone enqueue): the batch is one demand, and judging its last file
@@ -953,13 +966,21 @@ public sealed class QueueService : IQueueService
     /// <para>§4 is respected either way: an infeasible answer parks the job <c>Blocked</c>, it
     /// never refuses it.</para>
     /// </summary>
-    private async Task<bool> ApplyCrossVolumeDemandAsync(
+    /// <param name="freesSource">
+    /// Whether finishing this job gives the source volume its bytes back. True for a move, false
+    /// for a COPY: a copy takes the space and leaves the original where it is, so it emits the
+    /// <c>+reservation</c> ledger row and no <c>-liberation</c> — <see cref="SpaceLedger"/>'s
+    /// <c>BuildReservationEntries</c> already skips the second one for a zero
+    /// <c>FreedBytesSource</c>. Crediting a liberation that never happens is the direction that
+    /// overcommits a drive.
+    /// </param>
+    private async Task<bool> ApplyTargetDemandAsync(
         OperationJob job, Volume targetVolume, long totalBytes,
-        long committedDemandOnTarget, CancellationToken ct)
+        long committedDemandOnTarget, bool freesSource, CancellationToken ct)
     {
         job.TotalBytes = totalBytes;
         job.RequiredBytesTarget = totalBytes;
-        job.FreedBytesSource = totalBytes;
+        job.FreedBytesSource = freesSource ? totalBytes : 0;
 
         if (totalBytes > 0)
         {
@@ -1045,8 +1066,140 @@ public sealed class QueueService : IQueueService
         var expanded = await ExpandSubtreeAsync(dir, dstDirPath, ct);
         items.AddRange(expanded);
 
-        return await ApplyCrossVolumeDemandAsync(
-            job, targetVol, expanded.Sum(i => i.SizeBytes), committedDemandOnTarget, ct);
+        return await ApplyTargetDemandAsync(
+            job, targetVol, expanded.Sum(i => i.SizeBytes), committedDemandOnTarget,
+            freesSource: true, ct);
+    }
+
+    // ── private: copy ───────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// A copy of one file. It mirrors <see cref="BuildMoveFileAsync"/> with two differences, and
+    /// both are why step 15a is not simply "Move minus DeletingSource":
+    /// <list type="bullet">
+    ///   <item>the space demand is applied <b>whether or not the copy is intra-volume</b>. A move
+    ///     within a volume is metadata (§5: instant, O(1), no reservation); a copy within a volume
+    ///     writes a second set of bytes onto that same volume, so it must ask;</item>
+    ///   <item>nothing is freed on the source — the original stays exactly where it is.</item>
+    /// </list>
+    /// </summary>
+    private async Task<bool> BuildCopyFileAsync(CreateJobRequest req, OperationJob job,
+        List<OperationJobItem> items, long committedDemandOnTarget, CancellationToken ct)
+    {
+        if (req.SourceFileId is null || req.TargetVolumeId is null || req.TargetRelativePath is null)
+            throw new ArgumentException("CopyFile requires SourceFileId, TargetVolumeId and TargetRelativePath.");
+
+        if (!OperationName.TryValidatePath(req.TargetRelativePath, allowRoot: true, out var targetPath, out var pathError))
+            throw new ArgumentException(pathError);
+
+        var file = await _db.Files
+            .Include(f => f.Directory)
+            .AsNoTracking()
+            .FirstOrDefaultAsync(f => f.Id == req.SourceFileId.Value, ct)
+            ?? throw new InvalidOperationException($"File {req.SourceFileId} not found.");
+
+        var targetVol = await _db.Volumes.AsNoTracking()
+            .FirstOrDefaultAsync(v => v.Id == req.TargetVolumeId.Value, ct)
+            ?? throw new InvalidOperationException($"Volume {req.TargetVolumeId} not found.");
+
+        bool intra = file.VolumeId == targetVol.Id;
+        var srcPath = ScanPath.Join(file.Directory.MaterializedPath, file.Name);
+        var dstPath = ScanPath.Join(targetPath, file.Name);
+
+        // C22's shape, applied to the copy: a destination that IS the source is not a copy, it is
+        // a request to overwrite a file with itself. A 400 at enqueue rather than a Blocked job at
+        // execution — the engine's collision guard would park it and the user would then have to
+        // cancel a job that could never have run.
+        if (intra && ScanPath.SamePath(srcPath, dstPath))
+            throw new ArgumentException(
+                $"Il file '{srcPath}' si trova gia in questa cartella: una copia su se stesso " +
+                "non ha effetto. Scegliere un'altra destinazione.");
+
+        job.SourceVolumeId = file.VolumeId;
+        job.TargetVolumeId = targetVol.Id;
+        job.TargetRelativePath = dstPath;
+        job.IsIntraVolume = intra;
+
+        bool shouldReserve = await ApplyTargetDemandAsync(
+            job, targetVol, file.SizeBytes, committedDemandOnTarget, freesSource: false, ct);
+
+        items.Add(new OperationJobItem
+        {
+            FileId = file.Id,
+            SourceRelativePath = srcPath,
+            TargetRelativePath = dstPath,
+            SizeBytes = file.SizeBytes,
+            State = JobItemState.Pending
+        });
+
+        return shouldReserve;
+    }
+
+    /// <summary>
+    /// A copy of a folder. Unlike <see cref="BuildMoveFolderAsync"/> there is <b>no intra-volume
+    /// shortcut</b>: a folder move within a volume is one rename syscall and one marker item,
+    /// while a folder copy within a volume has to duplicate every file. So the subtree is expanded
+    /// on both sides of the volume question, and the job always goes through the copy state
+    /// machine.
+    /// </summary>
+    private async Task<bool> BuildCopyFolderAsync(CreateJobRequest req, OperationJob job,
+        List<OperationJobItem> items, long committedDemandOnTarget, CancellationToken ct)
+    {
+        if (req.SourceDirectoryId is null || req.TargetVolumeId is null || req.TargetRelativePath is null)
+            throw new ArgumentException("CopyFolder requires SourceDirectoryId, TargetVolumeId and TargetRelativePath.");
+
+        if (!OperationName.TryValidatePath(req.TargetRelativePath, allowRoot: true, out var targetPath, out var pathError))
+            throw new ArgumentException(pathError);
+
+        var dir = await LoadSourceDirectoryAsync(req.SourceDirectoryId.Value, ct);
+
+        var targetVol = await _db.Volumes.AsNoTracking()
+            .FirstOrDefaultAsync(v => v.Id == req.TargetVolumeId.Value, ct)
+            ?? throw new InvalidOperationException($"Volume {req.TargetVolumeId} not found.");
+
+        bool intra = dir.VolumeId == targetVol.Id;
+        var dstDirPath = ScanPath.Join(targetPath, dir.Name);
+
+        // The same two geometric refusals as C22, for the same reason — on another volume the same
+        // relative path is a different physical place, so both are intra-volume only. The first one
+        // matters more for a copy than for a move: the destination sitting inside the source means
+        // writing into the very tree being read.
+        if (intra)
+        {
+            if (ScanPath.IsWithin(targetPath, dir.MaterializedPath))
+                throw new ArgumentException(
+                    $"Impossibile copiare la cartella '{dir.MaterializedPath}' dentro se stessa " +
+                    $"o in una sua sottocartella ('{targetPath}').");
+
+            if (ScanPath.SamePath(dstDirPath, dir.MaterializedPath))
+                throw new ArgumentException(
+                    $"La cartella '{dir.MaterializedPath}' si trova gia in questa posizione: " +
+                    "una copia su se stessa non ha effetto.");
+        }
+
+        job.SourceVolumeId = dir.VolumeId;
+        job.TargetVolumeId = targetVol.Id;
+        job.TargetRelativePath = dstDirPath;
+        job.IsIntraVolume = intra;
+
+        // Root marker item (FileId = null): the folder itself. Same role as MoveFolder's — it gives
+        // the engine the source root and guarantees the destination folder is created even when the
+        // subtree holds no indexed file (C21).
+        items.Add(new OperationJobItem
+        {
+            FileId = null,
+            SourceRelativePath = dir.MaterializedPath,
+            TargetRelativePath = dstDirPath,
+            SizeBytes = 0,
+            State = JobItemState.Pending
+        });
+
+        var expanded = await ExpandSubtreeAsync(dir, dstDirPath, ct);
+        items.AddRange(expanded);
+
+        return await ApplyTargetDemandAsync(
+            job, targetVol, expanded.Sum(i => i.SizeBytes), committedDemandOnTarget,
+            freesSource: false, ct);
     }
 
     // ── private: subtree expansion ────────────────────────────────────────────
@@ -1140,6 +1293,27 @@ public sealed class QueueService : IQueueService
                 return (req.TargetVolumeId, intra ? 0 : file.SizeBytes);
             }
 
+            // A COPY asks for room on its target whether or not that target is the source volume:
+            // the bytes are written a second time either way. This is the one place where an
+            // intra-volume operation is NOT free, so the `intra ? 0` shortcut of the Move cases
+            // above must not be repeated here (step 15a).
+            case JobType.CopyFile when req.SourceFileId.HasValue && req.TargetVolumeId.HasValue:
+            {
+                var file = await _db.Files.AsNoTracking()
+                    .Select(f => new { f.Id, f.SizeBytes })
+                    .FirstOrDefaultAsync(f => f.Id == req.SourceFileId.Value, ct);
+                return (req.TargetVolumeId, file?.SizeBytes ?? 0);
+            }
+
+            case JobType.CopyFolder when req.SourceDirectoryId.HasValue && req.TargetVolumeId.HasValue:
+            {
+                var dir = await _db.Directories.AsNoTracking()
+                    .Select(d => new { d.Id, d.VolumeId, d.MaterializedPath })
+                    .FirstOrDefaultAsync(d => d.Id == req.SourceDirectoryId.Value, ct);
+                if (dir is null) return (req.TargetVolumeId, 0);
+                return (req.TargetVolumeId, await SubtreeBytesAsync(dir.VolumeId, dir.MaterializedPath, ct));
+            }
+
             case JobType.MoveFolder when req.SourceDirectoryId.HasValue && req.TargetVolumeId.HasValue:
             {
                 var dir = await _db.Directories.AsNoTracking()
@@ -1149,21 +1323,29 @@ public sealed class QueueService : IQueueService
                 bool intra = dir.VolumeId == req.TargetVolumeId.Value;
                 if (intra) return (req.TargetVolumeId, 0);
 
-                var dirIds = await _db.Directories
-                    .InSubtree(dir.VolumeId, dir.MaterializedPath)
-                    .Select(d => d.Id)
-                    .ToListAsync(ct);
-
-                var total = await _db.Files.AsNoTracking()
-                    .Where(f => f.IsPresent && f.IsIncluded && dirIds.Contains(f.DirectoryId))
-                    .SumAsync(f => f.SizeBytes, ct);
-
-                return (req.TargetVolumeId, total);
+                return (req.TargetVolumeId, await SubtreeBytesAsync(dir.VolumeId, dir.MaterializedPath, ct));
             }
 
             default:
                 return (null, 0);
         }
+    }
+
+    /// <summary>
+    /// Indexed, included, still-present bytes under a directory. The same set
+    /// <see cref="ExpandSubtreeAsync"/> turns into items, so a preview and the job it previews
+    /// cannot disagree on the size of the operation.
+    /// </summary>
+    private async Task<long> SubtreeBytesAsync(int volumeId, string materializedPath, CancellationToken ct)
+    {
+        var dirIds = await _db.Directories
+            .InSubtree(volumeId, materializedPath)
+            .Select(d => d.Id)
+            .ToListAsync(ct);
+
+        return await _db.Files.AsNoTracking()
+            .Where(f => f.IsPresent && f.IsIncluded && dirIds.Contains(f.DirectoryId))
+            .SumAsync(f => f.SizeBytes, ct);
     }
 
     // ── private: mapping ───────────────────────────────────────────────────────
