@@ -275,14 +275,42 @@ stato fisico (ultima scansione) **+ overlay delle operazioni in coda**.
   path proiettati a display.
 
 ### Operazioni accodabili
-`CreateFolder`, `RenameFile`, `RenameFolder`, `MoveFile`, `MoveFolder`
-(`Copy` → fase 2).
+`CreateFolder`, `RenameFile`, `RenameFolder`, `MoveFile`, `MoveFolder`,
+`CopyFile`, `CopyFolder` *(le due Copy dallo step 15a)*.
 - Rename e move **intra-volume** (anche cartelle) = metadati, **istantanei**,
   O(1), nessuna prenotazione spazio.
-- **Move cartella cross-volume** = unico caso che esplode in molti
-  `OperationJobItems` (copia ricorsiva + verify + delete del sottoalbero).
+- **Una Copy non è mai gratis, nemmeno intra-volume** *(step 15a)*: scrive un
+  secondo insieme di byte sul volume da cui legge, quindi prenota spazio e passa
+  **sempre** dalla macchina a stati `Pending → SpaceReserved → Copying →
+  Verifying → Completed`. Salta `DeletingSource` e basta — `JobState` non cambia:
+  uno stato in meno percorso non è uno stato nuovo. `FreedBytesSource = 0`: il
+  sorgente resta dov'è. **`IsIntraVolume` ha smesso di essere sinonimo di
+  «gratis»**, e la domanda vera («questo job consuma byte sul target?») si chiede
+  a `RequiredBytesTarget > 0`, in `SpaceLedger.ReservationFor` e — stessa
+  guardia, obbligatoriamente — in `SpaceCheck.EvaluateHardAsync`.
+- **Move cartella cross-volume** e **Copy cartella** (a qualunque volume) sono i
+  casi che esplodono in molti `OperationJobItems`. Per la copia non c'è
+  scorciatoia intra-volume: un move di cartella dentro un volume è una syscall di
+  rename, una copia deve duplicare ogni file.
 - `CreateFolder` = mkdir banale in esecuzione; in proiezione la cartella "esiste
   già" (riga `Directories` con `IsMaterialized = false`).
+- **Una Copy crea un'entità NUOVA**, quindi §5 non si può esprimere con i campi
+  `Pending*`: non esiste una riga alla destinazione che possa portarli. La riga
+  si crea **prima** del file (`IsMaterialized = false`, `IsPresent = false`,
+  `PendingCreate`), che è il mestiere che `IsMaterialized` fa da sempre sulle
+  directory. Il sorgente **non viene toccato**: promettergli un cambiamento
+  sarebbe una bugia a video. Alla conclusione `IndexUpdater` la promuove — e lo fa
+  **prima** di `OverlayWriter.ClearForJobAsync`, che cancella le righe non
+  materializzate di quel job: l'ordine opposto cancellerebbe dal catalogo il file
+  appena scritto, nella stessa transazione che dichiara il job completo.
+- **L'unico punto in cui il no-hard-delete di §6 non vale**: annullando o
+  facendo fallire una Copy, la riga proiettata alla destinazione si **cancella**,
+  non si azzera. Quella riga non ha mai descritto niente su nessun disco.
+- **Una Copy non rivendica il proprio sorgente** nel guard di enqueue: lo
+  *legge*. `PathClaim` ha quindi tre generi (`Source` / `Target` / `Read`), e la
+  regola guadagna un congiunto: un `Target` che si sovrappone a un `Read` è
+  conflitto. Due `Read` non lo sono mai — due copie dello stesso file verso
+  destinazioni diverse devono partire entrambe.
 
 ### Dipendenze tra job *(implementate allo step 9c)*
 - `DependsOnJobId?` rilevata **automaticamente** quando un'operazione ha come
@@ -616,7 +644,7 @@ Sette route in `app.routes.ts`, tutte raggiungibili dalla barra di navigazione.
   (es. `.raw` > 6 mesi → volume Archivio), sia pattern *inferiti* dallo storico
   delle operazioni.
 - **FavoriteTargets** — destinazioni recenti/preferite per "Sposta in…".
-- **Operazione Copy** (oltre a Move).
+- ~~**Operazione Copy** (oltre a Move)~~ — **fatta allo step 15a** (2026-08-26).
 - **Volumi riformattati / merge** e identità via serial come segnale secondario.
   *(Nota: per i drive cloud/virtuali si è scelta l'**esclusione** di default — step
   6.7; il riaggancio-per-firma di un volume con GUID cambiato resta qui in fase 2.)*
@@ -716,8 +744,13 @@ rilievo è stato lasciato consapevolmente).
 **Dove siamo.** L'**MVP è chiuso** (tutte e dodici le voci del §10, con lo step 12).
 Il prodotto è **installato come servizio** e gira su un catalogo vero da 742 033 file
 (step 13). Gli step **14a–14e** hanno pagato i difetti che quel catalogo ha reso
-visibili. **Non c'è lavoro obbligatorio aperto**: tutto ciò che segue è debito datato,
+visibili. Lo step **15a** è il primo lavoro di **fase 2**: l'operazione **Copy**.
+**Non c'è lavoro obbligatorio aperto**: tutto ciò che segue è debito datato,
 decisione di prodotto o fase 2.
+
+**Il servizio installato è ora indietro di uno step** (gira il build di 14e). Distribuire
+15a è una decisione dell'utente, e costa **due migration additive** — la colonna
+`Files.IsMaterialized` e la ricostruzione dei due indici covering di `Files`.
 
 ### A. Difetti veri, in ordine di fastidio *(nessuno è MVP)*
 1. **La corsa dell'auto-selezione su Volumi** — selezione automatica e clic dell'utente
@@ -784,8 +817,8 @@ In ordine: **WP3** (perdita dati), **WP1** (crash-safe), **WP2** (offline gate),
 assenza · **11h** perché una riga è esclusa · **11i** le corse sui pool SQLite ·
 **12a/12b** end-to-end (con cui l'MVP si chiude) · **13** servizio installato e catalogo
 vero · **14a** filtro categoria della Ricerca · **14b** annullabilità delle query ·
-**14c** le due schermate Volumi · **14d** l'USN incrementale · **14e** questo
-allineamento. I finding della review del 2026-07-12 stanno in
+**14c** le due schermate Volumi · **14d** l'USN incrementale · **14e** l'allineamento del
+brief · **15a** l'operazione Copy. I finding della review del 2026-07-12 stanno in
 `CODE-REVIEW-HANDOFF.md`, che porta in cima il proprio stato aggiornato.
 
 ### Deploy sul catalogo reale (2026-08-25, build `49619b5`)
@@ -870,6 +903,158 @@ resta provato solo da `sc start`; il `MinimumLogLevel` installato è **`Trace`**
 livello il tetto che lega è `LogMaxRows` = 500 000 righe (≈184 MB, misurato allo step 13) —
 oggi il DB dei log sta a 3,9 MB; e **su `C:` il percorso incrementale non è ancora acceso**,
 cioè i 739 421 file che contano continuano a dipendere da una scansione completa.
+
+### Fatto nello step 15a (2026-08-26, commit `e999238`…`cbe5c3b`)
+**Si può copiare, e la copia è un'operazione di prima classe.** Primo lavoro di **fase 2**,
+scelto perché riusa una macchina a stati già provata sul ferro invece di inventarne una. La
+stima «Copy è Move senza `DeletingSource`» è vera **solo dell'esecuzione**: le tre cose che
+costano stanno altrove, ed erano il motivo per cui il task esisteva.
+
+**1. Una copia intra-volume sposta byte.** `SpaceLedger.ReservationFor` cominciava con
+`!job.IsIntraVolume` — una scorciatoia per «un'operazione che resta su un volume non muove
+niente fra volumi, quindi non chiede spazio». Vera di ogni operazione che esisteva allora, falsa
+di una copia che resta ferma: scrive un **secondo** insieme di byte sul volume da cui legge. La
+domanda vera è `RequiredBytesTarget > 0`, e continua a dire **no** a un move intra-volume, la cui
+domanda è zero per costruzione. `SpaceCheck.EvaluateHardAsync` perde la stessa clausola **nello
+stesso commit**, di proposito: la sua guardia **specchia** quella del ledger, e due grafie di
+«questo job ha bisogno di spazio» significano che la coda prenota per un job che l'engine lascia
+passare senza guardare il disco. Il test è nelle **due** direzioni, come il task chiedeva.
+
+**2. Una copia crea un'entità nuova.** §5 non si può quindi esprimere con i campi `Pending*`:
+non c'è una riga alla destinazione che possa portarli. `OverlayWriter` ne crea una **prima** del
+file (`IsMaterialized = false`, `IsPresent = false`, `PendingCreate`) — lo stesso mestiere che
+`IsMaterialized` fa da sempre sulle directory, e il motivo della colonna nuova su `FileEntry`
+(migration additiva, backfill a `true`). Il **sorgente non viene toccato**: un move ci stampa
+`PendingMove`, una copia non cambia nulla di lui. Alla conclusione `IndexUpdater` promuove la riga
+in loco — mai una seconda riga accanto — e lo fa **prima** di `ClearForJobAsync`, che cancella le
+righe non materializzate di quel job: l'ordine opposto cancellerebbe dal catalogo il file appena
+scritto, dentro la transazione che dichiara il job completo. Annullata o fallita, quella riga si
+**cancella**: è l'unico punto in cui il no-hard-delete di §6 non vale, perché quella riga non ha
+mai descritto niente su nessun disco.
+
+**3. Il sorgente sopravvive.** Il guard di enqueue serializzava per sovrapposizione di path
+assumendo che chi tocca un path lo **porti via**. `PathClaim` ha ora tre generi — `Source`,
+`Target`, **`Read`** — e nessuno dei due preesistenti andava bene per il sorgente di una copia:
+come `Source` avrebbe messo in fila due copie dello stesso file verso due cartelle diverse per
+nulla; come `Target` sarebbe stato **peggio**, perché `SameTarget` confronta i path per
+**uguaglianza** e quelle due copie condividono il path sorgente — sarebbero state lette come
+atterranti sulla stessa destinazione, cioè il contrario del vero. La regola guadagna un congiunto:
+un `Target` che si **sovrappone** a un `Read` è conflitto. Un lettore perde contro chi rimuove o
+riscrive ciò che sta leggendo, e contro nient'altro.
+
+#### La misura che il task pretendeva, e la deviazione che ha prodotto
+Il task diceva di aggiungere al Catalogo il disgiunto `|| PendingState != None`, «come già fanno
+le directory». Misurato su 20 000 righe, il ramo caldo del contatore per cartella:
+
+| disgiunto | piano |
+|---|---|
+| nessuno (baseline 11e) | `SEARCH … USING COVERING INDEX …` |
+| `\|\| PendingState <> 'None'` | `SEARCH … USING INDEX …` |
+| `\|\| NOT IsMaterialized`, colonna non indicizzata | `SEARCH … USING INDEX …` |
+| `\|\| NOT IsMaterialized`, colonna nell'indice | `SEARCH … USING COVERING INDEX …` |
+
+Perdere `COVERING` è **una lettura di riga di tabella per ogni file contato**: le ~300 000 per
+listato che lo step 11e esisteva per togliere, restituite in silenzio. `PendingState` — la grafia
+ovvia — non può ricomprarsele perché è una **stringa**, ed è esattamente la ragione per cui 11e
+rifiutò di indicizzarla. `IsMaterialized` è un booleano: i due indici covering lo prendono come
+colonna in coda (migration `CatalogVisibilityIncludesProjectedCopies`, drop e ricrea, nessuna
+ricostruzione di tabella) e il piano torna quello che 11e aveva lasciato. `CatalogCountIndexTests`
+asserisce ora il predicato **nuovo**, così la regressione non può rientrare zitta.
+
+La stessa regola sta **una volta sola** in `FileSearchIndex.IndexableSql` — allargata perché il
+nome proiettato di §5 sia cercabile nell'istante in cui la copia è accodata — e specchiata con il
+motivo scritto accanto nei suoi altri due punti: la negazione di `PruneVolumeAsync` (che non deve
+potare una proiezione) e il conteggio del backfill di avvio.
+
+**Il merge dello scan scrive ora `IsMaterialized = 1`** sulla riga che ritrova, per la ragione più
+forte possibile: ha appena visto il file sul disco. Il suo match per path è `(DirectoryId, Name)`,
+quindi **può** atterrare su una riga proiettata da una Copy, e lasciarla non materializzata la
+renderebbe presente e mai-creata insieme. Il pass degli assenti non la raggiunge comunque: pretende
+`IsPresent = 1`, che una proiezione non ha mai.
+
+#### UI (skill `impeccable`)
+La modalità si sceglie **al punto di intenzione** — due pulsanti nella barra di selezione di
+Catalogo e Ricerca — e non con un interruttore dentro il modale. Un toggle sopra un pulsante che
+dice solo «Accoda» è un errore di modo che aspetta di succedere, e le due operazioni non sono
+egualmente recuperabili: un move manda gli originali nel cestino. Il dialog dichiara la scelta due
+volte, nel titolo e **nell'etichetta del pulsante che la conferma**: «Accoda copia →» /
+«Accoda spostamento →». Un solo primario, non due: Move resta primario (è il verbo centrale del
+§1) e «Copia selezionati…» sta accanto a «Rinomina» come ghost. Il preview **non è cambiato**, ed
+è il punto: il backend restituisce ora un `requiredBytes` vero per una copia intra-volume, quindi
+«Verifica spazio» dice la verità senza che la schermata sappia niente di nuovo.
+
+#### Verifica
+xUnit **878 verdi** (+46 su 832), Vitest **250 verdi** (+6), build backend pulita
+(warnings-as-errors), `ng build` ok (restano i 4 warning di budget SCSS pre-esistenti, e non è
+stato aggiunto SCSS). **RED dimostrato cinque volte**, rompendo il prodotto e ripristinandolo:
+- guardia del ledger rimessa su `IsIntraVolume` → **2 rossi** (la prenotazione intra-volume e il
+  ricontrollo hard), e l'intra-**move** resta verde, che è metà della prova;
+- sorgente della copia rimesso a `Source` → **3 rossi su 11**, esattamente i tre «due lettori
+  devono convivere», mentre gli 8 che devono restare conflitti erano verdi prima e dopo;
+- disgiunto del Catalogo tolto e pulizia rimessa ad azzerare invece che cancellare → **3 rossi su
+  19**;
+- salto di `DeletingSource` tolto → **5 rossi su 7**, e il guasto è **i sorgenti finiti nel
+  cestino**;
+- modalità ignorata nel picker → **2 rossi**, i due che parlano del verbo.
+
+**Sul ferro, elevato** (`D:\Collaudo\A` ↔ `C:\Collaudo\B`): **55 scenari, 55 PASS, 0 FAIL**, la
+baseline di 52 più i tre nuovi — `copy-intra-volume` (che gira su tutte e tre le coppie),
+`copy-cross-volume`, `copy-cancel-mid-flight`. Eseguito **due volte**, prima e dopo la correzione
+della review. `appsettings.json` rimesso byte-identico (sha256 `653f5990…` verificato).
+`D:\Collaudo\A` è stato **ricreato**: non c'era più sul disco.
+
+La **code review finale** di questo giro **l'ho fatta io sul diff, non un agente indipendente** —
+il harness di questa sessione vieta di lanciare sotto-agenti senza richiesta esplicita
+dell'utente, e lo scrivo invece di presentarla per ciò che non è. Ha trovato **una cosa con i
+denti**, corretta in `cbe5c3b`: `ProjectCopyAsync` faceva **una lettura e una `SaveChanges` per
+file**, dentro la transazione di enqueue che tiene l'unico write lock di SQLite. Una copia di
+cartella si espande a un item per file del sottoalbero: migliaia di round trip sotto quel lock,
+proprio dove un job che sta copiando aspetta di scrivere i propri checkpoint. Ora è **una query e
+un salvataggio** per l'intero lotto. La seconda metà della correzione è altrettanto necessaria: la
+ricerca della riga già proiettata è scopata per **directory** e non per `PendingJobId` da solo —
+quella colonna non ha indice, quindi la forma semplice è una scansione di `Files` (742 033 righe
+sul catalogo vero) e alla **prima** applicazione scansionerebbe tutto per non trovare niente;
+`DirectoryId` è la colonna di testa dei covering index di 11e/14c. Un test la misura **in
+statement, non in millisecondi**, e asserisce che a non crescere siano le **letture**: EF emette
+una INSERT per riga comunque — l'enqueue paga esattamente quella per i propri
+`OperationJobItems`, 61 di ciascuna — quindi contare gli statement misurerebbe il provider, non il
+codice. RED rimettendo la ricerca nel ciclo: **76 letture invece di 16**.
+
+#### Limiti noti e accettati
+- **Una copia annullata lascia sul disco ciò che era già atterrato.** Gli item già finalizzati
+  alla destinazione sono file veri la cui riga proiettata l'annullamento cancella, quindi restano
+  non catalogati fino alla scansione successiva di quel volume. È l'esito onesto: l'alternativa è
+  cancellare file che nessuno ha chiesto di cancellare. `ReconcileCancelledJobAsync` **rifiuta**
+  una Copy per un motivo con i denti — ri-punta la riga `Files` che l'item nomina, e per una copia
+  quell'item nomina il **sorgente**, ancora fermo dov'è sempre stato: ri-puntarlo lascerebbe il
+  catalogo a sostenere che l'originale si è spostato in una destinazione che l'utente ha appena
+  annullato.
+- **Una Copy verso un nome già occupato produce due righe con lo stesso nome nella stessa
+  cartella**: quella reale e quella proiettata. Il job finisce `Blocked(NameCollision)` e §5 dice
+  che un `Blocked` **conserva** l'overlay, quindi il Catalogo mostra il doppione con il badge «In
+  creazione» finché l'utente non risolve. È informativo, non un difetto — ma va saputo.
+- **Le date della copia sono l'istante della copia, non quelle del sorgente.** `Win32FileMover`
+  scrive uno stream nuovo e non preserva i timestamp, quindi portarsi dietro quelli del sorgente
+  daterebbe il file nuovo a qualcosa che non gli è mai successo. Non sono rilette dal disco:
+  `IFileMetadataReader` vuole un mount root e `IndexUpdater` ha un volume GUID, e il valore che
+  restituirebbe è l'istante che abbiamo appena scritto. Una scansione successiva mette i valori
+  veri. La **dimensione** è invece esatta: `Verify` ha confrontato le lunghezze.
+- **`ExcludedByRoot` viene azzerato alla conclusione** anche quando la destinazione è fuori da
+  ogni root attivo. È lo stesso buco noto che 11g documenta per `IndexUpdater` (il filtro di
+  default come «risposta più larga»), e si ripara alla scansione successiva.
+- **La proiezione di una copia di cartella è una riga per file.** Non c'è alternativa: nessuno di
+  quei discendenti esiste alla destinazione, quindi il trucco di `MoveFolder` — un solo overlay
+  sulla riga della cartella — non è disponibile. L'enqueue scrive già un `OperationJobItem` per
+  file nella stessa transazione, quindi è lo stesso ordine di lavoro, non una classe nuova; il
+  tetto del gesto resta `MaxBatchSize`.
+- **Un doppio passaggio di pulizia dei partial logga un Warning innocuo**: l'annullamento dell'API
+  e quello dell'engine possono entrambi provare a cestinare lo stesso `.fadit-partial`, e il
+  secondo prende `SHFileOperation` codice 2 (file non trovato). Pre-esistente, visibile anche in
+  `cancel-mid-copy`; lo scenario passa perché nessun partial resta.
+- **E2E non eseguiti**: il loro `globalSetup` si rifiuta di partire da elevato (12a) e questa
+  sessione era elevata per l'harness.
+- **Il servizio installato non è stato aggiornato**: distribuire questo giro — e con esso pagare
+  le due migration — resta una decisione dell'utente.
 
 ### Fatto nello step 14e (2026-08-25)
 **Il brief dice la verità sul codice.** Nessuna modifica di prodotto: un audit di §3, §4,
