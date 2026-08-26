@@ -748,9 +748,7 @@ visibili. Lo step **15a** è il primo lavoro di **fase 2**: l'operazione **Copy*
 **Non c'è lavoro obbligatorio aperto**: tutto ciò che segue è debito datato,
 decisione di prodotto o fase 2.
 
-**Il servizio installato è ora indietro di uno step** (gira il build di 14e). Distribuire
-15a è una decisione dell'utente, e costa **due migration additive** — la colonna
-`Files.IsMaterialized` e la ricostruzione dei due indici covering di `Files`.
+**Il servizio installato è aggiornato a 15a** (2026-08-26) — vedi «Deploy di 15a» qui sotto.
 
 ### A. Difetti veri, in ordine di fastidio *(nessuno è MVP)*
 1. **La corsa dell'auto-selezione su Volumi** — selezione automatica e clic dell'utente
@@ -903,6 +901,81 @@ resta provato solo da `sc start`; il `MinimumLogLevel` installato è **`Trace`**
 livello il tetto che lega è `LogMaxRows` = 500 000 righe (≈184 MB, misurato allo step 13) —
 oggi il DB dei log sta a 3,9 MB; e **su `C:` il percorso incrementale non è ancora acceso**,
 cioè i 739 421 file che contano continuano a dipendere da una scansione completa.
+
+### Deploy di 15a sul catalogo reale (2026-08-26)
+**Il servizio installato sa copiare.** Distribuito su richiesta dell'utente subito dopo la
+chiusura dello step.
+
+**Stato di partenza, verificato prima di toccare qualcosa** — è la stessa domanda del deploy di
+14e, e l'unica che conta: `GET /api/dashboard` dava **0 job in coda, 0 bloccati, 0 in corso**,
+cioè niente da riprendere a metà. Catalogo a **742 669** file (era 742 033 al deploy precedente:
+la differenza è il drift che il worker USN ha raccolto su `D:` da allora).
+
+**Sequenza**: publish col servizio ancora attivo (per accorciare il fermo), poi `sc stop` —
+pulito, WAL checkpointato a zero — poi backup `filetracert.db.pre15a` con **sha256 identico**
+all'originale (`eaac4968…`), poi `install-service.ps1`, che aggiorna in place e non tocca il
+database.
+
+**Due migration, entrambe additive**, applicate all'avvio: `AddFileIsMaterialized` (colonna, con
+default e backfill a `true`) e `CatalogVisibilityIncludesProjectedCopies` (drop e ricrea dei due
+indici covering di `Files`, nessuna ricostruzione di tabella).
+
+**Nessun rebuild dell'FTS**, ed era la cosa da controllare: `IndexableSql` e il conteggio del
+backfill di avvio sono stati allargati **allo stesso modo**, quindi su un catalogo senza copie
+proiettate il numero non si muove e la guardia a senso unico tace. L'unica riga *«Search index is
+short»* nel DB dei log è del **24/08**, cioè del deploy di 14a.
+
+**Verificato sul ferro**, servizio `Running`/`Automatic`, **401** senza token, **zero Error** nel
+log dall'avvio (restano solo i Warning `FirstOrDefault senza OrderBy` di EF, pre-esistenti):
+
+| controllo | esito |
+|---|---|
+| migration applicate | le due di 15a, in cima a `__EFMigrationsHistory` |
+| `Files.IsMaterialized` | presente, `INTEGER`, default `1` |
+| righe con `IsMaterialized = 0` | **0** — nessuna Copy accodata, come dev'essere |
+| i due indici covering | ricreati con la colonna in coda |
+| catalogo | 742 675 file · 114 212 directory · 742 669 righe FTS · 25 volumi |
+| `foreign_key_check` | nessuna violazione |
+
+**La proprietà di 11e regge sul catalogo vero, col disgiunto nuovo** — è la misura che lo step
+aveva fatto su 20 000 righe, ora provata su 742 675: il ramo caldo del contatore per cartella dice
+`SEARCH f USING COVERING INDEX IX_Files_DirectoryId_PendingDirectoryId_IsIncluded_IsPresent_IsMaterialized`.
+
+**E la funzione vive**, dimostrata **senza creare niente** — con il preview, che per §7 non crea il
+job. Stesso file (12 091 byte), stesso volume, stessa destinazione, cambia solo il verbo:
+
+| preview | `requiredBytes` | `marginBytes` |
+|---|---|---|
+| `CopyFile` | **12 091** | 362 |
+| `MoveFile` | **0** | 0 |
+
+È il punto n° 1 dello step visto in produzione: una copia intra-volume chiede spazio, un move
+intra-volume no. `estimateIsLive: true`, cioè il numero l'ha risposto il dispositivo in
+quell'istante.
+
+**I tempi, attraverso l'API, mediana di 5**, accanto a quelli del deploy di 14e:
+
+| endpoint | 14e | oggi |
+|---|---|---|
+| `GET /api/dashboard` | 119 ms | 125 ms |
+| `GET /api/volumes` | 45 ms | 39 ms |
+| `GET /api/volumes/{id}` | 176 ms | 264 ms |
+
+**La Ricerca restituisce esattamente le stesse righe di 14a** (`report` 431, `report`+Image 2,
+`e` tappato a 10 000, `e`+Image 508): il disgiunto non cambia una risposta, ed è atteso, perché
+righe proiettate non ce ne sono. I millisecondi sono più alti di quelli di 14a (133 / 95 / 903 /
+253 contro 55 / 50 / 471 / 90) e **non sono attribuibili a questo giro senza un A/B che non è
+stato fatto**: 14a misurava una **copia a riposo**, questa è il servizio vivo sul disco di
+sistema, e lo stesso avvertimento è scritto nel paragrafo di 14a. Ciò che è stato verificato è la
+domanda vera — il **piano è identico** con e senza il disgiunto (`SCAN fts` + seek per rowid in
+entrambi i casi), quindi quel termine è un booleano per riga già recuperata, non una passata in
+più.
+
+**Limiti dichiarati**: il **riavvio della macchina** continua a non essere stato fatto (l'avvio
+automatico resta provato solo da `sc start`/`install-service.ps1`); nessuna Copy **reale** è stata
+eseguita sul catalogo dell'utente, di proposito — accodarne una duplicherebbe un suo file, e il
+preview prova lo stesso percorso di enqueue senza scrivere niente; e i backup precedenti
+(`filetracert.db.pre14a`, `.pre14e`) restano dove sono, accanto al nuovo `.pre15a`.
 
 ### Fatto nello step 15a (2026-08-26, commit `e999238`…`cbe5c3b`)
 **Si può copiare, e la copia è un'operazione di prima classe.** Primo lavoro di **fase 2**,
