@@ -246,7 +246,7 @@ public sealed class CopyProjectionTests : IDisposable
             .SingleAsync();
 
         var rows = await check.Database
-            .SqlQueryRaw<int>($"SELECT rowid AS Value FROM FileSearchIndex WHERE rowid = {projectedId}")
+            .SqlQuery<int>($"SELECT rowid AS Value FROM FileSearchIndex WHERE rowid = {projectedId}")
             .ToListAsync();
 
         // §5 — the projected name is what gets indexed. Queue fifty copies and the search has to

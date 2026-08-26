@@ -1,4 +1,4 @@
-﻿using FileTracert.Business.Projection;
+using FileTracert.Business.Projection;
 using FileTracert.Business.Realtime;
 using FileTracert.Business.Scanning;
 using FileTracert.Contracts.Enums;
@@ -112,8 +112,19 @@ public sealed class JobExecutionEngine
                 return;
             }
 
-            bool simple = job.IsIntraVolume ||
-                          job.Type is JobType.CreateFolder or JobType.RenameFile or JobType.RenameFolder;
+            // 15a — spelled out by TYPE instead of `IsIntraVolume || …`. A copy is NEVER simple,
+            // not even within one volume: "simple" means one OS call and no bytes, and a copy
+            // moves bytes wherever it lands. It therefore always goes through the state machine
+            // below — Pending → SpaceReserved → Copying → Verifying → Completed — which is the
+            // same machine as a cross-volume move with DeletingSource skipped. JobState gains
+            // nothing: one state fewer travelled is not a new state.
+            bool simple = job.Type switch
+            {
+                JobType.CreateFolder or JobType.RenameFile or JobType.RenameFolder => true,
+                JobType.MoveFile or JobType.MoveFolder => job.IsIntraVolume,
+                JobType.CopyFile or JobType.CopyFolder => false,
+                _ => job.IsIntraVolume,
+            };
 
             if (simple)
                 await ExecuteSimpleAsync(job, ct);
@@ -270,6 +281,18 @@ public sealed class JobExecutionEngine
             if (ct.IsCancellationRequested) return;
             // If VerifyAndFinalize set Failed/Blocked, abort.
             if (job.State is JobState.Failed or JobState.Blocked) return;
+            // A copy has no source to delete: §4's chain is the same one minus that step, so it
+            // goes straight to completion. Its items stop at Verified — the state DeleteSources
+            // would have promoted — so they are finished here instead, or a Completed job would
+            // carry items that still read as work in progress.
+            if (IsCopy(job))
+            {
+                foreach (var item in job.Items.Where(i => i.State == JobItemState.Verified))
+                    item.State = JobItemState.Done;
+                await CompleteJobAsync(job, ct);
+                return;
+            }
+
             // A Cancel committed after the guard above trips the token on this transition.
             await TransitionAsync(job, JobState.DeletingSource, ct);
         }
@@ -639,7 +662,7 @@ public sealed class JobExecutionEngine
     /// </summary>
     private static OperationJobItem? FindFolderMarker(OperationJob job, bool pendingOnly)
     {
-        if (job.Type != JobType.MoveFolder) return null;
+        if (job.Type is not (JobType.MoveFolder or JobType.CopyFolder)) return null;
         return job.Items.FirstOrDefault(i =>
             i.FileId is null &&
             string.Equals(i.TargetRelativePath, job.TargetRelativePath, StringComparison.OrdinalIgnoreCase) &&
@@ -686,19 +709,33 @@ public sealed class JobExecutionEngine
     }
 
     /// <summary>
-    /// Re-measures both volumes of a finished cross-volume job. The probe is the only writer of
+    /// Re-measures the volumes a finished job actually changed. The probe is the only writer of
     /// this column, so after the biggest change a job can make to a drive the honest move is to
     /// look again — not to guess by how much it changed.
+    ///
+    /// <para>15a — the guard is the DEMAND, not <c>IsIntraVolume</c>, for the same reason
+    /// <see cref="SpaceLedger.ReservationFor"/>'s is: an intra-volume copy has just written a
+    /// second set of bytes onto its own volume, and skipping the re-measure would leave the
+    /// Dashboard, the realtime volume push and the next job's planning fallback reading a figure
+    /// one whole job out of date.</para>
     /// </summary>
     private void RefreshMeasuredFreeSpace(OperationJob job)
     {
-        if (job.IsIntraVolume) return;
+        if (job.RequiredBytesTarget <= 0) return;
 
         if (job.TargetVolume is not null)
             StoreMeasuredFreeSpace(job.TargetVolume, _spaceCheck.Measure(job.TargetVolume));
         if (job.SourceVolume is not null && job.SourceVolumeId != job.TargetVolumeId)
             StoreMeasuredFreeSpace(job.SourceVolume, _spaceCheck.Measure(job.SourceVolume));
     }
+
+    /// <summary>
+    /// The two job types that write bytes and keep the source. They share the whole cross-volume
+    /// state machine with a move and differ only in what happens after Verifying, so the question
+    /// is asked in one place rather than spelled out at each branch.
+    /// </summary>
+    private static bool IsCopy(OperationJob job) =>
+        job.Type is JobType.CopyFile or JobType.CopyFolder;
 
     private void MarkStarted(OperationJob job)
     {

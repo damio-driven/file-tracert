@@ -1,4 +1,4 @@
-﻿using FileTracert.Contracts.Enums;
+using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Scanning;
 using FileTracert.Data.Entities;
 using FileTracert.Data;
@@ -73,7 +73,8 @@ public sealed class JobSnapshotRefresher
 
         // The job-level destination is what the engine uses to create the target folder; it must
         // follow the same rewrites, or a completed rename resurrects the old folder name.
-        if (job.Type is JobType.MoveFile or JobType.MoveFolder or JobType.CreateFolder &&
+        if (job.Type is JobType.MoveFile or JobType.MoveFolder or JobType.CreateFolder
+                     or JobType.CopyFile or JobType.CopyFolder &&
             !string.IsNullOrEmpty(job.TargetRelativePath))
         {
             job.TargetRelativePath = Replay(moves, job.TargetVolumeId, job.TargetRelativePath);
@@ -126,6 +127,26 @@ public sealed class JobSnapshotRefresher
         var volumeId = resolvedVolumes.Single();
         if (job.SourceVolumeId == volumeId) return null;
 
+        // 15a — a COPY follows its source wherever it went, unconditionally, and keeps the
+        // destination the user chose. Neither of the two refusals below applies to it: "the file
+        // is already at the destination volume" does not make a copy pointless (copying INTO the
+        // volume a file already lives on is a perfectly ordinary intra-volume copy), and an
+        // intra-volume copy whose file has left that volume simply becomes a cross-volume copy to
+        // the same chosen destination — its TargetRelativePath names a place on the target volume,
+        // which has not moved. Left in the move branch it would be parked for reasons that are
+        // about moving.
+        if (IsCopy(job))
+        {
+            _logger.LogInformation(
+                "Job {Id}: its file(s) now live on volume {New} instead of {Old} — the copy " +
+                "follows them and keeps its destination.", job.Id, volumeId, job.SourceVolumeId);
+
+            job.SourceVolumeId = volumeId;
+            job.SourceVolume = await _db.Volumes.FirstOrDefaultAsync(v => v.Id == volumeId, ct);
+            job.IsIntraVolume = job.TargetVolumeId == volumeId;
+            return null;
+        }
+
         var isRename = job.Type is JobType.RenameFile or JobType.RenameFolder;
         if (!isRename)
         {
@@ -160,6 +181,9 @@ public sealed class JobSnapshotRefresher
 
         return null;
     }
+
+    private static bool IsCopy(OperationJob job) =>
+        job.Type is JobType.CopyFile or JobType.CopyFolder;
 
     private async Task<string?> RefreshItemAsync(
         OperationJob job, OperationJobItem item, List<FolderMove> moves,

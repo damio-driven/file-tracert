@@ -1,4 +1,4 @@
-﻿using FileTracert.Business.Filtering;
+using FileTracert.Business.Filtering;
 using FileTracert.Business.Projection;
 using FileTracert.Business.Scanning;
 using FileTracert.Contracts.Enums;
@@ -55,7 +55,146 @@ public sealed class IndexUpdater
             case JobType.RenameFolder:  await RenameFolderIndexAsync(job, ct); break;
             case JobType.MoveFile:      await MoveFileIndexAsync(job, ct); break;
             case JobType.MoveFolder:    await MoveFolderIndexAsync(job, removedSourceDirPaths, ct); break;
+            case JobType.CopyFile:
+            case JobType.CopyFolder:    await CopyIndexAsync(job, ct); break;
         }
+    }
+
+    /// <summary>
+    /// A completed Copy turns its PROJECTION into a fact. <c>OverlayWriter</c> created a row at
+    /// the destination when the job was queued — <c>IsMaterialized = false</c>,
+    /// <c>IsPresent = false</c>, <c>PendingCreate</c> — and the bytes have now landed and been
+    /// verified, so the row stops being a promise: materialized, present, no overlay.
+    ///
+    /// <para>One handler for both Copy types: a file copy is a folder copy of one item, and the
+    /// only difference — the destination directory tree — is handled by resolving each distinct
+    /// target directory as MATERIALIZED, which promotes the projected folder rows the same walk
+    /// created (<see cref="DirectoryResolver"/>).</para>
+    ///
+    /// <para><b>Ordering that carries the whole thing.</b> This runs inside
+    /// <c>CompleteJobAsync</c>'s transaction, BEFORE <c>OverlayWriter.ClearForJobAsync</c> — which
+    /// deletes rows a job owns that are still <c>IsMaterialized = false</c>. Promoting first is
+    /// what turns that delete into a no-op for a successful copy; the other order would erase the
+    /// file that was just written, from the catalog, in the same transaction that declared the job
+    /// complete.</para>
+    ///
+    /// <para><c>UsnFileRef</c> stays null: it is the FRN of a brand-new file, which only a scan
+    /// can learn, and the unique <c>(VolumeId, UsnFileRef)</c> index is filtered so any number of
+    /// nulls coexist. The next scan of the target assigns it (match by FRN, then by path COLLATE
+    /// NOCASE — which finds this very row).</para>
+    /// </summary>
+    private async Task CopyIndexAsync(OperationJob job, CancellationToken ct)
+    {
+        if (job.TargetVolumeId is null) return;
+        var targetVolumeId = job.TargetVolumeId.Value;
+
+        var fileItems = job.Items.Where(i => i.FileId.HasValue).ToList();
+
+        // The folder marker's destination root: the engine physically created it, so it is indexed
+        // even when the subtree held no indexed file (C21's shape).
+        var marker = job.Items.FirstOrDefault(i =>
+            i.FileId is null &&
+            string.Equals(i.TargetRelativePath, job.TargetRelativePath, StringComparison.OrdinalIgnoreCase));
+        if (marker is not null)
+            await FindOrCreateDirAsync(targetVolumeId, marker.TargetRelativePath, ct);
+
+        if (fileItems.Count == 0)
+        {
+            await _db.SaveChangesAsync(ct);
+            return;
+        }
+
+        // Every row this job projected, in one query, keyed the way an item names it.
+        var projected = await _db.Files
+            .Where(f => f.PendingJobId == job.Id && !f.IsMaterialized)
+            .ToListAsync(ct);
+        var projectedByPlace = projected
+            .GroupBy(f => (f.DirectoryId, f.Name), TupleNameComparer.Instance)
+            .ToDictionary(g => g.Key, g => g.First(), TupleNameComparer.Instance);
+
+        var categories = await _db.ExtensionCategories.AsNoTracking()
+            .ToDictionaryAsync(e => e.Extension, e => e.Category, ct);
+
+        var dirCache = new Dictionary<string, DirectoryNode>(StringComparer.OrdinalIgnoreCase);
+        // The ROWS, not their ids: a row this pass inserts has no id until the save below.
+        var landed = new List<FileEntry>(fileItems.Count);
+        var now = DateTime.UtcNow;
+
+        foreach (var item in fileItems)
+        {
+            var name = ScanPath.Name(item.TargetRelativePath);
+            var dirPath = ScanPath.Parent(item.TargetRelativePath);
+            if (!dirCache.TryGetValue(dirPath, out var targetDir))
+            {
+                targetDir = await FindOrCreateDirAsync(targetVolumeId, dirPath, ct);
+                dirCache[dirPath] = targetDir;
+            }
+
+            if (!projectedByPlace.TryGetValue((targetDir.Id, name), out var row))
+            {
+                // No projection to promote. Reachable when the overlay was never written — a job
+                // born Blocked(DependencyPending) whose release path failed to stamp it, or a row
+                // a scan claimed in between. The file IS on disk and verified, so the catalog must
+                // hold it either way; a fresh row is the same outcome by another route.
+                row = new FileEntry
+                {
+                    VolumeId = targetVolumeId,
+                    DirectoryId = targetDir.Id,
+                    Name = name,
+                    SizeBytes = item.SizeBytes,
+                };
+                _db.Files.Add(row);
+                _logger.LogInformation(
+                    "Job {Id}: no projected row for '{Path}' — indexing the landed copy directly.",
+                    job.Id, item.TargetRelativePath);
+            }
+
+            row.VolumeId = targetVolumeId;
+            row.DirectoryId = targetDir.Id;
+            row.Name = name;
+            row.SizeBytes = item.SizeBytes;
+            row.UsnFileRef = null;
+
+            // The name is the source's, so the type verdict is unchanged — but the PLACE is new,
+            // and inclusion is a fact of the place. Recomputed with the same helpers the scan
+            // pipeline uses (§9), exactly as RenameFileIndexAsync does for the same reason.
+            var extension = FileFilter.GetExtension(name);
+            var filter = await _filters.ResolveForPathAsync(targetVolumeId, item.TargetRelativePath, ct);
+            row.Extension = extension;
+            row.Category = FileFilter.ResolveCategory(extension, categories);
+            row.ExcludedByType = !FileFilter.IsAllowedType(extension, filter);
+            row.ExcludedByRoot = false;
+            row.ExcludedByScan = !FileFilter.IsInsidePerimeter(item.TargetRelativePath, row.Attributes, filter);
+            row.IsIncluded = !(row.ExcludedByType || row.ExcludedByRoot || row.ExcludedByScan);
+
+            // The mover writes a NEW stream (Win32FileMover.CopyFileAsync), so the destination's
+            // timestamps are the moment of the copy, not the source's — carrying the source's over
+            // would date the new file to something that never happened to it. Not read back from
+            // disk: IFileMetadataReader wants a mount root and this class holds a volume GUID, and
+            // the value it would return is the instant we have just written. A later scan replaces
+            // both with what the filesystem really holds.
+            row.FileCreatedUtc = now;
+            row.FileModifiedUtc = now;
+            row.LastIndexedUtc = now;
+
+            // The promise becomes a fact. Both flags, and the overlay dropped here rather than by
+            // ClearForJobAsync — which would DELETE this row while it is still unmaterialized.
+            row.IsMaterialized = true;
+            row.IsPresent = true;
+            row.PendingState = EntityPendingState.None;
+            row.PendingJobId = null;
+            row.PendingName = null;
+            row.PendingDirectoryId = null;
+
+            landed.Add(row);
+        }
+
+        await _db.SaveChangesAsync(ct);
+
+        // AFTER the save, set-based, and reading the ids only now — the rows inserted above get
+        // theirs from that save. The entries are rebuilt from the rows as they stand, so the
+        // directory each copy landed in is the one the path is built from (E4's rule).
+        await _fts.SyncFilesAsync([.. landed.Select(f => f.Id)], ct);
     }
 
     // ── per-type handlers ─────────────────────────────────────────────────────
@@ -271,7 +410,18 @@ public sealed class IndexUpdater
     /// </summary>
     public async Task ReconcileCancelledJobAsync(OperationJob job, CancellationToken ct)
     {
+        // 15a — a COPY is never reconciled this way, and the reason has teeth. This method
+        // re-points the Files row an item names at the target, which is right for a move (the row
+        // travelled with the file) and destructive for a copy: a copy item's FileId is the SOURCE
+        // file, which is still sitting untouched where it always was. Re-pointing it would leave
+        // the catalog claiming the original had moved to a destination the user just cancelled.
+        //
+        // What a cancelled copy leaves instead: any item already finalized at the destination is a
+        // real file whose projected row the cancel deleted, so it is uncatalogued until the next
+        // scan of that volume finds it. That is the honest outcome — the alternative is deleting
+        // files nobody asked to delete.
         if (job.TargetVolumeId is null || job.IsIntraVolume) return;
+        if (job.Type is JobType.CopyFile or JobType.CopyFolder) return;
         var targetVolumeId = job.TargetVolumeId.Value;
 
         var landed = job.Items
@@ -337,6 +487,22 @@ public sealed class IndexUpdater
     /// CONTENT, not of where it lives, and the only place that reads them
     /// (<c>BulkIndexWriter.ScanMerge</c>) treats them as facts a scan never re-derives.</para>
     /// </summary>
+    /// <summary>
+    /// Case-insensitive on the name half, because that is how this catalog compares file names
+    /// everywhere else (the scan merge's <c>COLLATE NOCASE</c>, <c>ScanPath</c>'s helpers).
+    /// </summary>
+    private sealed class TupleNameComparer : IEqualityComparer<(int DirectoryId, string Name)>
+    {
+        public static readonly TupleNameComparer Instance = new();
+
+        public bool Equals((int DirectoryId, string Name) a, (int DirectoryId, string Name) b) =>
+            a.DirectoryId == b.DirectoryId &&
+            string.Equals(a.Name, b.Name, StringComparison.OrdinalIgnoreCase);
+
+        public int GetHashCode((int DirectoryId, string Name) x) =>
+            HashCode.Combine(x.DirectoryId, x.Name.ToUpperInvariant());
+    }
+
     private static void RepointToVolume(FileEntry file, int targetVolumeId)
     {
         file.VolumeId = targetVolumeId;
