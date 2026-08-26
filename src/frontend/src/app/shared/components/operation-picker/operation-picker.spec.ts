@@ -43,7 +43,7 @@ function childrenResult(directories: CatalogDirDto[]): CatalogChildrenDto {
   };
 }
 
-function setup(volumes: VolumeDto[] = []) {
+function setup(volumes: VolumeDto[] = [], mode: 'move' | 'copy' = 'move') {
   const enqueueBatch = vi.fn((reqs: CreateJobRequest[]) =>
     of(reqs.map((_, i) => ({ id: i + 1, blockReason: 'None' })) as never));
   const previewBatch = vi.fn((_reqs: CreateJobRequest[]) => of(feasibility));
@@ -66,6 +66,7 @@ function setup(volumes: VolumeDto[] = []) {
 
   const fixture = TestBed.createComponent(OperationPicker);
   fixture.componentRef.setInput('items', items);
+  fixture.componentRef.setInput('mode', mode);
   // (fixture exposed for output subscriptions in the UX tests)
   const cmp = fixture.componentInstance as unknown as {
     targetVolumeId: number | null;
@@ -462,5 +463,68 @@ describe('OperationPicker space verdict', () => {
     await fixture.whenStable();
 
     expect((fixture.nativeElement as HTMLElement).textContent).toContain('ultimo dato noto');
+  });
+});
+
+describe('OperationPicker mode', () => {
+  it('queues Move types by default', async () => {
+    const { enqueueBatch, cmp } = setup();
+
+    await cmp.enqueue();
+
+    expect(enqueueBatch.mock.calls[0][0].map(r => r.type)).toEqual(['MoveFile', 'MoveFile']);
+  });
+
+  it('queues Copy types when opened as a copy', async () => {
+    const { enqueueBatch, cmp } = setup([], 'copy');
+
+    await cmp.enqueue();
+
+    // The verb comes from the mode the caller opened the dialog with; the entity still decides
+    // File vs Folder, which is why the backend has two Copy types rather than one.
+    expect(enqueueBatch.mock.calls[0][0].map(r => r.type)).toEqual(['CopyFile', 'CopyFile']);
+  });
+
+  it('previews the same verb it would queue', async () => {
+    const { previewBatch, cmp } = setup([], 'copy');
+
+    await cmp.runPreview();
+
+    // A preview that asked about a Move would answer 0 bytes for an intra-volume destination and
+    // promise room the enqueue then refuses.
+    expect(previewBatch.mock.calls[0][0].every(r => r.type === 'CopyFile')).toBe(true);
+  });
+
+  // The commit button names the operation rather than saying a bare "Accoda": the two verbs
+  // differ in what they leave behind (a move recycles the originals), so a mode error has to be
+  // visible on the control that commits it, not only in the title above.
+  it('the commit button names a move', () => {
+    const { fixture } = setup();
+    fixture.detectChanges();
+    const label = (fixture.nativeElement as HTMLElement)
+      .querySelector('.ft-modal-footer .ft-btn--primary')!.textContent!.trim();
+
+    expect(label).toContain('spostamento');
+    expect(label).not.toContain('copia');
+  });
+
+  it('the commit button names a copy', () => {
+    const { fixture } = setup([], 'copy');
+    fixture.detectChanges();
+    const label = (fixture.nativeElement as HTMLElement)
+      .querySelector('.ft-modal-footer .ft-btn--primary')!.textContent!.trim();
+
+    expect(label).toContain('copia');
+    expect(label).not.toContain('spostamento');
+  });
+
+  it('the title says which operation is being queued', () => {
+    const copy = setup([], 'copy');
+    copy.fixture.detectChanges();
+    const title = (copy.fixture.nativeElement as HTMLElement)
+      .querySelector('.ft-modal-title')!.textContent!.trim();
+
+    expect(title).toContain('Copia');
+    expect(title).toContain('2');
   });
 });

@@ -204,7 +204,10 @@
             {{ store.selectionCount() === 1 ? 'file selezionato' : 'file selezionati' }}
           </span>
           <div class="flex gap-2">
-            <button type="button" class="ft-btn ft-btn--primary" (click)="openPicker()">
+            <button type="button" class="ft-btn ft-btn--ghost" (click)="openPicker('copy')">
+              Copia selezionati…
+            </button>
+            <button type="button" class="ft-btn ft-btn--primary" (click)="openPicker('move')">
               Sposta selezionati…
             </button>
             <button type="button" class="ft-btn ft-btn--ghost" (click)="store.clearSelection()">
@@ -328,5 +331,5 @@
 </section>
 
 @if (pickerOpen) {
-  <ft-operation-picker [items]="pickerItems()" (closed)="closePicker()" (completed)="onPickerCompleted()" />
+  <ft-operation-picker [items]="pickerItems()" [mode]="pickerMode" (closed)="closePicker()" (completed)="onPickerCompleted()" />
 }

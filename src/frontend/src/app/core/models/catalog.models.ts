@@ -263,7 +263,8 @@ export type JobState =
   | 'Completed' | 'Blocked' | 'Failed' | 'Cancelled';
 
 export type JobType =
-  | 'CreateFolder' | 'RenameFile' | 'RenameFolder' | 'MoveFile' | 'MoveFolder';
+  | 'CreateFolder' | 'RenameFile' | 'RenameFolder' | 'MoveFile' | 'MoveFolder'
+  | 'CopyFile' | 'CopyFolder';
 
 export type JobBlockReason =
   | 'None' | 'InsufficientSpace' | 'TargetVolumeOffline' | 'SourceVolumeOffline'

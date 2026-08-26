@@ -91,6 +91,8 @@ export class Queue implements OnInit {
       case 'RenameFolder': return 'Rinomina cartella';
       case 'MoveFile': return 'Sposta file';
       case 'MoveFolder': return 'Sposta cartella';
+      case 'CopyFile': return 'Copia file';
+      case 'CopyFolder': return 'Copia cartella';
     }
   }
 

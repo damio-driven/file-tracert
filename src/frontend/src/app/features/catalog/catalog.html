@@ -176,7 +176,10 @@
                       Rinomina
                     </button>
                   }
-                  <button type="button" class="ft-btn ft-btn--primary" (click)="openPicker()">
+                  <button type="button" class="ft-btn ft-btn--ghost" (click)="openPicker('copy')">
+                    Copia selezionati…
+                  </button>
+                  <button type="button" class="ft-btn ft-btn--primary" (click)="openPicker('move')">
                     Sposta selezionati…
                   </button>
                   <button type="button" class="ft-btn ft-btn--ghost" (click)="store.clearSelection()">
@@ -340,7 +343,7 @@
 </section>
 
 @if (pickerOpen) {
-  <ft-operation-picker [items]="pickerItems()" (closed)="closePicker()" (completed)="onPickerCompleted()" />
+  <ft-operation-picker [items]="pickerItems()" [mode]="pickerMode" (closed)="closePicker()" (completed)="onPickerCompleted()" />
 }
 
 @if (renameTarget(); as target) {

@@ -10,7 +10,7 @@ import { RelativeTimePipe } from '../../shared/pipes/relative-time.pipe';
 import { FtPill } from '../../shared/components/ft-pill/ft-pill';
 import { FtPanel } from '../../shared/components/ft-panel/ft-panel';
 import { localDayEndToUtcIso, localDayStartToUtcIso, utcIsoToLocalDay } from '../../shared/date/day-range.util';
-import { OperationPicker } from '../../shared/components/operation-picker/operation-picker';
+import { OperationPicker, PickerMode } from '../../shared/components/operation-picker/operation-picker';
 import { FtProjectionBadge } from '../../shared/components/ft-projection-badge/ft-projection-badge';
 import { FILE_CATEGORIES, fileCategoryLabel, fileCategoryTag } from '../../shared/file-category';
 import { FileCategory, SearchResultDto, SearchScope, SearchSort, SelectedItem } from '../../core/models/catalog.models';
@@ -32,6 +32,11 @@ export class Search implements OnInit {
 
   protected queryText = '';
   protected pickerOpen = false;
+  /**
+   * Which verb the picker was opened with. Set by the button the user pressed, so the choice is
+   * made where the intent is formed rather than by a control inside the dialog.
+   */
+  protected pickerMode: PickerMode = 'move';
 
   // The store keeps full SelectedItem objects, so the picker gets the whole selection
   // even when it spans results pages that are no longer visible (fix #6).
@@ -184,7 +189,8 @@ export class Search implements OnInit {
     return this.store.selectedFileIds().includes(fileId);
   }
 
-  protected openPicker(): void {
+  protected openPicker(mode: PickerMode = 'move'): void {
+    this.pickerMode = mode;
     this.pickerOpen = true;
   }
 

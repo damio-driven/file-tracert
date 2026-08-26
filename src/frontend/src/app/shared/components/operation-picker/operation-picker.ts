@@ -22,6 +22,9 @@ interface FolderCrumb {
   name: string;
 }
 
+/** What the picker is queuing. Chosen by the caller, never switched inside the dialog. */
+export type PickerMode = 'move' | 'copy';
+
 @Component({
   selector: 'ft-operation-picker',
   standalone: true,
@@ -32,6 +35,15 @@ interface FolderCrumb {
 })
 export class OperationPicker implements OnInit {
   readonly items = input.required<SelectedItem[]>();
+
+  /**
+   * Move or copy. Deliberately an INPUT rather than a control inside the dialog: a toggle above a
+   * button that only says "Accoda" is a mode error waiting to happen, and the two operations are
+   * not equally recoverable — a move recycles the originals. The user decides at the point of
+   * intent (two buttons in the selection bar) and the dialog states the decision in its title and
+   * in the label of the button that commits it.
+   */
+  readonly mode = input<PickerMode>('move');
   /** Popup dismissed (Annulla, backdrop, X). The parent must NOT clear the selection. */
   readonly closed = output<void>();
   /** Whole batch enqueued successfully — the only event that consumes the selection. */
@@ -126,11 +138,21 @@ export class OperationPicker implements OnInit {
     return this.items().filter(i => i.kind === 'Folder').length;
   }
 
-  /** Move request for one selected item: MoveFile for files, MoveFolder for folders. */
-  private toMoveRequest(item: SelectedItem, folder: string): CreateJobRequest {
+  /** One request per selected item: the entity decides File vs Folder, the mode decides the verb. */
+  private toRequest(item: SelectedItem, folder: string): CreateJobRequest {
+    const copying = this.mode() === 'copy';
+    const type = item.kind === 'Folder'
+      ? (copying ? 'CopyFolder' : 'MoveFolder')
+      : (copying ? 'CopyFile' : 'MoveFile');
+
     return item.kind === 'Folder'
-      ? { type: 'MoveFolder', sourceFileId: null, sourceDirectoryId: item.id, targetVolumeId: this.targetVolumeId!, targetRelativePath: folder, newName: null }
-      : { type: 'MoveFile', sourceFileId: item.id, sourceDirectoryId: null, targetVolumeId: this.targetVolumeId!, targetRelativePath: folder, newName: null };
+      ? { type, sourceFileId: null, sourceDirectoryId: item.id, targetVolumeId: this.targetVolumeId!, targetRelativePath: folder, newName: null }
+      : { type, sourceFileId: item.id, sourceDirectoryId: null, targetVolumeId: this.targetVolumeId!, targetRelativePath: folder, newName: null };
+  }
+
+  /** The verb, once, so title, empty-folder note and commit button cannot drift apart. */
+  protected get copying(): boolean {
+    return this.mode() === 'copy';
   }
 
   protected get targetVolume(): VolumeDto | undefined {
@@ -247,7 +269,7 @@ export class OperationPicker implements OnInit {
       // evaluates the ledger once (weighing each folder's subtree), so the verdict
       // covers the entire selection.
       const result = await firstValueFrom(this.api.previewBatch(
-        this.items().map(item => this.toMoveRequest(item, folder)),
+        this.items().map(item => this.toRequest(item, folder)),
       ));
       this.preview.set(result);
     } catch (e) {
@@ -270,7 +292,7 @@ export class OperationPicker implements OnInit {
       // and pressing "Accoda" again is safe.
       // The destination folder is sent alone — the backend appends each entity's name.
       const jobs = await firstValueFrom(this.api.enqueueBatch(
-        this.items().map(item => this.toMoveRequest(item, folder)),
+        this.items().map(item => this.toRequest(item, folder)),
       ));
       this.enqueuedCount.set(jobs.length);
       // Since 9c a conflicting operation is ACCEPTED and parked behind the job that holds

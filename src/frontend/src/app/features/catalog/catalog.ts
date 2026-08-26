@@ -7,7 +7,7 @@ import { BytesPipe } from '../../shared/pipes/bytes.pipe';
 import { RelativeTimePipe } from '../../shared/pipes/relative-time.pipe';
 import { FtPill } from '../../shared/components/ft-pill/ft-pill';
 import { FtPanel } from '../../shared/components/ft-panel/ft-panel';
-import { OperationPicker } from '../../shared/components/operation-picker/operation-picker';
+import { OperationPicker, PickerMode } from '../../shared/components/operation-picker/operation-picker';
 import { NameDialog } from '../../shared/components/name-dialog/name-dialog';
 import { FtProjectionBadge } from '../../shared/components/ft-projection-badge/ft-projection-badge';
 import { fileCategoryLabel, fileCategoryTag } from '../../shared/file-category';
@@ -29,6 +29,11 @@ export class Catalog implements OnInit {
   protected readonly Math = Math;
 
   protected pickerOpen = false;
+  /**
+   * Which verb the picker was opened with. Set by the button the user pressed, so the choice is
+   * made where the intent is formed rather than by a control inside the dialog.
+   */
+  protected pickerMode: PickerMode = 'move';
   protected readonly renameTarget = signal<SelectedItem | null>(null);
   protected readonly newFolderOpen = signal(false);
 
@@ -110,7 +115,8 @@ export class Catalog implements OnInit {
     return this.store.selectedKeys().has(`Folder:${id}`);
   }
 
-  protected openPicker(): void {
+  protected openPicker(mode: PickerMode = 'move'): void {
+    this.pickerMode = mode;
     this.pickerOpen = true;
   }
 

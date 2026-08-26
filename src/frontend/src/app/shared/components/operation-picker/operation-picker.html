@@ -1,10 +1,11 @@
-<div class="ft-modal-backdrop picker-backdrop" (click)="onBackdropClick($event)" role="dialog" aria-modal="true" aria-label="Sposta file">
+<div class="ft-modal-backdrop picker-backdrop" (click)="onBackdropClick($event)" role="dialog" aria-modal="true" [attr.aria-label]="copying ? 'Copia file' : 'Sposta file'">
   <div class="ft-modal picker-modal">
 
     <!-- Header -->
     <div class="ft-modal-header">
       <div class="ft-modal-title">
-        Sposta {{ items().length }} {{ items().length === 1 ? 'elemento' : 'elementi' }}
+        {{ copying ? 'Copia' : 'Sposta' }}
+        {{ items().length }} {{ items().length === 1 ? 'elemento' : 'elementi' }}
       </div>
       <button class="ft-modal-close" type="button" (click)="close()" aria-label="Chiudi">✕</button>
     </div>
@@ -86,7 +87,7 @@
           } @else if (noDestinations) {
             <div class="picker-notice">
               Nessun volume catalogabile: aggiungine uno dalla schermata Volumi per poter
-              spostare qui i file.
+              {{ copying ? 'copiare' : 'spostare' }} qui i file.
             </div>
           } @else {
             <select id="picker-vol" class="picker-select" [(ngModel)]="targetVolumeId" (ngModelChange)="onVolumeChange()">
@@ -153,7 +154,7 @@
             <div class="folder-list">
               @if (newFolderSegments().length > 0) {
                 <div class="folder-empty txt-faint">
-                  Cartella nuova — verrà creata al momento dello spostamento.
+                  Cartella nuova: verrà creata al momento {{ copying ? 'della copia' : 'dello spostamento' }}.
                 </div>
               } @else if (loadingDirs()) {
                 <div class="folder-empty txt-faint">Caricamento…</div>
@@ -278,7 +279,12 @@
           [disabled]="!canSubmit || enqueueing()"
           (click)="enqueue()"
         >
-          {{ enqueueing() ? 'Accodamento…' : 'Accoda →' }}
+          <!-- The commit control names the operation. The title says it too, but this is the
+               button the user presses, and the two operations differ in what they leave behind:
+               a move recycles the originals. -->
+          {{ enqueueing()
+              ? 'Accodamento…'
+              : (copying ? 'Accoda copia →' : 'Accoda spostamento →') }}
         </button>
       </div>
 
