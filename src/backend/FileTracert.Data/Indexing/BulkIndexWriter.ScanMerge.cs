@@ -352,6 +352,12 @@ public sealed partial class BulkIndexWriter
         // scan) and every Pending* field — the queue's projection (§5) — are deliberately absent
         // from the SET list.
         //
+        // IsMaterialized IS set, for the strongest possible reason: the scan just found the file
+        // on disk. A scan can match a destination row a queued Copy projected (the path match is
+        // by DirectoryId + Name), and leaving that row unmaterialized would make it present and
+        // never-created at the same time. The absence pass cannot reach a projected row either —
+        // it requires IsPresent = 1, which a projection never has.
+        //
         // IsIncluded IS set, because a row in this batch is a row the pipeline's filter let
         // through: the scan IS the filter's decision (§4), and it is the only one that can undo an
         // exclusion nobody asked for through Setup — a folder that stops being hidden raises no
@@ -375,6 +381,7 @@ public sealed partial class BulkIndexWriter
                    ExcludedByType = 0,
                    ExcludedByRoot = 0,
                    ExcludedByScan = 0,
+                   IsMaterialized = 1,
                    IsPresent      = 1,
                    LastIndexedUtc = $now,
                    RowUpdatedUtc  = $now

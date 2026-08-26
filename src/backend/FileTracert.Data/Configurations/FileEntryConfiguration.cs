@@ -1,4 +1,4 @@
-using FileTracert.Data.Entities;
+﻿using FileTracert.Data.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
@@ -56,9 +56,23 @@ public sealed class FileEntryConfiguration : IEntityTypeConfiguration<FileEntry>
         // (`SEARCH … USING COVERING INDEX`), and the lookups drop to zero.
         //
         // Column order is the predicate's order, not a guess: the equality key first, then the
-        // discriminator the first branch tests for NULL, then the two flags.
-        builder.HasIndex(x => new { x.DirectoryId, x.PendingDirectoryId, x.IsIncluded, x.IsPresent });
-        builder.HasIndex(x => new { x.PendingDirectoryId, x.IsIncluded, x.IsPresent });
+        // discriminator the first branch tests for NULL, then the flags.
+        //
+        // 15a appends IsMaterialized, and it is the covering property that pays for it. The
+        // Catalog now has to show a destination row a queued Copy projected — §5 — so its
+        // predicate gains a third term. Measured on 20 000 rows, the hot branch of the counter:
+        //
+        //   no disjunct (the 11e baseline)       SEARCH … USING COVERING INDEX …
+        //   OR PendingState <> 'None'            SEARCH … USING INDEX …
+        //   OR NOT IsMaterialized, not indexed   SEARCH … USING INDEX …
+        //   OR NOT IsMaterialized, indexed here  SEARCH … USING COVERING INDEX …
+        //
+        // Losing COVERING is one table-row lookup per counted file, i.e. the ~300 000 per listing
+        // this index exists to remove. PendingState — the obvious spelling — cannot be indexed
+        // cheaply: it is a STRING, and refusing it is the decision 11e wrote down. IsMaterialized
+        // is a boolean, appended last because nothing ever seeks on it.
+        builder.HasIndex(x => new { x.DirectoryId, x.PendingDirectoryId, x.IsIncluded, x.IsPresent, x.IsMaterialized });
+        builder.HasIndex(x => new { x.PendingDirectoryId, x.IsIncluded, x.IsPresent, x.IsMaterialized });
 
         // Kept as-is, and deliberately not touched: the scan merge resolves a staged row with
         // `VolumeId = ? AND DirectoryId = ? AND Name = ? ORDER BY Id LIMIT 1`, once per file in

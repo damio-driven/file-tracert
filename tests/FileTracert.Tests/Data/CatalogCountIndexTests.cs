@@ -47,8 +47,8 @@ public sealed class CatalogCountIndexTests : IDisposable
     {
         var names = IndexNames();
 
-        names.Should().Contain("IX_Files_DirectoryId_PendingDirectoryId_IsIncluded_IsPresent");
-        names.Should().Contain("IX_Files_PendingDirectoryId_IsIncluded_IsPresent");
+        names.Should().Contain("IX_Files_DirectoryId_PendingDirectoryId_IsIncluded_IsPresent_IsMaterialized");
+        names.Should().Contain("IX_Files_PendingDirectoryId_IsIncluded_IsPresent_IsMaterialized");
 
         // The whole point of leading with the FK: the write path pays for the same number of
         // B-trees per inserted row as before, and a scan inserts millions of rows.
@@ -80,10 +80,15 @@ public sealed class CatalogCountIndexTests : IDisposable
             """);
 #pragma warning restore EF1002
 
-        // Verbatim the Catalog's counter predicate (CatalogController.GetChildren).
+        // Verbatim the Catalog's counter predicate (CatalogController.GetChildren), INCLUDING the
+        // 15a disjunct that shows a queued Copy at its destination. That third term is the reason
+        // IsMaterialized is in the index at all: written as `OR PendingState <> 'None'` — the
+        // obvious spelling, and the one the step-15a task proposed — this same assertion goes red,
+        // because a string column cannot be carried here and the branch drops to a plain INDEX,
+        // i.e. one table-row lookup per counted file.
         var counter = db.Files.AsNoTracking()
             .Where(f => ((f.DirectoryId == parentId && f.PendingDirectoryId == null) || f.PendingDirectoryId == parentId) &&
-                        f.IsIncluded && f.IsPresent)
+                        ((f.IsIncluded && f.IsPresent) || !f.IsMaterialized))
             .Select(f => f.Id);
 
         // Asked as the Catalog asks it: a COUNT over that predicate, so the planner sees a
@@ -95,8 +100,8 @@ public sealed class CatalogCountIndexTests : IDisposable
         // stop happening. The other branch (files queued INTO this folder from elsewhere) still
         // resolves rows, because a MULTI-INDEX OR has to produce rowids to union its two halves;
         // it is also the branch that matches almost nothing, since an overlay is rare by nature.
-        plan.Should().Contain("COVERING INDEX IX_Files_DirectoryId_PendingDirectoryId_IsIncluded_IsPresent");
-        plan.Should().Contain("IX_Files_PendingDirectoryId_IsIncluded_IsPresent");
+        plan.Should().Contain("COVERING INDEX IX_Files_DirectoryId_PendingDirectoryId_IsIncluded_IsPresent_IsMaterialized");
+        plan.Should().Contain("IX_Files_PendingDirectoryId_IsIncluded_IsPresent_IsMaterialized");
         plan.Should().NotContain("SCAN f");
     }
 

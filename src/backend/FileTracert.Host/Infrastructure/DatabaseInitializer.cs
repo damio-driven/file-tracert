@@ -159,7 +159,11 @@ public sealed class DatabaseInitializer
     private static async Task BackfillFtsIfNeededAsync(
         IServiceScope scope, FileTracertDbContext db, ILogger logger, CancellationToken ct)
     {
-        var indexable = await db.Files.CountAsync(f => f.IsIncluded && f.IsPresent, ct);
+        // Mirrors FileSearchIndex's IndexableSql — the two are one rule in two languages, and a
+        // count narrower than the index's own filter would read a healthy index as long (harmless,
+        // the guard is one-way) while a wider one would ask for a rebuild every startup.
+        var indexable = await db.Files.CountAsync(
+            f => (f.IsIncluded && f.IsPresent) || !f.IsMaterialized, ct);
         if (indexable == 0) return;
 
         var fts = scope.ServiceProvider.GetRequiredService<IFileSearchIndex>();

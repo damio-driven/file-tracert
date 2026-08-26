@@ -150,6 +150,59 @@ public sealed class ProjectionApiTests
     }
 
     [Fact]
+    public async Task Catalog_shows_a_queued_COPY_at_the_destination_AND_still_at_the_source()
+    {
+        // Step 15a. Every other operation moves the one row it owns, so the destination gains what
+        // the source loses. A copy is the exception in both halves: a NEW row appears where the
+        // bytes are going, and the original stays exactly where it is.
+        using var factory = MakeFactory();
+        var client = Authed(factory);
+
+        var job = await EnqueueAsync(client, new CreateJobRequest
+        {
+            Type = JobType.CopyFile, SourceFileId = _reportId,
+            TargetVolumeId = _alphaId, TargetRelativePath = @"Docs\Sub",
+        });
+
+        var source = await ChildrenAsync(client, _alphaId, _docsId);
+        var original = source.Files.Items.Should().ContainSingle().Subject;
+        original.Name.Should().Be("report.txt");
+        original.ProjectedState.Should().Be(nameof(EntityPendingState.None),
+            "a copy promises nothing about the file it reads");
+        source.Directories.Single(d => d.Name == "Sub").FileCount
+            .Should().Be(1, "the badge count and the listing must agree");
+
+        var destination = await ChildrenAsync(client, _alphaId, _subId);
+        var copy = destination.Files.Items.Should().ContainSingle().Subject;
+        copy.Name.Should().Be("report.txt");
+        copy.Id.Should().NotBe(_reportId, "the destination is a new entity, not the source row");
+        copy.ProjectedState.Should().Be(nameof(EntityPendingState.PendingCreate));
+        copy.PendingJobId.Should().Be(job.Id);
+    }
+
+    [Fact]
+    public async Task Search_finds_a_queued_copy_at_its_destination()
+    {
+        using var factory = MakeFactory();
+        var client = Authed(factory);
+
+        (await SearchAsync(client, "report")).Should().ContainSingle();
+
+        await EnqueueAsync(client, new CreateJobRequest
+        {
+            Type = JobType.CopyFile, SourceFileId = _reportId,
+            TargetVolumeId = _alphaId, TargetRelativePath = @"Docs\Sub",
+        });
+
+        // §5 — the projected name is what is indexed. Queue fifty copies and the search has to
+        // find them before the bytes land, not after.
+        var hits = await SearchAsync(client, "report");
+        hits.Should().HaveCount(2);
+        hits.Should().ContainSingle(h => h.ProjectedState == nameof(EntityPendingState.PendingCreate))
+            .Which.RelativePath.Should().Be(@"Docs\Sub\report.txt");
+    }
+
+    [Fact]
     public async Task Catalog_shows_a_queued_move_at_the_destination_and_no_longer_at_the_source()
     {
         using var factory = MakeFactory();

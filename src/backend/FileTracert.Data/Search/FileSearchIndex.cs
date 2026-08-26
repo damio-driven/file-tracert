@@ -84,8 +84,23 @@ public sealed class FileSearchIndex : IFileSearchIndex
         JOIN Directories d ON d.Id = f.DirectoryId
         """;
 
-    /// <summary>Only included, still-present files belong in the index.</summary>
-    private const string IndexableSql = "f.IsIncluded = 1 AND f.IsPresent = 1";
+    /// <summary>
+    /// What belongs in the index: an included, still-present file — or a destination row a queued
+    /// Copy has projected (step 15a). §5 asks for the PROJECTED name to be searchable, and for a
+    /// copy the projected entity is the whole row: leaving it out would mean queuing fifty copies
+    /// and finding none of them until the bytes land.
+    ///
+    /// <para><c>IsMaterialized = 0</c> is the whole test, and it is a boolean on purpose:
+    /// <c>PendingState</c> would read more naturally but it is a STRING, which is exactly why
+    /// step 11e refused to put it in the Catalog's covering indexes.</para>
+    ///
+    /// <para>ONE spelling, reused by every writer below and mirrored — deliberately, with the
+    /// reason written at each site — by <c>CatalogController</c>'s visibility predicate and by the
+    /// startup backfill's count of what SHOULD be indexed. A second spelling means an index that
+    /// is quietly short or quietly long.</para>
+    /// </summary>
+    private const string IndexableSql =
+        "((f.IsIncluded = 1 AND f.IsPresent = 1) OR f.IsMaterialized = 0)";
 
     // -------------------------------------------------------------------------
     // Bulk / volume-level operations
@@ -176,7 +191,7 @@ public sealed class FileSearchIndex : IFileSearchIndex
 
             // The row set is named by directory and never crosses the boundary: the DELETE finds
             // the affected entries through Files itself (a seek on the leading column of
-            // IX_Files_DirectoryId_PendingDirectoryId_IsIncluded_IsPresent), and the INSERT rebuilds
+            // IX_Files_DirectoryId_PendingDirectoryId_IsIncluded_IsPresent_IsMaterialized), and the INSERT rebuilds
             // exactly the includable ones. Ids inlined for the same reason as SyncFilesAsync —
             // ints, nothing to escape, and SQLite has no array-valued parameter.
             var deleteSql =
@@ -196,7 +211,9 @@ public sealed class FileSearchIndex : IFileSearchIndex
             $"""
             DELETE FROM FileSearchIndex
              WHERE rowid IN (SELECT Id FROM Files
-                              WHERE VolumeId = {volumeId} AND (IsIncluded = 0 OR IsPresent = 0))
+                              WHERE VolumeId = {volumeId}
+                                AND (IsIncluded = 0 OR IsPresent = 0)
+                                AND IsMaterialized = 1)
             """, ct);
     }
 
@@ -287,7 +304,7 @@ public sealed class FileSearchIndex : IFileSearchIndex
                   CROSS JOIN Files f ON f.Id = fts.rowid
                   CROSS JOIN Volumes v ON v.Id = f.VolumeId
                   WHERE FileSearchIndex MATCH $match
-                    AND f.IsIncluded = 1 AND f.IsPresent = 1
+                    AND ((f.IsIncluded = 1 AND f.IsPresent = 1) OR f.IsMaterialized = 0)
                   {filterSql}
                   LIMIT 10000
                 )
@@ -327,7 +344,7 @@ public sealed class FileSearchIndex : IFileSearchIndex
                 CROSS JOIN Files f ON f.Id = fts.rowid
                 CROSS JOIN Volumes v ON v.Id = f.VolumeId
                 WHERE FileSearchIndex MATCH $match
-                  AND f.IsIncluded = 1 AND f.IsPresent = 1
+                  AND ((f.IsIncluded = 1 AND f.IsPresent = 1) OR f.IsMaterialized = 0)
                 {filterSql}
                 ORDER BY {sortExpr} {sortDir}
                 LIMIT $take OFFSET $skip

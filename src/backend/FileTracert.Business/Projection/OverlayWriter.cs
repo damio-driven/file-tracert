@@ -77,6 +77,12 @@ public sealed class OverlayWriter
             case JobType.MoveFolder:
                 await ApplyMoveFolderAsync(job, items, ct);
                 break;
+            case JobType.CopyFile:
+                await ApplyCopyFileAsync(job, items, ct);
+                break;
+            case JobType.CopyFolder:
+                await ApplyCopyFolderAsync(job, items, ct);
+                break;
         }
     }
 
@@ -158,6 +164,160 @@ public sealed class OverlayWriter
         await _db.SaveChangesAsync(ct);
     }
 
+    /// <summary>
+    /// A copy is the ONE queued operation whose result is a new entity, so §5's «queuing mutates
+    /// the projection immediately» cannot be expressed with <c>Pending*</c> fields: there is no
+    /// existing row at the destination to carry them. The destination row is created ahead of the
+    /// file instead — <c>IsMaterialized = false</c>, <c>IsPresent = false</c>,
+    /// <see cref="EntityPendingState.PendingCreate"/> — which is exactly the job
+    /// <c>IsMaterialized</c> has always done for directories (step 15a).
+    ///
+    /// <para>The SOURCE row is not touched at all, and that is the point: a copy leaves it where
+    /// it is, so stamping an overlay on it would promise the user a change to a file that is not
+    /// changing.</para>
+    /// </summary>
+    private async Task ApplyCopyFileAsync(
+        OperationJob job, IReadOnlyCollection<OperationJobItem> items, CancellationToken ct)
+    {
+        var source = await LoadSourceFileAsync(job, items, ct);
+        if (source is null || job.TargetVolumeId is null) return;
+
+        var targetDir = await _directories.FindOrCreateProjectedAsync(
+            job.TargetVolumeId.Value, ScanPath.Parent(job.TargetRelativePath!), job.Id, ct);
+
+        var projected = await ProjectCopyAsync(source, targetDir, ScanPath.Name(job.TargetRelativePath!), job, ct);
+        await _db.SaveChangesAsync(ct);
+
+        // §5 — the projected name is what gets indexed, so the copy is findable the moment it is
+        // queued rather than only once the bytes land.
+        await SyncFtsAsync(projected is null ? [] : [projected.Id], ct);
+    }
+
+    /// <summary>
+    /// The folder copy projects one row per file it is going to write, plus the destination
+    /// directory tree. It cannot do what <see cref="ApplyMoveFolderAsync"/> does — one overlay on
+    /// the folder row, with the descendants' projected paths falling out of the parent walk —
+    /// because none of those descendants exist at the destination yet.
+    ///
+    /// <para>Cost, stated rather than discovered later: one inserted row per expanded item. The
+    /// enqueue is already writing one <see cref="OperationJobItem"/> per file in the same
+    /// transaction, so this is the same order of work, not a new class of it; the batch ceiling of
+    /// <c>QueueService.MaxBatchSize</c> is what bounds the gesture.</para>
+    /// </summary>
+    private async Task ApplyCopyFolderAsync(
+        OperationJob job, IReadOnlyCollection<OperationJobItem> items, CancellationToken ct)
+    {
+        if (job.TargetVolumeId is null || string.IsNullOrEmpty(job.TargetRelativePath)) return;
+        var targetVolumeId = job.TargetVolumeId.Value;
+
+        // The destination root always exists in the projection, even for a folder whose subtree
+        // holds no indexed file (C21's shape): the job does create it.
+        await _directories.FindOrCreateProjectedAsync(targetVolumeId, job.TargetRelativePath, job.Id, ct);
+
+        var fileItems = items.Where(i => i.FileId.HasValue).ToList();
+        if (fileItems.Count == 0)
+        {
+            await _db.SaveChangesAsync(ct);
+            return;
+        }
+
+        var sourceIds = fileItems.Select(i => i.FileId!.Value).ToList();
+        var sources = await _db.Files
+            .Where(f => sourceIds.Contains(f.Id))
+            .ToDictionaryAsync(f => f.Id, ct);
+
+        // One resolve per distinct destination directory: a folder copy lands thousands of files
+        // into a handful of them.
+        var dirCache = new Dictionary<string, DirectoryNode>(StringComparer.OrdinalIgnoreCase);
+        var projectedIds = new List<int>(fileItems.Count);
+
+        foreach (var item in fileItems)
+        {
+            if (!sources.TryGetValue(item.FileId!.Value, out var source)) continue;
+
+            var dirPath = ScanPath.Parent(item.TargetRelativePath);
+            if (!dirCache.TryGetValue(dirPath, out var targetDir))
+            {
+                targetDir = await _directories.FindOrCreateProjectedAsync(
+                    targetVolumeId, dirPath, job.Id, ct);
+                dirCache[dirPath] = targetDir;
+            }
+
+            var projected = await ProjectCopyAsync(
+                source, targetDir, ScanPath.Name(item.TargetRelativePath), job, ct);
+            if (projected is not null) projectedIds.Add(projected.Id);
+        }
+
+        await _db.SaveChangesAsync(ct);
+        await SyncFtsAsync(projectedIds, ct);
+    }
+
+    /// <summary>
+    /// The destination row of one copied file. Returns the row (existing or new) so the caller can
+    /// index it; null only when the destination is not nameable.
+    ///
+    /// <para>Idempotent like the rest of <see cref="ApplyAsync"/> — a retry re-runs it and must
+    /// find its own row rather than add a second one, so an existing row already owned by this job
+    /// at this path is reused.</para>
+    ///
+    /// <para>What is copied from the source and what is NOT: name, size, dates and attributes are
+    /// what the copy is going to produce, so they describe the promise honestly. The hashes are
+    /// left null even though the content will be identical — claiming a hash for a file nothing
+    /// has written yet is a lie a verifier could act on. <c>UsnFileRef</c> is null for the same
+    /// reason and one more: it is the FRN of a file that does not exist, and the unique
+    /// <c>(VolumeId, UsnFileRef)</c> index is filtered, so nulls coexist.</para>
+    ///
+    /// <para><c>IsIncluded</c> and its three causes are inherited from the source as a
+    /// PROVISIONAL value. The copy keeps the name, so the type verdict is right; the root and
+    /// perimeter verdicts belong to the destination and are recomputed by <c>IndexUpdater</c> when
+    /// the job completes. Deciding them here would mean giving this class the filter resolution,
+    /// which is not its business — and nothing depends on the guess, because the row's visibility
+    /// in the Catalog and in the search index comes from <c>IsMaterialized = false</c>, not from
+    /// inclusion.</para>
+    /// </summary>
+    private async Task<FileEntry?> ProjectCopyAsync(
+        FileEntry source, DirectoryNode targetDir, string name, OperationJob job, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(name))
+        {
+            _logger.LogWarning(
+                "Job {Id} ({Type}): a copy item has no destination file name — no projection row created.",
+                job.Id, job.Type);
+            return null;
+        }
+
+        var existing = await _db.Files.FirstOrDefaultAsync(
+            f => f.PendingJobId == job.Id && f.DirectoryId == targetDir.Id && f.Name == name, ct);
+        if (existing is not null) return existing;
+
+        var row = new FileEntry
+        {
+            VolumeId = targetDir.VolumeId,
+            DirectoryId = targetDir.Id,
+            Name = name,
+            Extension = source.Extension,
+            Category = source.Category,
+            SizeBytes = source.SizeBytes,
+            FileCreatedUtc = source.FileCreatedUtc,
+            FileModifiedUtc = source.FileModifiedUtc,
+            Attributes = source.Attributes,
+            UsnFileRef = null,
+            IsIncluded = source.IsIncluded,
+            ExcludedByType = source.ExcludedByType,
+            ExcludedByRoot = source.ExcludedByRoot,
+            ExcludedByScan = source.ExcludedByScan,
+            IsMaterialized = false,
+            IsPresent = false,
+            LastIndexedUtc = DateTime.UtcNow,
+            PendingState = EntityPendingState.PendingCreate,
+            PendingJobId = job.Id,
+        };
+
+        _db.Files.Add(row);
+        await _db.SaveChangesAsync(ct);
+        return row;
+    }
+
     // ── clear ─────────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -168,6 +328,14 @@ public sealed class OverlayWriter
     /// projection must keep showing it.
     ///
     /// Idempotent: a second call finds nothing to clear.
+    ///
+    /// <para><b>The one place §6's no-hard-delete does not apply</b> (step 15a). A cancelled or
+    /// failed Copy leaves a destination row that was never a file: nothing ever created it, no
+    /// scan ever saw it, and it describes nothing on any disk. Blanking its <c>Pending*</c> fields
+    /// the way every other operation's cleanup does would leave that nothing behind for ever, as a
+    /// row with <c>IsMaterialized = false</c> and no owner. The rule it is exempt from exists to
+    /// protect facts about the disk from being erased; this row is not one. It is told apart by
+    /// <c>IsMaterialized = false</c>, which only <see cref="ProjectCopyAsync"/> ever writes.</para>
     /// </summary>
     public async Task ClearForJobAsync(int jobId, CancellationToken ct)
     {
@@ -176,17 +344,44 @@ public sealed class OverlayWriter
 
         if (files.Count == 0 && directories.Count == 0) return;
 
-        foreach (var file in files) ClearFile(file);
+        // Captured BEFORE the delete: the search entries are keyed by rowid and have to be pruned
+        // by id, which the removed entities no longer answer for once they are gone.
+        var touchedFileIds = files.Select(f => f.Id).ToList();
+
+        var (projected, overlaid) = SplitProjected(files);
+        _db.Files.RemoveRange(projected);
+        foreach (var file in overlaid) ClearFile(file);
         foreach (var dir in directories) ClearDirectory(dir);
         await _db.SaveChangesAsync(ct);
 
-        // The FTS name column followed the overlay on the way in — it must follow it back out,
-        // or a cancelled rename stays findable under a name that was never applied.
-        await SyncFtsAsync(files.Select(f => f.Id).ToList(), ct);
+        // The FTS name column followed the overlay on the way in — it must follow it back out, or
+        // a cancelled rename stays findable under a name that was never applied. The same call
+        // prunes the deleted rows: it DELETEs by rowid and then re-inserts only what Files still
+        // holds, so an id that no longer exists simply loses its entry.
+        await SyncFtsAsync(touchedFileIds, ct);
 
         _logger.LogDebug(
-            "Job {Id}: overlay cleared on {Files} file(s) and {Dirs} directory(ies).",
-            jobId, files.Count, directories.Count);
+            "Job {Id}: overlay cleared on {Files} file(s) and {Dirs} directory(ies); " +
+            "{Projected} never-created destination row(s) removed.",
+            jobId, overlaid.Count, directories.Count, projected.Count);
+    }
+
+    /// <summary>
+    /// Splits the rows a job owns into the ones that stand for a real file — whose overlay is
+    /// blanked — and the ones a Copy invented at its destination, which are deleted. See
+    /// <see cref="ClearForJobAsync"/> for why the second half is not a violation of §6.
+    /// </summary>
+    private static (List<FileEntry> Projected, List<FileEntry> Overlaid) SplitProjected(
+        List<FileEntry> files)
+    {
+        List<FileEntry> projected = [];
+        List<FileEntry> overlaid = [];
+        foreach (var file in files)
+        {
+            if (file.IsMaterialized) overlaid.Add(file);
+            else projected.Add(file);
+        }
+        return (projected, overlaid);
     }
 
     /// <summary>
@@ -224,15 +419,22 @@ public sealed class OverlayWriter
 
         if (orphanFiles.Count == 0 && orphanDirs.Count == 0) return 0;
 
-        foreach (var file in orphanFiles) ClearFile(file);
+        var touchedFileIds = orphanFiles.Select(f => f.Id).ToList();
+
+        // Same split as ClearForJobAsync, for the same reason: an orphaned Copy destination row is
+        // a promise whose job is gone, and it never stood for a file.
+        var (projected, overlaid) = SplitProjected(orphanFiles);
+        _db.Files.RemoveRange(projected);
+        foreach (var file in overlaid) ClearFile(file);
         foreach (var dir in orphanDirs) ClearDirectory(dir);
         await _db.SaveChangesAsync(ct);
-        await SyncFtsAsync(orphanFiles.Select(f => f.Id).ToList(), ct);
+        await SyncFtsAsync(touchedFileIds, ct);
 
         _logger.LogWarning(
             "Startup reconciliation: cleared {Files} orphan file overlay(s) and {Dirs} orphan " +
-            "directory overlay(s) whose job no longer exists or is already terminal.",
-            orphanFiles.Count, orphanDirs.Count);
+            "directory overlay(s) whose job no longer exists or is already terminal, and removed " +
+            "{Projected} never-created copy destination row(s).",
+            overlaid.Count, orphanDirs.Count, projected.Count);
 
         return orphanFiles.Count + orphanDirs.Count;
     }

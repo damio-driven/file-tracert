@@ -105,7 +105,7 @@ public sealed class CatalogController : ControllerBase
                     ((c.IsMaterialized && c.IsPresent) || c.PendingState != EntityPendingState.None)),
                 FileCount = _db.Files.Count(f =>
                     ((f.DirectoryId == d.Id && f.PendingDirectoryId == null) || f.PendingDirectoryId == d.Id) &&
-                    f.IsIncluded && f.IsPresent),
+                    ((f.IsIncluded && f.IsPresent) || !f.IsMaterialized)),
             })
             .ToListAsync(ct);
 
@@ -116,10 +116,27 @@ public sealed class CatalogController : ControllerBase
             .ToList();
 
         // Files in the current directory by projected position, paged.
+        //
+        // 15a — «or nothing has created it yet» is what shows a queued Copy at its destination.
+        // §5 requires it: queue a copy and it is in the destination folder at once, badged. This
+        // is the file analogue of the directory rule two queries up, and it is spelled with
+        // IsMaterialized rather than PendingState for a MEASURED reason. Both disjuncts were
+        // tried against the 11e covering index on a 20 000-row table, and the hot branch of the
+        // counter reads:
+        //
+        //   no disjunct (the 11e baseline)      SEARCH f USING COVERING INDEX IX_Files_Direc...
+        //   OR PendingState <> 'None'           SEARCH f USING INDEX          IX_Files_Direc...
+        //   OR NOT IsMaterialized, unindexed    SEARCH f USING INDEX          IX_Files_Direc...
+        //   OR NOT IsMaterialized, in the index SEARCH f USING COVERING INDEX IX_Files_Direc...
+        //
+        // Losing COVERING means one table-row lookup per counted file — the ~300 000 per listing
+        // that step 11e existed to remove, given back in silence. PendingState cannot buy it back
+        // because it is a string, which is the reason 11e refused to index it; IsMaterialized is a
+        // boolean, so the two indexes carry it and the plan is the one 11e left behind.
         var filesQuery = _db.Files
             .AsNoTracking()
             .Where(f => ((f.DirectoryId == parentId && f.PendingDirectoryId == null) || f.PendingDirectoryId == parentId) &&
-                        f.IsIncluded && f.IsPresent);
+                        ((f.IsIncluded && f.IsPresent) || !f.IsMaterialized));
 
         var totalFiles = await filesQuery.CountAsync(ct);
 
