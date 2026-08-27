@@ -189,6 +189,12 @@ public sealed class SpaceCheck
     /// The hard re-check for a job that is about to run (or that a revaluation wants to release).
     /// A job that needs no space on a target volume passes without touching the device.
     ///
+    /// <para>What it asks for is <see cref="JobStates.OutstandingBytes"/>, not the job's whole
+    /// demand: a job resumed from a checkpoint has already put part of that demand on the target,
+    /// and asking for all of it again would double-count what is sitting there. Whether the job
+    /// needs space AT ALL is still <c>RequiredBytesTarget</c> — that is the half that mirrors the
+    /// ledger.</para>
+    ///
     /// <para>The guard MIRRORS <see cref="SpaceLedger.ReservationFor"/> and must keep doing so:
     /// two spellings of "this job needs space" mean the queue can reserve for a job the engine
     /// waves through, or check a job nothing reserved for. Step 15a dropped
@@ -200,12 +206,19 @@ public sealed class SpaceCheck
         if (job.RequiredBytesTarget <= 0 || job.TargetVolume is null)
             return NothingToCheck;
 
+        // Everything already written to the target is already reflected in the free-space reading
+        // below, so what has to fit is what is LEFT. For a job that has never run this is the
+        // whole demand and nothing changes.
+        long outstanding = JobStates.OutstandingBytes(job);
+        if (outstanding <= 0)
+            return NothingToCheck;
+
         var volume = job.TargetVolume;
         var space = ReadFreeSpace(volume);
 
-        long margin = MarginBytesFor(job.RequiredBytesTarget, await MarginPercentAsync(ct));
+        long margin = MarginBytesFor(outstanding, await MarginPercentAsync(ct));
         var feasibility = await _ledger.ComputeFeasibilityAsync(
-            volume.Id, space.FreeBytes, space.IsLive, job.RequiredBytesTarget, margin,
+            volume.Id, space.FreeBytes, space.IsLive, outstanding, margin,
             excludeJobId: job.Id, sequenceOrder: job.SequenceOrder,
             includeQueuedLiberations: false, ct);
 
@@ -231,7 +244,7 @@ public sealed class SpaceCheck
                 Ok: false,
                 JobBlockReason.InsufficientSpace,
                 $"Insufficient space: {feasibility.DeficitBytes} bytes short on volume {volume.Id} " +
-                $"(required {job.RequiredBytesTarget}, safety margin {margin}).",
+                $"(required {outstanding}, safety margin {margin}).",
                 feasibility,
                 space);
         }

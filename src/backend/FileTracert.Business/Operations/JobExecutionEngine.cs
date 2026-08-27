@@ -228,6 +228,11 @@ public sealed class JobExecutionEngine
     {
         MarkStarted(job);
 
+        // Whether this run has already put the question to the drive. A job that starts at
+        // Pending is checked below and must not be checked twice; a job RESUMED straight into
+        // Copying has not been checked at all yet.
+        bool roomChecked = false;
+
         if (job.State == JobState.Pending)
         {
             // Hard space check before we commit to copying: the free bytes come from the DEVICE,
@@ -254,6 +259,7 @@ public sealed class JobExecutionEngine
                 return;
             }
 
+            roomChecked = true;
             await TransitionAsync(job, JobState.SpaceReserved, ct);
         }
 
@@ -262,6 +268,21 @@ public sealed class JobExecutionEngine
 
         if (job.State == JobState.Copying)
         {
+            // 15b — the same question, asked again for a job that got here on a RESUME. The check
+            // used to live only in the Pending branch, so a job picked up at its checkpoint after a
+            // crash, a shutdown, or a release from Blocked walked back into the copy on the
+            // strength of an answer given before the interruption. Everything the check exists to
+            // prevent — another process filling the target while the job sat in the queue — is
+            // exactly as true the second time. It asks for what is LEFT (JobStates.Outstanding
+            // Bytes), because the bytes already written are already missing from the free-space
+            // reading.
+            //
+            // Only here, and not before Verifying or DeletingSource: from Verifying on, every
+            // remaining step either renames in place or FREES space, so refusing a job there would
+            // park work that is finished and costs nothing to finish.
+            if (!roomChecked && !await EnsureRoomForCopyAsync(job, ct))
+                return;
+
             await CopyItemsAsync(job, ct);
             // Cancelled mid-copy: leave in Copying so the next run resumes.
             if (ct.IsCancellationRequested) return;
@@ -307,6 +328,33 @@ public sealed class JobExecutionEngine
             var removedSourceDirs = await DeleteSourcesAsync(job, ct);
             await CompleteJobAsync(job, removedSourceDirs, ct);
         }
+    }
+
+    /// <summary>
+    /// Asks the DEVICE whether what is left of this job still fits, and parks the job when it does
+    /// not. Returns false when the caller must stop.
+    ///
+    /// <para>Shares every part of its decision with the Pending-branch check above and with
+    /// <c>BlockedJobRevaluator</c>: same <see cref="SpaceCheck.EvaluateHardAsync"/>, same live
+    /// figure, same margin. The measured figure is stored on the volume row on the way through,
+    /// because it is fresher than whatever the last sync wrote.</para>
+    /// </summary>
+    private async Task<bool> EnsureRoomForCopyAsync(OperationJob job, CancellationToken ct)
+    {
+        var verdict = await _spaceCheck.EvaluateHardAsync(job, ct);
+        StoreMeasuredFreeSpace(job.TargetVolume!, verdict.Space);
+
+        if (verdict.Ok) return true;
+
+        _logger.LogWarning(
+            "Job {Id}: hard space re-check refused the RESUME ({Reason}). Deficit={D}, free={Free} " +
+            "(live={Live}); {Done} of {Total} bytes were already on the target.",
+            job.Id, verdict.Reason, verdict.Feasibility.DeficitBytes,
+            verdict.Space.FreeBytes, verdict.Space.IsLive,
+            job.RequiredBytesTarget - JobStates.OutstandingBytes(job), job.RequiredBytesTarget);
+
+        await SetBlockedAsync(job, verdict.Reason, verdict.Message, ct);
+        return false;
     }
 
     // ── copy phase ────────────────────────────────────────────────────────────
@@ -443,9 +491,9 @@ public sealed class JobExecutionEngine
     /// keeps the progress idempotent across crash/resume — 100% means 100%.
     /// </summary>
     private static long CompletedItemBytes(OperationJob job) =>
-        job.Items
-            .Where(i => i.State is JobItemState.Copied or JobItemState.Verified or JobItemState.Done)
-            .Sum(i => i.SizeBytes);
+        // 15b — the same rule the space re-check needs, so it has one definition:
+        // JobStates.Landed names the item states whose bytes are on the target.
+        job.Items.Where(i => Array.IndexOf(JobStates.Landed, i.State) >= 0).Sum(i => i.SizeBytes);
 
     // ── verify + finalize phase ───────────────────────────────────────────────
 
