@@ -61,11 +61,14 @@ export class Volumes implements OnInit {
   protected readonly showExcluded = signal(false);
 
   constructor() {
-    // Auto-select the first catalogable volume once the list arrives and nothing is selected.
+    // Auto-select the first catalogable volume once the list arrives and nothing has been
+    // asked for yet. `selectedId`, not `selected`: the second is the detail that has ARRIVED,
+    // so between a click and its answer it still reads null, and the auto-selection would fire
+    // on top of a choice the user has already made.
     effect(() => {
       const list = this.catalogable();
-      const current = untracked(() => this.selected());
-      if (list.length > 0 && current === null) {
+      const asked = untracked(() => this.store.selectedId());
+      if (list.length > 0 && asked === null) {
         void this.store.select(list[0].id);
       }
     });
@@ -86,7 +89,9 @@ export class Volumes implements OnInit {
   }
 
   protected select(id: number): void {
-    if (this.selected()?.id !== id) {
+    // Guarded on what was ASKED for: `selected()` is still the previous volume while the new
+    // one is in flight, so clicking the same row twice used to fire a second request.
+    if (this.store.selectedId() !== id) {
       void this.store.select(id);
     }
   }

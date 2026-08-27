@@ -1,6 +1,6 @@
 import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { of } from 'rxjs';
+import { Subject, of } from 'rxjs';
 import { vi } from 'vitest';
 
 import { VolumesApi } from '../../core/api/volumes-api.service';
@@ -91,5 +91,100 @@ describe('VolumesStore', () => {
     expect(setCatalogable).toHaveBeenCalledWith(2, true);
     expect(list).toHaveBeenCalled();
     expect(store.togglingId()).toBeNull();
+  });
+
+  // ── the auto-selection race (roadmap A1, found by 12a and left there on purpose) ──
+
+  /// A detail API whose answers the test releases by hand, one volume at a time.
+  function deferredDetail() {
+    const subjects: Record<number, Subject<VolumeDetailDto>> = {};
+    const api = {
+      detail: vi.fn((id: number) => (subjects[id] ??= new Subject<VolumeDetailDto>())),
+    };
+    const answer = (id: number, d: VolumeDetailDto) => { subjects[id].next(d); subjects[id].complete(); };
+    const fail = (id: number, e: unknown) => subjects[id].error(e);
+    return { api, answer, fail };
+  }
+
+  it('a slow earlier selection does not overwrite a newer one', async () => {
+    // The shape of the defect: the screen auto-selects the first volume the moment the list
+    // arrives, the user clicks another one, and whichever RESPONSE lands last wins. On a busy
+    // machine that is the auto-selection, so the panel snaps back to a volume the user is no
+    // longer looking at.
+    const { api, answer } = deferredDetail();
+    const store = configure(api as never);
+
+    const first = store.select(1);   // the auto-selection
+    const second = store.select(2);  // the user, a moment later
+
+    answer(2, { ...detail, id: 2, label: 'Beta' });
+    await second;
+    expect(store.selected()?.id).toBe(2);
+
+    // …and now the stale one lands.
+    answer(1, { ...detail, id: 1, label: 'Alpha' });
+    await first;
+
+    expect(store.selected()?.id).toBe(2);
+    expect(store.selected()?.label).toBe('Beta');
+  });
+
+  it('a stale response does not clear the spinner of the selection still running', async () => {
+    const { api, answer } = deferredDetail();
+    const store = configure(api as never);
+
+    const first = store.select(1);
+    const second = store.select(2);
+
+    answer(1, { ...detail, id: 1 });
+    await first;
+
+    // Volume 2 is still loading: an answer nobody is waiting for must not say otherwise.
+    expect(store.detailLoading()).toBe(true);
+    expect(store.selected()).toBeNull();
+
+    answer(2, { ...detail, id: 2 });
+    await second;
+    expect(store.detailLoading()).toBe(false);
+    expect(store.selected()?.id).toBe(2);
+  });
+
+  it('a stale FAILURE does not report an error over a selection that is still running', async () => {
+    const { api, answer, fail } = deferredDetail();
+    const store = configure(api as never);
+
+    const first = store.select(1);
+    const second = store.select(2);
+
+    fail(1, new Error('boom'));
+    await first;
+
+    expect(store.error()).toBeNull();
+
+    answer(2, { ...detail, id: 2 });
+    await second;
+    expect(store.selected()?.id).toBe(2);
+  });
+
+  it('remembers what was ASKED for, not only what has arrived', async () => {
+    // The screen guards its own clicks with this: reading the loaded detail instead would still
+    // be the PREVIOUS volume while the new one is in flight, so a second click on the same row
+    // fires a second request.
+    const store = configure({ detail: vi.fn(() => of({ ...detail, id: 7 })) } as never);
+
+    const pending = store.select(7);
+    expect(store.selectedId()).toBe(7);
+    await pending;
+    expect(store.selectedId()).toBe(7);
+  });
+
+  it('clearing the selection forgets what was asked for too', async () => {
+    const store = configure({ detail: vi.fn(() => of({ ...detail, id: 7 })) } as never);
+
+    await store.select(7);
+    store.clearSelection();
+
+    expect(store.selectedId()).toBeNull();
+    expect(store.selected()).toBeNull();
   });
 });

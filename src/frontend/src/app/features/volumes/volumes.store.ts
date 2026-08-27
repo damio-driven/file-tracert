@@ -9,6 +9,12 @@ import { VolumeStatusChanged } from '../../core/realtime/realtime.models';
 
 interface VolumesState {
   volumes: VolumeDto[];
+  /**
+   * The volume whose detail was last ASKED for, set the instant `select` is called. Distinct
+   * from `selected`, which is the detail that has actually arrived: between the two lives the
+   * request, and that gap is where the auto-selection race used to live.
+   */
+  selectedId: number | null;
   selected: VolumeDetailDto | null;
   loading: boolean;
   detailLoading: boolean;
@@ -19,6 +25,7 @@ interface VolumesState {
 
 const initial: VolumesState = {
   volumes: [],
+  selectedId: null,
   selected: null,
   loading: false,
   detailLoading: false,
@@ -55,12 +62,28 @@ export const VolumesStore = signalStore(
     return {
       loadList,
 
+      /**
+       * Loads one volume's detail. Two selections can be in flight at once — the screen
+       * auto-selects the first catalogable volume the moment the list arrives, and the user can
+       * click another one a moment later — and this used to `patchState` unconditionally, so the
+       * panel showed whichever RESPONSE landed last rather than whichever the user asked for
+       * last. On a busy machine that is the auto-selection, and the screen snapped back to a
+       * volume nobody was looking at. (Found by the 12a end-to-end run and left there
+       * deliberately; it is the defect that made one of those passes red.)
+       *
+       * `selectedId` is written SYNCHRONOUSLY, so it is already the newer id by the time an older
+       * response returns: an answer nobody is waiting for is dropped whole — detail, spinner and
+       * error alike, since a stale failure reported over a selection that is still running is the
+       * same lie in a different colour.
+       */
       async select(id: number): Promise<void> {
-        patchState(store, { detailLoading: true, error: null });
+        patchState(store, { selectedId: id, detailLoading: true, error: null });
         try {
           const selected = await firstValueFrom(api.detail(id));
+          if (store.selectedId() !== id) return;
           patchState(store, { selected, detailLoading: false });
         } catch (e) {
+          if (store.selectedId() !== id) return;
           patchState(store, { error: httpErrorMessage(e), detailLoading: false });
         }
       },
@@ -92,7 +115,9 @@ export const VolumesStore = signalStore(
       },
 
       clearSelection(): void {
-        patchState(store, { selected: null });
+        // Both halves: leaving `selectedId` behind would make the next click on that same volume
+        // a no-op for the screen's own guard.
+        patchState(store, { selectedId: null, selected: null });
       },
 
       async rescan(id: number): Promise<void> {
