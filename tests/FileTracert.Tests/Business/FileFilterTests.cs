@@ -62,6 +62,27 @@ public class FileFilterTests
             .Should().BeTrue();
     }
 
+    /// <summary>
+    /// The segment is matched between separators, which is the SQL side's frame — so the four
+    /// boundary cases (first, last, middle, whole path) are one case, a segment never matches a
+    /// prefix of a longer name, and a MULTI-PART segment matches the sequence instead of never
+    /// matching at all. Both halves of the filter read one spelling of this since step 16.
+    /// </summary>
+    [Theory]
+    [InlineData("AppData", @"AppData\x.jpg", true)]                 // first
+    [InlineData("AppData", @"Users\Me\AppData", true)]              // last (the file NAME is a segment)
+    [InlineData("AppData", @"Users\AppData\Local\x.jpg", true)]     // middle
+    [InlineData("AppData", "AppData", true)]                        // the whole path
+    [InlineData("AppData", @"AppDataStore\x.jpg", false)]           // never a prefix of a longer name
+    [InlineData("AppData", @"MyAppData\x.jpg", false)]              // nor a suffix
+    [InlineData("appdata", @"AppData\x.jpg", true)]                 // ASCII case folding, like LIKE
+    [InlineData(@"AppData\Local", @"Users\AppData\Local\x.jpg", true)]
+    [InlineData(@"AppData\Local", @"Users\AppData\Roaming\x.jpg", false)]
+    [InlineData(@"Windows\", @"Windows\System32\x.dll", true)]      // §4's own spelling
+    [InlineData(" Windows ", @"Windows\System32\x.dll", true)]
+    public void An_excluded_segment_matches_between_separators(string segment, string path, bool excluded) =>
+        FileFilter.IsPathExcluded(path, Filter(excludedSegments: [segment])).Should().Be(excluded);
+
     [Theory]
     [InlineData(FileAttributes.System)]
     [InlineData(FileAttributes.Hidden)]

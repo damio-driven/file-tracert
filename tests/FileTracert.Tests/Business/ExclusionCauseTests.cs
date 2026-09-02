@@ -465,6 +465,76 @@ public sealed class ExclusionCauseTests
     }
 
     /// <summary>
+    /// <c>Windows\</c> — the spelling CLAUDE.md §4 itself uses — has to mean what <c>Windows</c>
+    /// means, to BOTH halves. It used to mean two things: the reconciler normalized the segment and
+    /// excluded the rows, the scan compared it raw against split segments and matched nothing, so
+    /// the very next scan put everything back. An exclusion that appears to work and then quietly
+    /// undoes itself is worse than one that never worked.
+    /// </summary>
+    [Fact]
+    public async Task A_segment_written_with_a_trailing_separator_means_the_same_to_both_halves()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, []);
+
+        ScanEntry[] world =
+        [
+            Dir("Photos", "Photos"),
+            File(@"Photos\holiday.jpg", "holiday.jpg"),
+        ];
+
+        await ScanAsync(harness, volumeId, world);
+        await SetFilterAsync(harness, [], [@"Photos\"]);
+
+        await using (var reconciled = harness.CreateContext())
+        {
+            (await reconciled.Files.SingleAsync(f => f.Name == "holiday.jpg")).IsIncluded
+                .Should().BeFalse("arrange: the reconciler applies the segment");
+        }
+
+        // Nothing on disk changed. The scan re-decides the row against the SAME segment, and has
+        // to reach the same verdict.
+        await ScanAsync(harness, volumeId, world);
+
+        await using var read = harness.CreateContext();
+        var row = await read.Files.SingleAsync(f => f.Name == "holiday.jpg");
+        row.IsIncluded.Should().BeFalse("the scan and the reconciler read one segment, not two");
+        row.ExcludedByPath.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// A MULTI-PART segment (<c>AppData\Local</c>) used to match in SQL and never in memory. Both
+    /// halves now read it as the framing question the SQL side already asked — "does the path
+    /// contain this SEQUENCE of segments?" — because the alternative, whole-segment equality, is
+    /// not a semantics at all: it is a configured value that can never match anything.
+    /// </summary>
+    [Fact]
+    public async Task A_multi_part_segment_matches_the_sequence_in_both_halves()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, []);
+
+        ScanEntry[] world =
+        [
+            Dir("AppData", "AppData"),
+            Dir(@"AppData\Local", "Local"),
+            File(@"AppData\Local\cache.jpg", "cache.jpg"),
+            Dir(@"AppData\Roaming", "Roaming"),
+            File(@"AppData\Roaming\keep.jpg", "keep.jpg"),
+        ];
+
+        await ScanAsync(harness, volumeId, world);
+        await SetFilterAsync(harness, [], [@"AppData\Local"]);
+        await ScanAsync(harness, volumeId, world);
+
+        await using var read = harness.CreateContext();
+        (await read.Files.SingleAsync(f => f.Name == "cache.jpg")).IsIncluded
+            .Should().BeFalse("the path goes through that sequence of segments");
+        (await read.Files.SingleAsync(f => f.Name == "keep.jpg")).IsIncluded
+            .Should().BeTrue("a sibling that shares only the first half of the sequence is untouched");
+    }
+
+    /// <summary>
     /// The causes SUM, which is the reason they are four flags and not one value: a <c>.tmp</c>
     /// under an excluded segment is out twice over, and undoing one leaves the other standing.
     /// </summary>

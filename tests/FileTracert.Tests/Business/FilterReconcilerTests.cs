@@ -48,4 +48,18 @@ public sealed class FilterReconcilerTests
     [Fact]
     public void Path_exclusion_comparison_ignores_case() =>
         FilterReconciler.FilterWidened(Excluding("AppData"), Excluding("appdata")).Should().BeFalse();
+
+    /// <summary>
+    /// Re-spelling a segment is not a widening, and this comparison gets that for free now that
+    /// <see cref="EffectiveFilter"/> normalizes once for every reader. Raw string comparison used to
+    /// call <c>Windows\ → Windows</c> a widening and send the user off to run a full scan for a
+    /// change that means nothing.
+    /// </summary>
+    [Theory]
+    [InlineData(@"Windows\", "Windows")]
+    [InlineData("Windows", @"\Windows")]
+    [InlineData("Windows", " Windows ")]
+    [InlineData("Windows", "Windows/")]
+    public void Respelling_a_segment_is_not_a_widening(string before, string after) =>
+        FilterReconciler.FilterWidened(Excluding(before), Excluding(after)).Should().BeFalse();
 }

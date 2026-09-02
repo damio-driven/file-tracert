@@ -9,8 +9,6 @@ namespace FileTracert.Business.Filtering;
 /// </summary>
 public static class FileFilter
 {
-    private static readonly char[] PathSeparators = ['\\', '/'];
-
     /// <summary>Extracts the lower-cased extension (no dot) from a file name; empty when none.</summary>
     public static string GetExtension(string name)
     {
@@ -27,7 +25,28 @@ public static class FileFilter
     public static FileCategory ResolveCategory(string extension, IReadOnlyDictionary<string, FileCategory> map) =>
         map.TryGetValue(extension, out var category) ? category : FileCategory.Other;
 
-    /// <summary>True when any segment of the relative path matches an excluded segment.</summary>
+    /// <summary>
+    /// True when the relative path goes through one of the excluded segments — the SAME question
+    /// <c>FilterReconciler</c> asks in SQL, and it has to be the same question: a scan and a
+    /// reconciliation that disagree give the catalog two different answers about one file, and the
+    /// one that runs last wins. That is exactly how <c>Windows\</c> used to exclude rows in Setup
+    /// and have the next scan put every one of them back.
+    ///
+    /// <para><b>Framing, not splitting.</b> The segment is matched where it sits between separators
+    /// (or at either end of the path), which is the SQL side's <c>%\segment\%</c> against the framed
+    /// path spelled with spans. Whole-segment equality on a split would have been the same rule for
+    /// a one-part segment and NO rule at all for a multi-part one — <c>AppData\Local</c> could then
+    /// never match anything, which is not a semantics, it is a silent misconfiguration.</para>
+    ///
+    /// <para>Allocation-free, because a scan asks this once per enumerated item — millions on a
+    /// real volume (E7). It replaces a <c>Split</c> that allocated an array plus a string per
+    /// segment on every one of those calls; the segments arrive already normalized
+    /// (<see cref="EffectiveFilter.ExcludedPathSegments"/>), so nothing is built here either.</para>
+    ///
+    /// <para>Case folding is <c>OrdinalIgnoreCase</c>, matching SQLite's ASCII-only <c>LIKE</c> on
+    /// the other side and <c>NOCASE</c> on <c>MaterializedPath</c> (9a/P2) — the known limit, and
+    /// the same one in all three places.</para>
+    /// </summary>
     public static bool IsPathExcluded(string relativePath, EffectiveFilter filter)
     {
         if (filter.ExcludedPathSegments.Count == 0 || relativePath.Length == 0)
@@ -35,16 +54,45 @@ public static class FileFilter
             return false;
         }
 
-        var segments = relativePath.Split(PathSeparators, StringSplitOptions.RemoveEmptyEntries);
-        foreach (var segment in segments)
+        // The pipeline hands out backslash paths; the forward-slash fold is kept for the callers
+        // that do not (the check itself is a vectorised scan, so it costs nothing when it fails).
+        var normalized = relativePath.Contains('/') ? relativePath.Replace('/', '\\') : relativePath;
+        var path = normalized.AsSpan().Trim('\\');
+
+        foreach (var excluded in filter.ExcludedPathSegments)
         {
-            foreach (var excluded in filter.ExcludedPathSegments)
+            if (ContainsFramed(path, excluded))
             {
-                if (string.Equals(segment, excluded, StringComparison.OrdinalIgnoreCase))
-                {
-                    return true;
-                }
+                return true;
             }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when <paramref name="segment"/> occurs in <paramref name="path"/> bounded by separators
+    /// or by the ends of the path — the in-memory spelling of the SQL frame.
+    /// </summary>
+    private static bool ContainsFramed(ReadOnlySpan<char> path, string segment)
+    {
+        var start = 0;
+        while (start <= path.Length - segment.Length)
+        {
+            var found = path[start..].IndexOf(segment, StringComparison.OrdinalIgnoreCase);
+            if (found < 0)
+            {
+                return false;
+            }
+
+            var at = start + found;
+            var end = at + segment.Length;
+            if ((at == 0 || path[at - 1] == '\\') && (end == path.Length || path[end] == '\\'))
+            {
+                return true;
+            }
+
+            start = at + 1;
         }
 
         return false;

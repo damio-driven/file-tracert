@@ -236,15 +236,11 @@ public sealed class FilterReconciler
 
         foreach (var segment in effective.ExcludedPathSegments)
         {
-            var normalized = ScanPath.Normalize(segment);
-            if (normalized.Length == 0)
-            {
-                continue; // an empty segment would frame to "\\" and match every row
-            }
-
+            // Already normalized and non-empty: EffectiveFilter does that once, for both halves,
+            // because the two used to disagree — see EffectiveFilter.ExcludedPathSegments.
             // Escaped, because a '%' or '_' in a configured segment is a character of a folder
             // name and not a wildcard the user asked for.
-            var pattern = $"%{Separator}{EscapeLike(normalized)}{Separator}%";
+            var pattern = $"%{Separator}{EscapeLike(segment)}{Separator}%";
             Expression<Func<FileEntry, bool>> one = f => EF.Functions.Like(
                 Separator + f.Directory.MaterializedPath + Separator + f.Name + Separator,
                 pattern,
