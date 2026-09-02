@@ -195,6 +195,133 @@ public sealed class UsnDeltaConvergenceTests
         await AssertConvergesAsync(world, world, [Change(world, 201, UsnReason.DataOverwrite | UsnReason.Close)]);
     }
 
+    // ── which cause the delta writes ──────────────────────────────────────────
+
+    /// <summary>
+    /// A folder in the catalog, two levels of rows under it, and one of those files touched by the
+    /// journal while the folder is outside the perimeter. What is asserted is not that the row goes
+    /// out — the convergence cases above already cover that — but WHICH of the four columns of §6
+    /// records it, because the four are undone by different owners and getting the mapping wrong is
+    /// silent, permanent and invisible to the screen.
+    ///
+    /// <para><b>Why this needs its own pair of tests rather than a convergence case.</b> The delta's
+    /// per-cause buckets and the single transaction that writes them are new in step 16, and the
+    /// suite could not tell <c>ExcludedByPath</c> from <c>ExcludedByScan</c> here: every convergence
+    /// case seeds <c>ExcludedPaths = []</c>, so the path branch was never executed at all, and
+    /// swapping the two columns left the suite green. Convergence is the wrong instrument for the
+    /// path half in particular: reaching it needs a folder whose CATALOG path already carries the
+    /// segment, and a full re-scan of the same world reaches the row through the directory area it
+    /// skipped rather than through this loop — the two roads agree on the column and would agree on
+    /// the wrong column just as happily.</para>
+    ///
+    /// <para><b>Why the parent of the touched file is two levels down.</b> A file whose direct
+    /// parent is in the delta has no <c>ParentId</c> from the catalog (the resolver takes the
+    /// delta's copy of that directory), so it resolves to no directory row and is treated as GONE,
+    /// not as excluded. The loop that writes causes is reached only by a row whose own directory is
+    /// catalog-resident and untouched by this delta and sits under one the delta just excluded.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task A_row_under_a_path_excluded_folder_records_the_cause_the_settings_can_undo()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var reader = ReaderFor(NestedWorld());
+        var volumeId = await SeedAndScanAsync(harness, reader, NestedWorld());
+
+        // The segment arrives after the volume was last scanned, which is the only way a row can be
+        // sitting INCLUDED under a folder whose path is excluded. Reachable in production: a
+        // completed MoveFile lands a row in such a folder and IndexUpdater does not write the path
+        // cause (declared as a known limit of this round), and reconciliation only ever re-decides
+        // what is under a watched root at the moment Save is pressed.
+        await SetExcludedPathsAsync(harness, "Cache");
+
+        var world = NestedWorld();
+        reader.Changes =
+        [
+            Change(world, 140, UsnReason.BasicInfoChange | UsnReason.Close),
+            Change(world, 205, UsnReason.DataOverwrite | UsnReason.Close),
+        ];
+        reader.NextUsn = 900;
+
+        await using (var ctx = harness.CreateContext())
+        {
+            var result = await BuildApplier(ctx, reader, MetadataFor(world)).SyncVolumeAsync(volumeId, default);
+            result.Status.Should().Be(UsnSyncStatus.Applied);
+        }
+
+        await using var read = harness.CreateContext();
+        var row = await read.Files.SingleAsync(f => f.UsnFileRef == 205);
+        row.IsIncluded.Should().BeFalse("a segment of its path is on the excluded list");
+        row.ExcludedByPath.Should().BeTrue(
+            "the cause is a fact of the SETTINGS: dropping the segment must re-admit the row with no scan");
+        row.ExcludedByScan.Should().BeFalse(
+            "writing the attribute cause here would put the row behind a column reconciliation may never " +
+            "touch — removing the segment would then never bring it back, and only a full scan could");
+        row.IsPresent.Should().BeTrue("an exclusion is not an absence (§6)");
+    }
+
+    /// <summary>
+    /// The mirror of the case above, and the half that makes the pair a real guard: the same shape
+    /// with the folder turning HIDDEN instead must land in <c>ExcludedByScan</c>. Either column
+    /// written in the other's place reddens one of these two.
+    /// </summary>
+    [Fact]
+    public async Task A_row_under_a_newly_hidden_folder_records_the_cause_only_a_scan_can_undo()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var reader = ReaderFor(NestedWorld());
+        var volumeId = await SeedAndScanAsync(harness, reader, NestedWorld());
+
+        var after = Replace(NestedWorld(), 140, i => i with
+        {
+            Attributes = FileAttributes.Directory | FileAttributes.Hidden,
+        });
+
+        reader.Changes =
+        [
+            Change(after, 140, UsnReason.BasicInfoChange | UsnReason.Close),
+            Change(after, 205, UsnReason.DataOverwrite | UsnReason.Close),
+        ];
+        reader.NextUsn = 900;
+
+        await using (var ctx = harness.CreateContext())
+        {
+            var result = await BuildApplier(ctx, reader, MetadataFor(after)).SyncVolumeAsync(volumeId, default);
+            result.Status.Should().Be(UsnSyncStatus.Applied);
+        }
+
+        await using var read = harness.CreateContext();
+        var row = await read.Files.SingleAsync(f => f.UsnFileRef == 205);
+        row.IsIncluded.Should().BeFalse();
+        row.ExcludedByScan.Should().BeTrue(
+            "no setting says whether that folder is still hidden, so only another scan may retract it");
+        row.ExcludedByPath.Should().BeFalse(
+            "nothing in this row's path says so — recording it here would let a settings change re-admit " +
+            "the content of a hidden folder, which is the regression 11h exists to prevent");
+        row.IsPresent.Should().BeTrue("an exclusion is not an absence (§6)");
+    }
+
+    /// <summary>
+    /// A folder with a nested folder inside it, so the file's own directory row survives a delta
+    /// that only names the folder ABOVE it — see the note on the first test for why the extra level
+    /// is what makes the cause-writing loop reachable at all.
+    /// </summary>
+    private static List<Item> NestedWorld() =>
+    [
+        Dir(100, RootFrn, "Photos"),
+        Dir(140, 100, @"Photos\Cache"),
+        Dir(150, 140, @"Photos\Cache\Sub"),
+        File(205, 150, @"Photos\Cache\Sub\a.jpg", 12),
+    ];
+
+    private static async Task SetExcludedPathsAsync(SqliteInMemoryContext harness, params string[] segments)
+    {
+        await using var ctx = harness.CreateContext();
+        var settings = await ctx.AppSettings.FirstAsync();
+        settings.ExcludedPaths = segments.ToList();
+        await ctx.SaveChangesAsync();
+    }
+
     // ── the cursor ────────────────────────────────────────────────────────────
 
     [Fact]
@@ -392,6 +519,7 @@ public sealed class UsnDeltaConvergenceTests
                 f.ExcludedByType,
                 f.ExcludedByRoot,
                 f.ExcludedByScan,
+                f.ExcludedByPath,
                 Directory = f.Directory.MaterializedPath,
             })
             .OrderBy(f => f.Directory).ThenBy(f => f.Name)
