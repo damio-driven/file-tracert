@@ -89,7 +89,14 @@ public sealed class FilterSettingsService
 
         // After the commit, never inside it: the notification is a row of its own plus a realtime
         // push, and the settings save must not depend on either.
-        await ReportMalformedOverridesAsync(malformed, ct);
+        //
+        // …and therefore on CancellationToken.None, which is the house rule for everything that
+        // follows a commit (11d, repeated by 11e). Here it is not a formality: the rows are already
+        // excluded, the list of offending roots lives only in this local variable, there is no retry
+        // and nothing durable to come back for. An abort landing in this window — the user closes
+        // the tab while a bulk reconciliation finishes — would drop the only half of §9 that reaches
+        // the screen, for good, while the exclusion it warns about stands.
+        await ReportMalformedOverridesAsync(malformed, CancellationToken.None);
 
         return new ReconcileResultDto(included, excluded, FilterReconciler.FilterWidened(oldFilter, newFilter));
     }

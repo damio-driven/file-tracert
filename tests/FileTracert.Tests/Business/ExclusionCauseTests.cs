@@ -1,8 +1,10 @@
+using System.Data.Common;
 using FileTracert.Business.Filtering;
 using FileTracert.Business.Scanning;
 using FileTracert.Business.Setup;
 using FileTracert.Contracts.Dtos;
 using FileTracert.Contracts.Enums;
+using FileTracert.Contracts.Notifications;
 using FileTracert.Contracts.Platform;
 using FileTracert.Contracts.Search;
 using FileTracert.Data;
@@ -12,6 +14,7 @@ using FileTracert.Data.Search;
 using FileTracert.Tests.Data;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace FileTracert.Tests.Business;
@@ -616,6 +619,91 @@ public sealed class ExclusionCauseTests
         raised.Source.Should().Be("Setup");
         raised.VolumeId.Should().Be(volumeId);
         raised.Title.Should().Contain("Photos");
+    }
+
+    /// <summary>
+    /// The notification above runs AFTER the commit, and everything after a commit runs on
+    /// <see cref="CancellationToken.None"/> — the house rule 11d wrote and 11e repeated, here for a
+    /// reason of its own: the rows are already excluded and the list of offending roots lives only
+    /// in a local variable. There is no retry and nothing durable to come back for, so a request
+    /// aborted in that window (the user closes the tab; a bulk reconciliation is not instant) loses
+    /// the ONLY half of §9 that reaches the screen, permanently, while the exclusion it was warning
+    /// about stands.
+    ///
+    /// <para>The cancellation is injected where it actually happens — an interceptor fires it the
+    /// moment the transaction commits — and the publisher honours its token the way the real
+    /// <c>NotificationService</c> does, by saving a row with it. Passing the request token here
+    /// throws instead of publishing.</para>
+    /// </summary>
+    [Fact]
+    public async Task A_request_aborted_right_after_the_commit_still_gets_its_warning()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, [], rootPath: "Photos");
+
+        await using (var arrange = harness.CreateContext())
+        {
+            var root = await arrange.WatchedRoots.SingleAsync();
+            root.FilterOverrideJson = """{ "extensions": ["jpg", "txt"  """;
+            await arrange.SaveChangesAsync();
+        }
+
+        await ScanAsync(harness, volumeId,
+            Dir("Photos", "Photos"),
+            File(@"Photos\note.txt", "note.txt"));
+
+        using var abort = new CancellationTokenSource();
+        var notifications = new CancellationHonouringPublisher();
+
+        await using (var ctx = harness.CreateContext(new CancelOnCommit(abort)))
+        {
+            var service = new FilterSettingsService(
+                ctx, new FilterReconciler(ctx, new FileSearchIndex(ctx)),
+                notifications, NullLogger<FilterSettingsService>.Instance);
+
+            await service.UpdateAsync(new FilterSettingsDto(["jpg"], []), abort.Token);
+        }
+
+        abort.IsCancellationRequested.Should().BeTrue("arrange: the abort has to land in that window");
+
+        await using (var read = harness.CreateContext())
+        {
+            (await read.Files.SingleAsync(f => f.Name == "note.txt")).IsIncluded.Should().BeFalse(
+                "arrange: the rows really were excluded against a filter the user did not choose");
+        }
+
+        notifications.Published.Should().ContainSingle(
+            "the exclusion is committed and unretried, so the warning about it cannot be optional");
+    }
+
+    /// <summary>Cancels a token the instant the unit of work commits — the window 11d named.</summary>
+    private sealed class CancelOnCommit(CancellationTokenSource source) : DbTransactionInterceptor
+    {
+        public override Task TransactionCommittedAsync(
+            DbTransaction transaction, TransactionEndEventData eventData, CancellationToken ct)
+        {
+            source.Cancel();
+            return Task.CompletedTask;
+        }
+    }
+
+    /// <summary>
+    /// A publisher that honours its token, because the real one does: <c>NotificationService</c>
+    /// writes a row with <c>SaveChangesAsync(ct)</c>. A fake that ignored it would make this test
+    /// pass over the defect.
+    /// </summary>
+    private sealed class CancellationHonouringPublisher : INotificationPublisher
+    {
+        public List<string> Published { get; } = [];
+
+        public Task PublishAsync(
+            NotificationSeverity severity, string source, string title, string message,
+            int? volumeId, CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            Published.Add(title);
+            return Task.CompletedTask;
+        }
     }
 
     /// <summary>
