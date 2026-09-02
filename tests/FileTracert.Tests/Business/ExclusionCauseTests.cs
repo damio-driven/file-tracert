@@ -98,8 +98,8 @@ public sealed class ExclusionCauseTests
     private static ScanEntry Dir(string path, string name, FileAttributes extra = FileAttributes.None) =>
         new(path, name, true, 0, T, T, FileAttributes.Directory | extra);
 
-    private static ScanEntry File(string path, string name) =>
-        new(path, name, false, 10, T, T, FileAttributes.Normal);
+    private static ScanEntry File(string path, string name, FileAttributes extra = FileAttributes.None) =>
+        new(path, name, false, 10, T, T, FileAttributes.Normal | extra);
 
     /// <summary>
     /// THE defect step 11g left open. A file the scan skipped because its folder is Hidden is
@@ -502,13 +502,19 @@ public sealed class ExclusionCauseTests
 
     /// <summary>
     /// A folder that is hidden AND on the excluded list fails both perimeter rules, and the row
-    /// records the PATH one. The consequence is what matters: the cause written there is the one
-    /// reconciliation can re-decide, so the row is not pinned out for the life of the catalog by a
-    /// verdict no setting can reach. The other order costs nothing less than that — and erring this
-    /// way costs one scan, which re-stamps the row with whichever rule still holds.
+    /// records BOTH. There is no precedence to pick here, and looking for one was the mistake the
+    /// first draft of step 16 made: the causes of 11h are flags precisely BECAUSE they sum. With any
+    /// precedence, undoing the winning cause re-admits a row the loser should still hold out — here,
+    /// the content of a HIDDEN folder walking back into the Catalog because the user dropped a path
+    /// segment that has nothing to do with it. That is the exact regression 11h exists to prevent,
+    /// reached through a new door.
+    ///
+    /// <para>And it would be history-dependent, which is worse than merely wrong: a scan that had
+    /// seen the folder hidden BEFORE the segment was excluded leaves the row protected, while this
+    /// order leaves it exposed. Same disk, two outcomes.</para>
     /// </summary>
     [Fact]
-    public async Task A_folder_that_fails_both_rules_records_the_one_that_can_be_undone()
+    public async Task A_folder_that_fails_both_rules_records_both_causes()
     {
         using var harness = new SqliteInMemoryContext();
         var volumeId = Seed(harness, ["jpg"]);
@@ -523,7 +529,7 @@ public sealed class ExclusionCauseTests
         await ScanAsync(harness, volumeId, Entries(FileAttributes.None));
 
         // …then BOTH rules turn against it: the segment is excluded, and the folder goes hidden.
-        // The scan is what re-decides the row, and which cause it stamps is the question.
+        // The scan is what re-decides the row, and it has to record both facts, not choose.
         await SetFilterAsync(harness, ["jpg"], ["Secret"]);
         await ScanAsync(harness, volumeId, Entries(FileAttributes.Hidden));
 
@@ -531,18 +537,62 @@ public sealed class ExclusionCauseTests
         {
             var both = await scanned.Files.SingleAsync(f => f.Name == "both.jpg");
             both.IsIncluded.Should().BeFalse();
-            both.ExcludedByPath.Should().BeTrue("the segment is the cause a setting can retract");
-            both.ExcludedByScan.Should().BeFalse(
-                "recording the attribute cause instead would pin the row out for ever");
+            both.ExcludedByPath.Should().BeTrue("the segment is one of the two rules that rejected it");
+            both.ExcludedByScan.Should().BeTrue("and the Hidden attribute is the other one");
         }
 
-        // And the proof that it is not pinned: the setting that put it there can take it back.
+        // Drop the segment: the cause a setting owns comes undone, the one it does not stands.
         await SetFilterAsync(harness, ["jpg"], []);
 
         await using var read = harness.CreateContext();
-        (await read.Files.SingleAsync(f => f.Name == "both.jpg")).IsIncluded.Should().BeTrue(
-            "the row carried a settings-borne cause, and the setting is gone — a later scan is what " +
-            "re-applies the attribute rule, which is the accepted price of this precedence");
+        var row = await read.Files.SingleAsync(f => f.Name == "both.jpg");
+        row.ExcludedByPath.Should().BeFalse("the setting that raised it is gone");
+        row.ExcludedByScan.Should().BeTrue("nothing in Setup knows whether that folder is still hidden");
+        row.IsIncluded.Should().BeFalse(
+            "one cause undone is not all of them — the content of a hidden folder must not come back " +
+            "because an unrelated path segment was dropped");
+        row.IsPresent.Should().BeTrue("an exclusion is never an absence (§6)");
+    }
+
+    /// <summary>
+    /// The same summing, on the OTHER pipeline path: a file the scan steps over one by one, rather
+    /// than a whole subtree. <c>ScanPerimeter.SkipFile</c> is a list, so a file rejected by both
+    /// rules emits two areas — and the closing pass runs one statement per distinct cause, never one
+    /// per area, so recording both costs nothing.
+    /// </summary>
+    [Fact]
+    public async Task A_file_that_fails_both_rules_records_both_causes()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, []);
+
+        // The file's own NAME is the excluded segment (IsPathExcluded splits the file's relative
+        // path, which includes it) and the file itself is hidden. Its DIRECTORY stays inside the
+        // perimeter, which is what keeps it on the one-by-one list instead of under a dropped subtree.
+        ScanEntry[] Entries(FileAttributes secret) =>
+        [
+            Dir("Photos", "Photos"),
+            File(@"Photos\Secret", "Secret", secret),
+        ];
+
+        await ScanAsync(harness, volumeId, Entries(FileAttributes.None));
+
+        await SetFilterAsync(harness, [], ["Secret"]);
+        await ScanAsync(harness, volumeId, Entries(FileAttributes.Hidden));
+
+        await using (var scanned = harness.CreateContext())
+        {
+            var both = await scanned.Files.SingleAsync(f => f.Name == "Secret");
+            both.ExcludedByPath.Should().BeTrue();
+            both.ExcludedByScan.Should().BeTrue();
+        }
+
+        await SetFilterAsync(harness, [], []);
+
+        await using var read = harness.CreateContext();
+        var row = await read.Files.SingleAsync(f => f.Name == "Secret");
+        row.ExcludedByPath.Should().BeFalse();
+        row.IsIncluded.Should().BeFalse("the Hidden attribute is still there and no setting can retract it");
     }
 
     /// <summary>

@@ -24,8 +24,8 @@ public sealed class ScanPerimeter
     private readonly ExcludedSubtrees _excluded = new();
     private readonly List<SkippedFile> _skippedFiles = [];
 
-    /// <summary>A file the scan saw and stepped over, with the perimeter rule that rejected it.</summary>
-    public readonly record struct SkippedFile(string Path, ScanSkipCause Cause);
+    /// <summary>A file the scan saw and stepped over, with every perimeter rule that rejected it.</summary>
+    public readonly record struct SkippedFile(string Path, PerimeterVerdict Verdict);
 
     /// <param name="normalizedRoots">The ACTIVE watched roots, already normalized
     /// (<see cref="ScanPath.Normalize"/>). An empty set means the scan covered nothing.</param>
@@ -36,11 +36,13 @@ public sealed class ScanPerimeter
     public string? GoverningRoot(string relativePath) => _roots.Governing(relativePath);
 
     /// <summary>
-    /// Records a directory the filter excluded, with the rule that rejected it; its whole subtree
-    /// goes with it (C16). The cause travels because the two rules are inherited differently —
-    /// see <see cref="ExcludedSubtrees"/>.
+    /// Records a directory the filter excluded, with every rule that rejected it; its whole subtree
+    /// goes with it (C16). The causes travel because the two rules are inherited differently —
+    /// see <see cref="ExcludedSubtrees"/> — and they travel TOGETHER because they sum
+    /// (<see cref="PerimeterVerdict"/>).
     /// </summary>
-    public void ExcludeSubtree(string relativePath, ScanSkipCause cause) => _excluded.Add(relativePath, cause);
+    public void ExcludeSubtree(string relativePath, PerimeterVerdict verdict) =>
+        _excluded.Add(relativePath, verdict);
 
     /// <summary>
     /// Records a file the scan saw and stepped over for a reason of its own — its attributes, or
@@ -49,8 +51,8 @@ public sealed class ScanPerimeter
     /// changes, without a scan), and recording the type-rejected files would mean carrying every
     /// <c>.dll</c> of a watched volume through the merge to say something already said.
     /// </summary>
-    public void SkipFile(string relativePath, ScanSkipCause cause) =>
-        _skippedFiles.Add(new SkippedFile(relativePath, cause));
+    public void SkipFile(string relativePath, PerimeterVerdict verdict) =>
+        _skippedFiles.Add(new SkippedFile(relativePath, verdict));
 
     public int ExcludedSubtreeCount => _excluded.Count;
 
@@ -61,31 +63,34 @@ public sealed class ScanPerimeter
     /// True when the scan looked at <paramref name="relativePath"/>: inside an active root and not
     /// under an excluded subtree.
     /// </summary>
-    public bool Covers(string relativePath) => SkipCause(relativePath) is null;
+    public bool Covers(string relativePath) => SkipVerdict(relativePath).IsInside;
 
     /// <summary>
-    /// Why the scan did not look at <paramref name="relativePath"/>, or null when it did.
+    /// Why the scan did not look at <paramref name="relativePath"/>, or
+    /// <see cref="PerimeterVerdict.Inside"/> when it did.
     ///
     /// <para>The three answers are NOT interchangeable and that is the point of step 11h, extended
     /// by step 16: outside every active root, and under an excluded path segment, are settings the
     /// user can flip back, and reconciliation undoes both without a disk read; rejected for its
     /// ATTRIBUTES is a fact about the disk, and only another scan can retract it. Asking the roots
-    /// first is also the right precedence — an item outside every active root was never offered to
-    /// the filter at all, so it cannot have been "filtered out".</para>
+    /// first is a real precedence — an item outside every active root was never offered to the
+    /// filter at all, so it cannot have been "filtered out". Between the two FILTER rules there is
+    /// no precedence: both are recorded when both apply (<see cref="PerimeterVerdict"/>).</para>
     /// </summary>
-    public ScanSkipCause? SkipCause(string relativePath) =>
-        _roots.Governing(relativePath) is null ? ScanSkipCause.InactiveRoot
-        : _excluded.CauseFor(relativePath);
+    public PerimeterVerdict SkipVerdict(string relativePath) =>
+        _roots.Governing(relativePath) is null
+            ? PerimeterVerdict.OutsideEveryRoot
+            : _excluded.VerdictFor(relativePath);
 
     /// <summary>
     /// The files skipped one by one, once the subtree exclusions are known. A file under an
     /// excluded subtree is dropped from this list rather than reported twice: its whole directory
     /// is already outside the perimeter, and the directory is one row for the merge instead of one
     /// per file.
-    /// <para>Never <see cref="ScanSkipCause.InactiveRoot"/> by construction: an item outside every
-    /// active root is dropped before <see cref="SkipFile"/> is ever reached, so a file that got
-    /// this far was offered to the filter and refused by one of its two perimeter rules — and
-    /// which one is what it carries.</para>
+    /// <para>Never <see cref="PerimeterVerdict.InactiveRoot"/> by construction: an item outside
+    /// every active root is dropped before <see cref="SkipFile"/> is ever reached, so a file that
+    /// got this far was offered to the filter and refused by one or both of its two perimeter
+    /// rules — and which ones is what it carries.</para>
     /// </summary>
     public IReadOnlyList<SkippedFile> SkippedFiles => _skippedFiles;
 

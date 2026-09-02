@@ -381,13 +381,14 @@ public sealed class UsnDeltaApplier
                 continue; // outside every active root: nothing to insert, nothing to say
             }
 
-            if (FileFilter.PerimeterCause(item.Path, item.Entry.Attributes, filters[root]) is { } cause)
+            var verdict = FileFilter.EvaluatePerimeter(item.Path, item.Entry.Attributes, filters[root]);
+            if (verdict.IsInside)
             {
-                perimeter.ExcludeSubtree(item.Path, cause);
+                directories.Add(new ScannedDirectory(item.Path, unchecked((long)item.Entry.FileReferenceNumber)));
             }
             else
             {
-                directories.Add(new ScannedDirectory(item.Path, unchecked((long)item.Entry.FileReferenceNumber)));
+                perimeter.ExcludeSubtree(item.Path, verdict);
             }
         }
 
@@ -568,7 +569,11 @@ public sealed class UsnDeltaApplier
                 continue;
             }
 
-            if (perimeter.SkipCause(item.Path) is { } cause)
+            // Every cause that applies, not the first one: they sum, and writing only one would let
+            // the row back in the moment that one is undone (step 16). A row landing in two buckets
+            // is counted twice in the `excluded` tally below — a number that goes to the log, not to
+            // a decision.
+            foreach (var cause in perimeter.SkipVerdict(item.Path))
             {
                 if (!excludedByCause.TryGetValue(cause, out var bucket))
                 {

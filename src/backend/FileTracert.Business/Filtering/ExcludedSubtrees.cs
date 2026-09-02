@@ -27,55 +27,56 @@ namespace FileTracert.Business.Filtering;
 /// the ancestor may arrive last — and the scan already holds every enumerated item in memory
 /// anyway, so this is a fraction of a cost that is already paid.</para>
 /// </summary>
-/// <para>Since step 16 each entry also carries WHY it was excluded, because the two perimeter
-/// rules are inherited differently. A descendant of a path-excluded folder has that segment in its
-/// own path, so reconciliation can re-decide it later; a descendant of a HIDDEN folder has nothing
-/// of the sort — the exclusion is pure inheritance, and only another scan retracts it. The nearest
-/// excluded ancestor wins, which is the most specific answer and the one the walk finds first.</para>
+/// <para>Since step 16 each entry also carries WHICH rules excluded it — all of them, not one,
+/// see <see cref="PerimeterVerdict"/> — because the two perimeter rules are inherited differently.
+/// A descendant of a path-excluded folder has that segment in its own path, so reconciliation can
+/// re-decide it later; a descendant of a HIDDEN folder has nothing of the sort — the exclusion is
+/// pure inheritance, and only another scan retracts it. The nearest excluded ancestor wins, which is
+/// the most specific answer and the one the walk finds first.</para>
 public sealed class ExcludedSubtrees
 {
-    private readonly Dictionary<string, ScanSkipCause> _roots = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, PerimeterVerdict> _roots = new(StringComparer.OrdinalIgnoreCase);
 
     public int Count => _roots.Count;
 
     /// <summary>
-    /// Records a directory the filter excluded, and the rule that rejected it. The volume root is
+    /// Records a directory the filter excluded, and every rule that rejected it. The volume root is
     /// never recorded: excluding it would mean the scan has nothing to do, which is a watched-root
     /// decision, not a filter one.
     /// </summary>
-    public void Add(string relativePath, ScanSkipCause cause)
+    public void Add(string relativePath, PerimeterVerdict verdict)
     {
         if (!string.IsNullOrEmpty(relativePath))
         {
-            _roots[relativePath] = cause;
+            _roots[relativePath] = verdict;
         }
     }
 
     /// <summary>True when <paramref name="relativePath"/> is, or lives under, an excluded directory.</summary>
-    public bool Covers(string relativePath) => CauseFor(relativePath) is not null;
+    public bool Covers(string relativePath) => !VerdictFor(relativePath).IsInside;
 
     /// <summary>
-    /// The rule that excluded the nearest excluded ancestor of <paramref name="relativePath"/> (or
-    /// the path itself), or null when none of them is excluded.
+    /// The rules that excluded the nearest excluded ancestor of <paramref name="relativePath"/> (or
+    /// the path itself); <see cref="PerimeterVerdict.Inside"/> when none of them is excluded.
     /// </summary>
-    public ScanSkipCause? CauseFor(string relativePath)
+    public PerimeterVerdict VerdictFor(string relativePath)
     {
         if (_roots.Count == 0)
         {
-            return null;
+            return PerimeterVerdict.Inside;
         }
 
         var path = relativePath;
         while (path.Length > 0)
         {
-            if (_roots.TryGetValue(path, out var cause))
+            if (_roots.TryGetValue(path, out var verdict))
             {
-                return cause;
+                return verdict;
             }
 
             path = ScanPath.Parent(path);
         }
 
-        return null;
+        return PerimeterVerdict.Inside;
     }
 }

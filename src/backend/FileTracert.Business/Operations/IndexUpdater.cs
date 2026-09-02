@@ -164,12 +164,12 @@ public sealed class IndexUpdater
             row.Category = FileFilter.ResolveCategory(extension, categories);
             row.ExcludedByType = !FileFilter.IsAllowedType(extension, filter);
             row.ExcludedByRoot = false;
-            // Which perimeter rule rejected it decides which flag records it, and the two are
-            // undone by different owners (step 16): a path segment reconciliation can retract, an
-            // attribute only another scan can.
-            var perimeterCause = FileFilter.PerimeterCause(item.TargetRelativePath, row.Attributes, filter);
-            row.ExcludedByPath = perimeterCause == ScanSkipCause.ExcludedPath;
-            row.ExcludedByScan = perimeterCause == ScanSkipCause.ExcludedAttributes;
+            // Which perimeter rules rejected it decides which flags record it — every one that
+            // applies, because they sum — and the two are undone by different owners (step 16): a
+            // path segment reconciliation can retract, an attribute only another scan can.
+            var perimeter = FileFilter.EvaluatePerimeter(item.TargetRelativePath, row.Attributes, filter);
+            row.ExcludedByPath = perimeter.ExcludedByPath;
+            row.ExcludedByScan = perimeter.ExcludedByAttributes;
             row.IsIncluded =
                 !(row.ExcludedByType || row.ExcludedByRoot || row.ExcludedByScan || row.ExcludedByPath);
 
@@ -254,17 +254,18 @@ public sealed class IndexUpdater
         // The perimeter half is only ever SET here, never cleared: this call can see that the new
         // path now carries an excluded segment, but it cannot see that the folder above the file
         // is still Hidden. Clearing on "looks fine from here" is how a scan decision gets undone
-        // by something that never looked at the disk. Which of the two rules spoke decides which
-        // flag is raised (step 16) — and raising the wrong one would either pin the row out for
-        // ever or hand it to a setting that says nothing about it.
-        switch (FileFilter.PerimeterCause(item.TargetRelativePath, file.Attributes, filter))
+        // by something that never looked at the disk. Which rules spoke decides which flags are
+        // raised (step 16) — every one that applies, because they sum, and raising the wrong one
+        // would either pin the row out for ever or hand it to a setting that says nothing about it.
+        var perimeter = FileFilter.EvaluatePerimeter(item.TargetRelativePath, file.Attributes, filter);
+        if (perimeter.ExcludedByPath)
         {
-            case ScanSkipCause.ExcludedPath:
-                file.ExcludedByPath = true;
-                break;
-            case ScanSkipCause.ExcludedAttributes:
-                file.ExcludedByScan = true;
-                break;
+            file.ExcludedByPath = true;
+        }
+
+        if (perimeter.ExcludedByAttributes)
+        {
+            file.ExcludedByScan = true;
         }
 
         file.IsIncluded =

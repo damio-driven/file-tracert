@@ -269,15 +269,17 @@ public sealed class ScanService
 
             if (item.IsDirectory)
             {
-                // The cause travels with the exclusion: a subtree dropped for a path segment is one
-                // reconciliation can re-decide later, a subtree dropped for Hidden/System is not.
-                if (FileFilter.PerimeterCause(item.RelativePath, item.Attributes, filter) is { } dirCause)
+                // The causes travel with the exclusion: a subtree dropped for a path segment is one
+                // reconciliation can re-decide later, a subtree dropped for Hidden/System is not —
+                // and one dropped for both carries both, because undoing one must not be enough.
+                var dirVerdict = FileFilter.EvaluatePerimeter(item.RelativePath, item.Attributes, filter);
+                if (dirVerdict.IsInside)
                 {
-                    perimeter.ExcludeSubtree(item.RelativePath, dirCause);
+                    dirs.Add(item);
                 }
                 else
                 {
-                    dirs.Add(item);
+                    perimeter.ExcludeSubtree(item.RelativePath, dirVerdict);
                 }
             }
             else
@@ -287,14 +289,14 @@ public sealed class ScanService
                 // ShouldIncludeFile and then re-asking the perimeter on the reject branch spent a
                 // second path split on every rejected item of a volume (E7 territory).
                 var extension = FileFilter.GetExtension(item.Name);
-                var perimeterCause = FileFilter.PerimeterCause(item.RelativePath, item.Attributes, filter);
+                var fileVerdict = FileFilter.EvaluatePerimeter(item.RelativePath, item.Attributes, filter);
                 var allowedType = FileFilter.IsAllowedType(extension, filter);
 
-                if (perimeterCause is null && allowedType)
+                if (fileVerdict.IsInside && allowedType)
                 {
                     files.Add(item);
                 }
-                else if (perimeterCause is { } fileCause && allowedType)
+                else if (!fileVerdict.IsInside && allowedType)
                 {
                     // On disk, outside the perimeter: the closing pass must call it excluded, not
                     // absent. Only if its TYPE is allowed, though — a file the allow-list rejects
@@ -303,7 +305,7 @@ public sealed class ScanService
                     // allow-list is FilterReconciler's job, not the scan's). Without that guard
                     // every desktop.ini and Thumbs.db of a watched volume would be carried through
                     // the merge to say nothing.
-                    perimeter.SkipFile(item.RelativePath, fileCause);
+                    perimeter.SkipFile(item.RelativePath, fileVerdict);
                 }
             }
         }
@@ -583,22 +585,30 @@ public sealed class ScanService
     {
         var areas = new List<SkippedScanArea>();
 
+        // One area PER CAUSE, because the causes sum: a folder that is both hidden and under an
+        // excluded segment has to record both, or dropping the segment would walk its content back
+        // into the Catalog. It costs no statement — the closing pass runs one UPDATE per DISTINCT
+        // cause over the staged areas, never one per area.
         foreach (var (path, id) in idByPath)
         {
-            if (perimeter.SkipCause(path) is { } cause)
+            foreach (var cause in perimeter.SkipVerdict(path))
             {
                 areas.Add(new SkippedScanArea(id, FileName: null, cause));
             }
         }
 
-        foreach (var (file, cause) in perimeter.SkippedFiles)
+        foreach (var (file, verdict) in perimeter.SkippedFiles)
         {
             if (idByPath.TryGetValue(ScanPath.Parent(file), out var directoryId))
             {
                 // Never InactiveRoot by construction: an item outside every active root never
                 // reaches ScanPerimeter.SkipFile, so a file on this list was offered to the filter
-                // and refused by one of its two perimeter rules — and the pipeline carries which.
-                areas.Add(new SkippedScanArea(directoryId, ScanPath.Name(file), cause));
+                // and refused by one or both of its perimeter rules — and the pipeline carries which.
+                foreach (var cause in verdict)
+                {
+                    areas.Add(new SkippedScanArea(directoryId, ScanPath.Name(file), cause));
+                }
+
                 continue;
             }
 

@@ -120,7 +120,7 @@ public class FileFilterTests
     // ── C16: the excluded-subtree set ─────────────────────────────────────────
 
     /// <summary>
-    /// The perimeter answer is a CAUSE since step 16, because its two rules are undone by different
+    /// The perimeter answer names its rules since step 16, because they are undone by different
     /// owners: a path segment reconciliation can retract from the catalog alone, an attribute only
     /// another scan can. A bool made the first hostage to the second.
     /// </summary>
@@ -129,30 +129,61 @@ public class FileFilterTests
     {
         var filter = Filter(excludedSegments: ["AppData"]);
 
-        FileFilter.PerimeterCause(@"Photos\a.jpg", FileAttributes.Normal, filter)
-            .Should().BeNull("inside the perimeter on both counts");
-        FileFilter.PerimeterCause(@"AppData\a.jpg", FileAttributes.Normal, filter)
-            .Should().Be(ScanSkipCause.ExcludedPath);
-        FileFilter.PerimeterCause(@"Photos\a.jpg", FileAttributes.Hidden, filter)
-            .Should().Be(ScanSkipCause.ExcludedAttributes);
+        FileFilter.EvaluatePerimeter(@"Photos\a.jpg", FileAttributes.Normal, filter)
+            .Should().Be(PerimeterVerdict.Inside, "inside the perimeter on both counts");
+        FileFilter.EvaluatePerimeter(@"AppData\a.jpg", FileAttributes.Normal, filter)
+            .Should().Be(new PerimeterVerdict(false, ExcludedByPath: true, ExcludedByAttributes: false));
+        FileFilter.EvaluatePerimeter(@"Photos\a.jpg", FileAttributes.Hidden, filter)
+            .Should().Be(new PerimeterVerdict(false, ExcludedByPath: false, ExcludedByAttributes: true));
     }
 
     /// <summary>
-    /// Both rules rejecting it: the PATH wins. Attributing it to the attribute cause would pin the
-    /// row out for the lifetime of the catalog — the reconciler refuses to touch that flag however
-    /// the segments change — while erring this way costs at most one scan, which re-stamps it.
+    /// Both rules rejecting it: BOTH are recorded, because the causes of 11h sum. Picking one — any
+    /// one — means undoing it re-admits a row the other should still hold out: the content of a
+    /// hidden folder walking back into the Catalog because an unrelated segment was dropped.
     /// </summary>
     [Fact]
-    public void When_both_perimeter_rules_reject_it_the_path_is_the_recorded_cause() =>
-        FileFilter.PerimeterCause(
-                @"AppData\a.jpg", FileAttributes.Hidden, Filter(excludedSegments: ["AppData"]))
-            .Should().Be(ScanSkipCause.ExcludedPath);
+    public void When_both_perimeter_rules_reject_it_both_are_recorded()
+    {
+        var verdict = FileFilter.EvaluatePerimeter(
+            @"AppData\a.jpg", FileAttributes.Hidden, Filter(excludedSegments: ["AppData"]));
+
+        verdict.ExcludedByPath.Should().BeTrue();
+        verdict.ExcludedByAttributes.Should().BeTrue();
+        verdict.Should().NotBe(PerimeterVerdict.Inside);
+
+        var causes = new List<ScanSkipCause>();
+        foreach (var cause in verdict)
+        {
+            causes.Add(cause);
+        }
+
+        causes.Should().BeEquivalentTo(
+            [ScanSkipCause.ExcludedPath, ScanSkipCause.ExcludedAttributes],
+            "the write side stages one skipped area per cause, and needs both of them");
+    }
+
+    /// <summary>An inside verdict enumerates nothing at all: there is no area to stage.</summary>
+    [Fact]
+    public void An_inside_verdict_carries_no_cause()
+    {
+        var causes = 0;
+        foreach (var _ in PerimeterVerdict.Inside)
+        {
+            causes++;
+        }
+
+        causes.Should().Be(0);
+        PerimeterVerdict.Inside.IsInside.Should().BeTrue();
+        PerimeterVerdict.OutsideEveryRoot.IsInside.Should().BeFalse();
+    }
 
     /// <summary>The old yes/no is the same question with the answer thrown away; it must stay so.</summary>
     [Theory]
     [InlineData(@"Photos\a.jpg", FileAttributes.Normal, true)]
     [InlineData(@"AppData\a.jpg", FileAttributes.Normal, false)]
     [InlineData(@"Photos\a.jpg", FileAttributes.Hidden, false)]
+    [InlineData(@"AppData\a.jpg", FileAttributes.Hidden, false)]
     public void IsInsidePerimeter_agrees_with_the_cause(string path, FileAttributes attributes, bool inside) =>
         FileFilter.IsInsidePerimeter(path, attributes, Filter(excludedSegments: ["AppData"]))
             .Should().Be(inside);
@@ -167,7 +198,7 @@ public class FileFilterTests
     public void Excluded_subtree_set_covers_descendants_and_only_whole_segments(string path, bool covered)
     {
         var excluded = new ExcludedSubtrees();
-        excluded.Add(@"Secret", ScanSkipCause.ExcludedAttributes);
+        excluded.Add(@"Secret", new PerimeterVerdict(false, false, ExcludedByAttributes: true));
 
         excluded.Covers(path).Should().Be(covered);
     }
@@ -176,7 +207,7 @@ public class FileFilterTests
     public void Excluded_subtree_set_ignores_the_volume_root()
     {
         var excluded = new ExcludedSubtrees();
-        excluded.Add(string.Empty, ScanSkipCause.ExcludedAttributes);
+        excluded.Add(string.Empty, new PerimeterVerdict(false, false, ExcludedByAttributes: true));
 
         excluded.Count.Should().Be(0);
         excluded.Covers(@"Anything\at\all").Should().BeFalse();
