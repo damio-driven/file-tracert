@@ -749,9 +749,7 @@ due difetti che l'utente ha scelto per primi (voci A1 e A6).
 **Non c'è lavoro obbligatorio aperto**: tutto ciò che segue è debito datato,
 decisione di prodotto o fase 2.
 
-**Il servizio installato è aggiornato a 15a** (2026-08-26) — vedi «Deploy di 15a» qui sotto.
-**15b non è distribuito**: nessuna migration, quindi il deploy è una copia di file e resta una
-decisione dell'utente.
+**Il servizio installato è aggiornato a 15b** (2026-09-02) — vedi «Deploy di 15b» qui sotto.
 
 ### A. Difetti veri, in ordine di fastidio *(nessuno è MVP)*
 1. ~~**La corsa dell'auto-selezione su Volumi**~~ — **chiusa allo step 15b** (2026-08-27): lo
@@ -789,7 +787,7 @@ decisione dell'utente.
   l'unico volume su cui il percorso incrementale gira davvero (verificato sul catalogo vivo il
   2026-08-27: `Windows-SSD` e i due volumi offline hanno `UsnJournalId` a `NULL`).
 - **Il riavvio vero della macchina** non è mai stato fatto: è l'unica cosa che manca
-  alla prova dell'avvio automatico del servizio (step 13).
+  alla prova dell'avvio automatico del servizio (step 13). Vale ancora dopo il deploy di 15b.
 
 ### C. Igiene nota, tollerata
 - **`%TEMP%` accumula `ft-test-*-logs.db`**: `WebApplicationFactory.Dispose` non ferma
@@ -905,6 +903,61 @@ resta provato solo da `sc start`; il `MinimumLogLevel` installato è **`Trace`**
 livello il tetto che lega è `LogMaxRows` = 500 000 righe (≈184 MB, misurato allo step 13) —
 oggi il DB dei log sta a 3,9 MB; e **su `C:` il percorso incrementale non è ancora acceso**,
 cioè i 739 421 file che contano continuano a dipendere da una scansione completa.
+
+### Deploy di 15b sul catalogo reale (2026-09-02)
+**Il primo deploy senza migration.** Distribuito su richiesta dell'utente; questo giro non tocca
+lo schema, quindi è una copia di file e il database non viene aperto in scrittura da nessuna
+migrazione.
+
+**Stato di partenza, verificato prima di toccare qualcosa** — la solita e unica domanda che conta:
+`GET /api/dashboard` dava **0 job in coda, 0 bloccati, 0 in corso**. Catalogo a **742 669** file,
+invariato dal deploy di 15a (il worker USN su `D:` non ha raccolto altro drift nel frattempo).
+
+**Sequenza**: publish col servizio attivo, `sc stop` pulito, backup `filetracert.db.pre15b` con
+**sha256 identico** all'originale (`69dcbac6…`), `install-service.ps1`. Il backup è stato fatto
+comunque, pur senza migration: costa nulla ed è la rete sotto un aggiornamento di binari.
+
+**Verificato sul ferro**, servizio `Running`/`Automatic`, in ascolto solo su `127.0.0.1` e `::1`,
+UI 200, **401** senza token, **zero Error** nel log dall'avvio:
+
+| controllo | esito |
+|---|---|
+| migration applicate | **nessuna nuova** — in cima restano le due di 15a, che è ciò che ci si aspetta |
+| rebuild dell'FTS | **nessuno** — le uniche due righe «Search index» nel log dei log sono del 24/08 |
+| catalogo | 742 675 file · 114 212 directory · 742 669 righe FTS · 27 volumi |
+| job non terminali | 0 |
+| `foreign_key_check` | nessuna violazione |
+
+**Il fix del frontend è davvero servito**, e non solo compilato: `selectedId` compare in due chunk
+lazy dentro `wwwroot`, datati oggi. Il controllo vale la pena farlo — un `ng build` riuscito non
+prova che i file siano finiti in `Program Files`.
+
+**Il percorso che questo giro ha riscritto risponde**: `GET /api/operations` (la lista della Coda,
+dove la review ha trovato il MAJOR) torna 200 in **5 ms** su 28 job. Con zero job bloccati la somma
+raggruppata dei byte atterrati esce subito, che è il caso normale.
+
+**I tempi, mediana di 5**, accanto a quelli del deploy di 15a:
+
+| endpoint | 15a | oggi |
+|---|---|---|
+| `GET /api/dashboard` | 125 ms | 156 ms |
+| `GET /api/volumes` | 39 ms | 88 ms |
+| `GET /api/volumes/{id}` | 264 ms | 333 ms |
+| `GET /api/operations` | — | 5 ms |
+
+Più alti di 15a, e **non attribuibili a questo giro senza un A/B che non è stato fatto**: sono le
+prime letture su un servizio appena riavviato, a cache fredda, sul disco di sistema. È lo stesso
+avvertimento che i paragrafi di 14a e 15a portano già; nessuna di queste query è stata toccata da
+15b.
+
+**E la Copy continua a dire la verità**, riprovata col preview che per §7 non crea il job — stesso
+file, stesso volume, stessa destinazione, cambia solo il verbo: `CopyFile` chiede **1 941** byte +
+58 di margine, `MoveFile` chiede **0**.
+
+**Limiti dichiarati**: il **riavvio della macchina** continua a non essere stato fatto; nessuna
+Copy né alcuna ripresa **reale** è stata eseguita sul catalogo dell'utente, di proposito — un job
+vero duplicherebbe o sposterebbe un suo file, e il ricontrollo della ripresa è provato dai 4
+scenari `crash-resume` e da `resume-space-recheck` sul ferro, non sui suoi dati.
 
 ### Fatto nello step 15b (2026-08-27, commit `81d3c7d`…`d8affe7`)
 **Due difetti scelti dall'utente**, le voci **A6** e **A1** della roadmap. Nessuna migration,
