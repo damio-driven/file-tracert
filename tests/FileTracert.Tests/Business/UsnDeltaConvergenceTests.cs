@@ -466,7 +466,8 @@ public sealed class UsnDeltaConvergenceTests
 
         SqliteFts.Rows(harness).Select(r => r.Path).Should().BeEquivalentTo(
             [@"Photos\keep.jpg", @"Photos\Cache\b.jpg", @"Photos\Cache\Sub\c.jpg"],
-            "the starting scan indexed everything inside the perimeter — .tmp was never in the allow-list");
+            "the starting scan indexed every file of this world, because all of them are inside the "
+            + "perimeter and in the allow-list");
 
         var after = Replace(before, 140, i => i with
         {
@@ -675,6 +676,113 @@ public sealed class UsnDeltaConvergenceTests
         // directories — one chunk here — which the guard now skips because no row moved.
         replayCost.Should().Be(firstCost - 2,
             "a subtree whose rows did not move must not have its index rebuilt again");
+    }
+
+    /// <summary>
+    /// Everything else in this file has a subtree of at most two directories against a batch of 500,
+    /// so the chunk loop, its per-chunk transaction and its per-chunk <c>written &gt; 0</c> decision
+    /// have only ever run ONCE. That is not the case the loop exists for — splitting the transaction
+    /// was done precisely because the number of subtrees a delta can name after a long shutdown is
+    /// bounded by nothing — and a one-iteration loop is indistinguishable from no loop at all.
+    ///
+    /// <para>Reached by shrinking the batch rather than by seeding 500 directories: the same code
+    /// path, and a fixture that large would be measuring its own seeding. Five directories at a
+    /// batch of two is three chunks, and the two halves are asserted separately because they fail
+    /// differently — a loop that stops after the first chunk leaves rows INCLUDED (and their entries
+    /// answering searches), while a guard hoisted out of the loop is invisible in the rows and shows
+    /// up only in the arithmetic.</para>
+    ///
+    /// <para>The arithmetic is the same one the single-chunk replay case makes, multiplied: each
+    /// chunk that writes nothing skips exactly the pair of statements
+    /// <c>SyncDirectoriesAsync</c> issues, so three chunks skip six. Hoist that decision to the pass
+    /// and the replay saves two instead of six.</para>
+    /// </summary>
+    [Fact]
+    public async Task The_subtree_pass_carries_the_exclusion_across_every_chunk()
+    {
+        const int Directories = 5;
+        const int BatchSize = 2;
+        const int Chunks = 3;
+
+        var connection = new CountingSqliteConnection("Data Source=:memory:");
+        using var harness = new SqliteInMemoryContext(connection: connection);
+        using (var create = harness.CreateContext())
+        {
+            SqliteFts.Create(create);
+        }
+
+        // Photos/Cache with four sub-folders under it, one file each plus one in Cache itself, and
+        // one file OUTSIDE Cache that no chunk may touch.
+        List<Item> before =
+        [
+            Dir(100, RootFrn, "Photos"),
+            Dir(140, 100, @"Photos\Cache"),
+            File(200, 100, @"Photos\keep.jpg", 10),
+            File(205, 140, @"Photos\Cache\b.jpg", 12),
+            .. Enumerable.Range(0, Directories - 1).SelectMany(i => new List<Item>
+            {
+                Dir(150UL + (ulong)i, 140, $@"Photos\Cache\S{i}"),
+                File(1000UL + (ulong)i, 150UL + (ulong)i, $@"Photos\Cache\S{i}\f{i}.jpg", 13),
+            }),
+        ];
+
+        var reader = ReaderFor(before);
+        var volumeId = await SeedAndScanAsync(harness, reader, before, realSearchIndex: true);
+
+        var after = Replace(before, 140, i => i with
+        {
+            Attributes = FileAttributes.Directory | FileAttributes.Hidden,
+        });
+        reader.Script([Change(after, 140, UsnReason.BasicInfoChange | UsnReason.Close)], nextUsn: 900);
+
+        int firstCost;
+        await using (var ctx = harness.CreateContext())
+        {
+            connection.Reset();
+            var first = await BuildApplier(ctx, reader, MetadataFor(after), new FileSearchIndex(ctx),
+                    batchSize: BatchSize)
+                .SyncVolumeAsync(volumeId, default);
+            first.Excluded.Should().Be(Directories,
+                "one file per directory of the subtree, and the loop must reach the last chunk");
+            firstCost = connection.Statements;
+        }
+
+        await using (var read = harness.CreateContext())
+        {
+            var inside = await read.Files.Where(f => f.UsnFileRef != 200).ToListAsync();
+            inside.Should().HaveCount(Directories);
+            inside.Should().OnlyContain(f => !f.IsIncluded && f.ExcludedByScan && f.IsPresent,
+                "every chunk writes the same verdict, and an exclusion is never an absence (§6)");
+
+            (await read.Files.SingleAsync(f => f.UsnFileRef == 200)).IsIncluded.Should().BeTrue();
+        }
+
+        SqliteFts.Rows(harness).Select(r => r.Path).Should().Equal([@"Photos\keep.jpg"],
+            "the index is pruned per chunk, so a loop that stopped early would leave later chunks "
+            + "answering searches");
+
+        // Same delta again, exactly as after a crash before the checkpoint.
+        await using (var ctx = harness.CreateContext())
+        {
+            var volume = await ctx.Volumes.SingleAsync();
+            volume.LastUsn = 500;
+            await ctx.SaveChangesAsync();
+        }
+
+        int replayCost;
+        await using (var ctx = harness.CreateContext())
+        {
+            connection.Reset();
+            var again = await BuildApplier(ctx, reader, MetadataFor(after), new FileSearchIndex(ctx),
+                    batchSize: BatchSize)
+                .SyncVolumeAsync(volumeId, default);
+            again.Excluded.Should().Be(0);
+            replayCost = connection.Statements;
+        }
+
+        replayCost.Should().Be(firstCost - (2 * Chunks),
+            "the decision is taken per CHUNK: each of the three skips its own pair of index "
+            + "statements, not one pair for the whole pass");
     }
 
     /// <summary>
@@ -1068,19 +1176,30 @@ public sealed class UsnDeltaConvergenceTests
 
     /// <param name="searchIndex">The real <see cref="FileSearchIndex"/> where what the pass does to
     /// the index is part of what is being measured; the fake everywhere else.</param>
+    /// <param name="batchSize">The product default unless a case is about what happens ACROSS
+    /// chunks. Shrinking it is the only way to reach a second iteration without seeding 500
+    /// directories, and a fixture that large would measure the seeding.</param>
     private static UsnDeltaApplier BuildApplier(
         FileTracertDbContext ctx,
         ScriptedUsnReader reader,
         FakeFileMetadataReader metadata,
-        IFileSearchIndex? searchIndex = null) =>
-        new(ctx,
-            new FakeVolumeProbe(Probed),
-            reader,
-            metadata,
-            new BulkIndexWriter(ctx),
-            new DirectoryMerger(ctx, new BulkIndexWriter(ctx), NullLogger<DirectoryMerger>.Instance),
-            searchIndex ?? new FakeFileSearchIndex(),
-            NullLogger<UsnDeltaApplier>.Instance);
+        IFileSearchIndex? searchIndex = null,
+        int? batchSize = null)
+    {
+        var probe = new FakeVolumeProbe(Probed);
+        var merger = new DirectoryMerger(ctx, new BulkIndexWriter(ctx), NullLogger<DirectoryMerger>.Instance);
+        var index = searchIndex ?? new FakeFileSearchIndex();
+
+        // BatchSize is init-only, so "leave the product's own default alone unless a case asks for
+        // a smaller one" is a second construction rather than a second copy of the number. Writing
+        // 500 here would give the suite a fixture that quietly stops following the product the day
+        // that value moves.
+        return batchSize is null
+            ? new UsnDeltaApplier(ctx, probe, reader, metadata, new BulkIndexWriter(ctx), merger, index,
+                NullLogger<UsnDeltaApplier>.Instance)
+            : new UsnDeltaApplier(ctx, probe, reader, metadata, new BulkIndexWriter(ctx), merger, index,
+                NullLogger<UsnDeltaApplier>.Instance) { BatchSize = batchSize.Value };
+    }
 
     private static List<Item> Replace(List<Item> world, ulong frn, Func<Item, Item> change) =>
         world.Select(i => i.Frn == frn ? change(i) : i).ToList();
