@@ -744,16 +744,19 @@ rilievo è stato lasciato consapevolmente).
 **Dove siamo.** L'**MVP è chiuso** (tutte e dodici le voci del §10, con lo step 12).
 Il prodotto è **installato come servizio** e gira su un catalogo vero da 742 033 file
 (step 13). Gli step **14a–14e** hanno pagato i difetti che quel catalogo ha reso
-visibili. Lo step **15a** è il primo lavoro di **fase 2**: l'operazione **Copy**.
+visibili. Lo step **15a** è il primo lavoro di **fase 2**: l'operazione **Copy**; il **15b** ha chiuso i
+due difetti che l'utente ha scelto per primi (voci A1 e A6).
 **Non c'è lavoro obbligatorio aperto**: tutto ciò che segue è debito datato,
 decisione di prodotto o fase 2.
 
 **Il servizio installato è aggiornato a 15a** (2026-08-26) — vedi «Deploy di 15a» qui sotto.
+**15b non è distribuito**: nessuna migration, quindi il deploy è una copia di file e resta una
+decisione dell'utente.
 
 ### A. Difetti veri, in ordine di fastidio *(nessuno è MVP)*
-1. **La corsa dell'auto-selezione su Volumi** — selezione automatica e clic dell'utente
-   producono due richieste, vince l'ultima risposta che atterra. Trovato dal 12a e
-   lasciato lì apposta. Primo candidato per il giro che tocca quella schermata.
+1. ~~**La corsa dell'auto-selezione su Volumi**~~ — **chiusa allo step 15b** (2026-08-27): lo
+   store registra ciò che è stato *chiesto* (`selectedId`, sincrono) e scarta ogni risposta che
+   non è più quella.
 2. **`ExcludedPaths` non ha una riconciliazione propria** — togliere un segmento escluso
    dice onestamente `NeedsScan` (11g) e non riammette nulla senza scansione: corretto,
    ma non è una riconciliazione. Terza metà della voce chiusa da 11h.
@@ -765,9 +768,8 @@ decisione di prodotto o fase 2.
    sotto-albero e MFT è il candidato ovvio.
 5. **Classificazione Cloud non affidabile** (§11, debito datato allo step 6.7). Coperto
    dall'esclusione manuale, che funziona.
-6. **Un job ripreso da un checkpoint non ri-controlla lo spazio** — il ricontrollo hard
-   sta dentro il ramo `Pending` (11b). È l'ultimo buco nel «mai copiare sulla fiducia di
-   una stima».
+6. ~~**Un job ripreso da un checkpoint non ri-controlla lo spazio**~~ — **chiuso allo step 15b**
+   (2026-08-27). Chiedeva quanto **manca**, non la domanda intera: vedi il paragrafo dello step.
 7. **C32** — la risposta di enqueue porta `SourceVolumeLabel`/`TargetVolumeLabel` null
    (quel percorso non fa `Include` dei volumi). Innocuo: il picker la scarta.
 8. **P1** — hard link nello snapshot MFT: `nodes[frn]` è last-write-wins, quindi
@@ -778,13 +780,14 @@ decisione di prodotto o fase 2.
   cambia `CatalogChildrenDto` e la schermata.
 - **Filtro dimensione in Ricerca** — `SizeBytesMin/Max` esistono nell'API e nello store,
   non hanno un controllo a video (§8).
-- ~~**Distribuire il build corrente sul catalogo reale**~~ — **fatto il 2026-08-25**,
-  vedi «Deploy» qui sotto. Resta la conseguenza: il worker incrementale **non ha ancora
-  girato** sui 742 033 file veri, perché `UsnSyncWorker` pretende `UsnJournalId != null`
-  e la migration lo backfilla nullo. Si accende **solo dopo una ri-scansione esplicita**
-  del volume, che su `C:` costa una camminata completa dell'MFT per indicizzare tre
-  sottoalberi — il caso che 14d ha misurato come perdente. È una decisione, non un
-  automatismo.
+- ~~**Accendere l'incrementale su `C:`**~~ — **decisione presa dall'utente il 2026-08-27: NO.**
+  I 739 421 file di `C:` continueranno a dipendere da una scansione completa, e va bene così:
+  accenderlo costa una ri-scansione esplicita del volume, cioè una camminata completa dell'MFT
+  per indicizzare tre sottoalberi — il caso che 14d ha misurato come **perdente** per l'USN.
+  L'utente ha detto che non gli servirà mai scansionare un volume così grosso; resta buono solo
+  come prova assoluta, se un giorno la si vorrà. `D:` ha il cursore acceso dal 2026-08-25 ed è
+  l'unico volume su cui il percorso incrementale gira davvero (verificato sul catalogo vivo il
+  2026-08-27: `Windows-SSD` e i due volumi offline hanno `UsnJournalId` a `NULL`).
 - **Il riavvio vero della macchina** non è mai stato fatto: è l'unica cosa che manca
   alla prova dell'avvio automatico del servizio (step 13).
 
@@ -816,7 +819,8 @@ assenza · **11h** perché una riga è esclusa · **11i** le corse sui pool SQLi
 **12a/12b** end-to-end (con cui l'MVP si chiude) · **13** servizio installato e catalogo
 vero · **14a** filtro categoria della Ricerca · **14b** annullabilità delle query ·
 **14c** le due schermate Volumi · **14d** l'USN incrementale · **14e** l'allineamento del
-brief · **15a** l'operazione Copy. I finding della review del 2026-07-12 stanno in
+brief · **15a** l'operazione Copy · **15b** la ripresa che ricontrolla lo spazio e la corsa di
+Volumi. I finding della review del 2026-07-12 stanno in
 `CODE-REVIEW-HANDOFF.md`, che porta in cima il proprio stato aggiornato.
 
 ### Deploy sul catalogo reale (2026-08-25, build `49619b5`)
@@ -901,6 +905,122 @@ resta provato solo da `sc start`; il `MinimumLogLevel` installato è **`Trace`**
 livello il tetto che lega è `LogMaxRows` = 500 000 righe (≈184 MB, misurato allo step 13) —
 oggi il DB dei log sta a 3,9 MB; e **su `C:` il percorso incrementale non è ancora acceso**,
 cioè i 739 421 file che contano continuano a dipendere da una scansione completa.
+
+### Fatto nello step 15b (2026-08-27, commit `81d3c7d`…`d8affe7`)
+**Due difetti scelti dall'utente**, le voci **A6** e **A1** della roadmap. Nessuna migration,
+nessun cambiamento di contratto.
+
+#### 1. Un job ripreso ricontrolla il disco (A6)
+Il ricontrollo hard viveva dentro `if (job.State == JobState.Pending)`, quindi un job ripreso da
+un checkpoint — dopo un crash, uno spegnimento, o un rilascio da `Blocked` — rientrava nella copia
+sulla fede di una risposta data **prima** dell'interruzione. Era l'ultimo buco nel «mai copiare
+sulla fiducia di una stima» del §4, e lo **step 15a lo aveva allargato**: da quando una copia
+intra-volume prenota, anche le operazioni che restano su un volume sono esposte.
+
+**La sottigliezza che rende il fix un fix e non un difetto peggiore.** Un job ripreso ha già messo
+parte della propria domanda sul target, e quei byte mancano già dalla lettura dello spazio libero.
+Richiedere di nuovo la domanda **intera** li conterebbe due volte e parcheggerebbe per sempre ogni
+job grosso interrotto: 9 GB di una copia da 10 GB scritti, mezzo giga libero, e un job che ha
+bisogno di 1 GB rifiutato perché ne chiede 10. La domanda giusta è «quanto **manca**».
+
+Quella risposta ha **una definizione sola** — `JobStates.OutstandingBytes` — e deve averla: la
+chiede l'engine prima di riprendere e il `BlockedJobRevaluator` prima di liberare un job
+parcheggiato, e il commento del revaluator dice già cosa succede quando i due giudicano su numeri
+diversi: il job fa ping-pong `Blocked → Pending → Blocked` senza muovere un byte.
+`EvaluateHardAsync` la deriva **da sé** dagli item invece di prenderla come parametro, così nessun
+decisore può passare la cosa sbagliata — non passa niente. `JobStates.Landed` nomina gli stati di
+item i cui byte sono sul target, e `CompletedItemBytes` dell'engine legge da lì invece di
+riscrivere gli stessi tre stati.
+
+Il controllo gira **solo** prima della fase di copia, mai prima di `Verifying` o `DeletingSource`:
+da `Verifying` in poi ogni passo rinomina sul posto o **libera** spazio, quindi rifiutare lì
+parcheggerebbe lavoro già finito.
+
+#### 2. Su Volumi vince l'ultima scelta, non l'ultima risposta (A1)
+La schermata auto-seleziona il primo volume catalogabile appena la lista arriva; l'utente può
+cliccarne un altro un istante dopo. `select` scriveva lo store **incondizionatamente** al ritorno
+della propria risposta, quindi vinceva l'ultima **risposta atterrata**. Su una macchina carica
+quella è l'auto-selezione, e il pannello tornava su un volume che nessuno stava guardando. Trovato
+dal 12a — è ciò che fece cadere una di quelle tre passate — e lasciato lì apposta come difetto
+della schermata, non del test.
+
+Lo store registra ora ciò che è stato **chiesto**, sincronicamente, in `selectedId`, e scarta ogni
+risposta che non è più quella: dettaglio, spinner ed errore. Un errore stantio riportato sopra una
+selezione ancora in corso è la stessa bugia in un altro colore. `selectedId` corregge anche i due
+punti che leggevano `selected` per intendere «cosa è scelto»: non lo è — è il dettaglio **arrivato**
+— quindi fra un clic e la sua risposta conteneva ancora il volume precedente.
+
+#### Verifica
+xUnit **882 verdi** (+4 su 878), Vitest **256 verdi** (+6), build backend pulita
+(warnings-as-errors), `ng build` ok (restano i 4 warning di budget SCSS pre-esistenti).
+**RED dimostrato tre volte**: il ricontrollo tolto → rosso il solo test della ripresa mid-copy,
+mentre i due che difendono la ripresa legittima restano verdi; i due guard di staleness tolti →
+rossi esattamente i 3 test della corsa e verdi i 2 che descrivono `selectedId`; il numero del
+lotto tolto dalla lista → **8 000 invece di 4 000**.
+
+**Sul ferro, elevato** (`D:\Collaudo\A` ↔ `C:\Collaudo\B`): **56 scenari, 56 PASS, 0 FAIL** — i
+55 di 15a più `resume-space-recheck`. La scarsità è arrangiata sul lato **domanda**, come fa
+`insufficient-space` e per il motivo che 11b ha scritto: riempire un disco vero — qui quello di
+sistema — per qualche secondo è un disservizio, non un test. I quattro `crash-resume` esistenti
+attraversano ora il controllo nuovo, che è l'altra metà della prova: il ricontrollo non deve
+rompere una ripresa legittima. `appsettings.json` rimesso byte-identico (sha256 `653f5990…`).
+
+#### La code review, e cosa ha trovato
+**Fatta da un agente indipendente con contesto pulito** — la prima di questo progetto, perché
+l'utente ha tolto il divieto di lanciare sotto-agenti proprio per questo («è importante fare
+determinate cose con un contesto pulito»). Ha trovato **due cose**, corrette in `27db639`.
+
+**MAJOR, e la colpa era mia.** `QueueService.ListAsync` **non** carica gli item di proposito (E1,
+step 11e). La mia derivazione cadeva quindi nel suo fallback e chiedeva la domanda intera: la Coda
+avrebbe mostrato per un job bloccato a metà copia un deficit che l'engine non ha mai deciso — quel
+job da 9 GB su 10, fermo perché gliene manca 1, dato per corto di 10 GB. E contraddiceva il
+commento immediatamente sopra la chiamata, che promette che il numero mostrato è quello che ha
+parcheggiato il job: la mia modifica rendeva falso proprio quel commento. Corretto con lo stesso
+pattern batched che quel metodo già usa per i path sorgente — una somma raggruppata, zero entità
+materializzate — e la derivazione resta una sola: chi **decide** non passa niente e non può quindi
+passare la cosa sbagliata; solo la lista, che non può caricare gli item, fornisce ciò che ha letto.
+
+**MINOR.** `clearSelection()` è l'unico chiamante che muove `selectedId` senza fare una richiesta,
+quindi una selezione in volo si vedeva scartare la risposta dal guard e non restava nessuno ad
+azzerare `detailLoading`: spinner acceso per sempre. Oggi irraggiungibile (nessuno la chiama), ma
+è API pubblica di uno store che questo stesso step ha indurito contro questa classe di corse.
+
+**Verificato pulito** dalla review, e vale la pena scriverlo: il flag `roomChecked` su tutti e
+quattro i percorsi di ripresa, `SetBlockedAsync` chiamato da `Copying` con i partial su disco,
+l'aritmetica dell'item interrotto (pessimista, non ottimista — il lato sicuro), il reset degli item
+in `RetryAsync`, e che i chiamanti di `EvaluateHardAsync` sono esattamente tre.
+
+#### Un difetto dei test, trovato dalla suite
+Tre test di `JobResumeTests` e `JobCancellationTests` cablavano l'engine su un `ISpaceLedger`
+**finto** che rispondeva solo a `ReleaseAsync`. Bastava finché una ripresa non chiedeva niente al
+ledger; da questo step lo chiede, e il finto rispondeva `null` a `ComputeFeasibilityAsync`. I due
+guasti erano diversi ed entrambi ingannevoli: `JobResumeTests` trasformava una ripresa riuscita in
+un job `Failed` (il null passava dal catch generico dell'engine), e `JobCancellationTests`
+**andava in hang** — il suo mover con cancello aspettava un `Verify` che non poteva più arrivare, e
+la suite restava lì. *È questo che faceva sembrare la suite lenta su una macchina lenta: non era la
+macchina.* Il blame-hang ha nominato il test.
+
+Entrambi usano ora un `SpaceLedger` **vero** sullo stesso database in memoria, che è ciò che
+CLAUDE.md chiede a parole sue: un test che mocka il ledger non testa il ledger — e il ledger è ora
+parte di ciò che una ripresa fa. `JobExecutionEngineTests` portava già la stessa nota («a ledger
+substitute previously masked the double-count bug»): è la stessa lezione arrivata una seconda
+volta.
+
+#### Limiti noti e accettati
+- **Il rifiuto di una ripresa non è provato riempiendo un disco vero**, né in xUnit (sonda dello
+  spazio stubbata) né sul ferro (scarsità dal lato domanda). È la stessa scelta di 11b, con lo
+  stesso motivo: il volume di destinazione del collaudo è `C:`.
+- **La lista della Coda paga ora una query in più** per pagina, ma solo quando ci sono job
+  `Blocked` con una domanda: una somma raggruppata sugli item di quei job, nessuna entità
+  materializzata. Sotto la soglia di E1 per costruzione.
+- **`OutstandingBytes` con gli item non caricati e nessun numero passato restituisce la domanda
+  intera.** È il lato sicuro per chi *decide* (può rifiutare un job che sarebbe entrato, mai
+  ammetterne uno che non entra), ed è il numero sbagliato da *mostrare* — che è esattamente il
+  difetto che la review ha trovato. Ora l'unico chiamante che non carica gli item passa il numero.
+- **E2E non eseguiti**: il loro `globalSetup` si rifiuta di partire da elevato (12a) e questa
+  sessione era elevata per l'harness.
+- **Il servizio installato non è stato aggiornato.** Questo giro non ha migration, quindi
+  distribuirlo è una copia di file — resta una decisione dell'utente.
 
 ### Deploy di 15a sul catalogo reale (2026-08-26)
 **Il servizio installato sa copiare.** Distribuito su richiesta dell'utente subito dopo la
