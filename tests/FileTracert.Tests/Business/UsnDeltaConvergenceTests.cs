@@ -1,4 +1,6 @@
+using FileTracert.Business.Filtering;
 using FileTracert.Business.Scanning;
+using FileTracert.Business.Setup;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Platform;
 using FileTracert.Contracts.Scanning;
@@ -327,9 +329,17 @@ public sealed class UsnDeltaConvergenceTests
     // ── the subtree that leaves the perimeter (A3) ────────────────────────────
 
     /// <summary>
-    /// Photos/Cache/Sub with a file at each level under Cache, plus one OUTSIDE Cache. Nothing here
-    /// is excluded to begin with: every row is indexed by the starting scan, which is the whole
-    /// point — the rows this case is about are rows the catalog ALREADY holds.
+    /// Photos/Cache/Sub with a file at each level under Cache, plus one OUTSIDE Cache. Almost
+    /// nothing here is excluded to begin with: the rows these cases are about are rows the catalog
+    /// ALREADY holds, indexed by the starting scan.
+    ///
+    /// <para>No <c>.tmp</c> here, and the reason is worth writing down because it is the obvious
+    /// way to build the "already excluded, must still learn this cause" row and it does not work: a
+    /// file outside the allow-list is never indexed in the FIRST place, so a fresh scan leaves no
+    /// row at all to carry <c>ExcludedByType</c>. Such a row only exists where the filter was once
+    /// wider and then narrowed — which is a reconciliation, and that is how
+    /// <see cref="A_folder_both_rules_refuse_records_both_causes_on_the_rows_below"/> reaches
+    /// it.</para>
     /// </summary>
     private static List<Item> SubtreeWorld() =>
     [
@@ -430,6 +440,133 @@ public sealed class UsnDeltaConvergenceTests
     }
 
     /// <summary>
+    /// The half of the subtree pass the user actually SEES, and the half no equivalence case can
+    /// reach: the search index. <see cref="SnapshotAsync"/> compares catalog rows and never looks
+    /// at FTS5, and every other case here hands the applier a <c>FakeFileSearchIndex</c> — so
+    /// deleting the <c>SyncDirectoriesAsync</c> call left the whole file green while the method's
+    /// own documentation promised "findable in Search" was fixed.
+    ///
+    /// <para>The real <see cref="FileSearchIndex"/> on BOTH steps, which is what makes the
+    /// assertion mean anything: with the starting scan on the fake, the table is empty when the
+    /// delta runs and "the excluded rows are gone from the index" is vacuously true of an index
+    /// that never had them.</para>
+    ///
+    /// <para>The second half of the claim is the row OUTSIDE the folder. A pass that pruned too
+    /// widely — a volume-wide prune, say — would satisfy the first half perfectly.</para>
+    /// </summary>
+    [Fact]
+    public async Task An_excluded_subtree_leaves_the_search_index_and_takes_nothing_else_with_it()
+    {
+        using var harness = new SqliteInMemoryContext();
+        using (var create = harness.CreateContext())
+        {
+            SqliteFts.Create(create);
+        }
+
+        var before = SubtreeWorld();
+        var reader = ReaderFor(before);
+        var volumeId = await SeedAndScanAsync(harness, reader, before, realSearchIndex: true);
+
+        SqliteFts.Rows(harness).Select(r => r.Path).Should().BeEquivalentTo(
+            [@"Photos\keep.jpg", @"Photos\Cache\b.jpg", @"Photos\Cache\Sub\c.jpg"],
+            "the starting scan indexed everything inside the perimeter — .tmp was never in the allow-list");
+
+        var after = Replace(before, 140, i => i with
+        {
+            Attributes = FileAttributes.Directory | FileAttributes.Hidden,
+        });
+        reader.Changes = [Change(after, 140, UsnReason.BasicInfoChange | UsnReason.Close)];
+        reader.NextUsn = 900;
+
+        await using (var ctx = harness.CreateContext())
+        {
+            var result = await BuildApplier(ctx, reader, MetadataFor(after), new FileSearchIndex(ctx))
+                .SyncVolumeAsync(volumeId, default);
+            result.Status.Should().Be(UsnSyncStatus.Applied);
+        }
+
+        SqliteFts.Rows(harness).Select(r => r.Path).Should().Equal([@"Photos\keep.jpg"],
+            "a row the perimeter now excludes must stop answering searches, and a row outside the "
+            + "folder must go on answering them");
+    }
+
+    /// <summary>
+    /// One folder, BOTH perimeter rules: hidden, and under a segment the user excluded in the same
+    /// window. It is the case the two structural decisions of this round were made for, and until
+    /// now nothing in the suite was holding either of them.
+    ///
+    /// <para><b>The causes sum.</b> The pass writes one UPDATE per cause the verdict carries, and
+    /// stopping at the first is invisible to every other case here because every other case has a
+    /// verdict of exactly one cause. It is not invisible in production: the cause that survives is
+    /// undone by its owner, and the row comes back with the other one still true of it — a hidden
+    /// folder's content walked back into the Catalog by dropping a path segment, which is the 11h
+    /// regression reached through a new door.</para>
+    ///
+    /// <para><b>The guard is the cause's own column, never <c>IsIncluded</c>.</b> These rows are
+    /// ALREADY out when the delta runs — the Setup save in <c>between</c> is a real
+    /// <c>FilterReconciler</c> pass, so they carry <c>ExcludedByPath = 1, IsIncluded = 0</c> — and
+    /// they still have to learn the attribute cause. A guard reading <c>IsIncluded</c> alone, the
+    /// mistake 11h exists to remember, skips every one of them; the full re-scan stamps them,
+    /// because its guard is the cause's own column too. That difference is the divergence.</para>
+    ///
+    /// <para>The setting has to change BETWEEN the two scans, and that is not convenience: with the
+    /// segment already excluded at the starting scan, the perimeter of that scan would have refused
+    /// the folder and the rows under it would never have been indexed at all — there would be no
+    /// catalogued row for this pass to reach.</para>
+    /// </summary>
+    [Fact]
+    public async Task A_folder_both_rules_refuse_records_both_causes_on_the_rows_below()
+    {
+        var before = SubtreeWorld();
+        var after = Replace(before, 140, i => i with
+        {
+            Attributes = FileAttributes.Directory | FileAttributes.Hidden,
+        });
+
+        await AssertConvergesAsync(before, after,
+            [Change(after, 140, UsnReason.BasicInfoChange | UsnReason.Close)],
+            between: ExcludeTheCacheSegmentAsync,
+            extra: async db =>
+            {
+                foreach (var frn in (long[])[205, 206])
+                {
+                    var row = await db.Files.SingleAsync(f => f.UsnFileRef == frn);
+                    row.IsIncluded.Should().BeFalse();
+                    row.ExcludedByPath.Should().BeTrue(
+                        "a segment of its path is excluded, and reconciliation must be able to retract that "
+                        + "on its own");
+                    row.ExcludedByScan.Should().BeTrue(
+                        "the folder is also hidden, and only another scan may ever retract that — dropping "
+                        + "the segment must NOT be enough to bring the row back");
+                    row.IsPresent.Should().BeTrue("an exclusion is not an absence (§6)");
+                }
+            });
+    }
+
+    /// <summary>
+    /// A Setup save that adds <c>Cache</c> to the excluded segments, through the real
+    /// <see cref="FilterReconciler"/> and the real <see cref="FileSearchIndex"/> — that is, the A2
+    /// road of this same step. Nothing is hand-written into the columns: the rows arrive at the
+    /// delta in the state the product would have put them in.
+    /// </summary>
+    private static async Task ExcludeTheCacheSegmentAsync(SqliteInMemoryContext harness)
+    {
+        using (var create = harness.CreateContext())
+        {
+            SqliteFts.Create(create);
+        }
+
+        await SetExcludedPathsAsync(harness, "Cache");
+
+        await using var ctx = harness.CreateContext();
+        var settings = await ctx.AppSettings.FirstAsync();
+        var root = await ctx.WatchedRoots.FirstAsync();
+
+        await new FilterReconciler(ctx, new FileSearchIndex(ctx)).ReconcileRootAsync(
+            root, EffectiveFilterBuilder.Build(settings, root.FilterOverrideJson), CancellationToken.None);
+    }
+
+    /// <summary>
     /// The reason the subtree pass runs BEFORE the absence passes, made into a case: a file that is
     /// genuinely deleted from a folder that goes hidden in the same delta.
     ///
@@ -492,7 +629,7 @@ public sealed class UsnDeltaConvergenceTests
 
         var before = SubtreeWorld();
         var reader = ReaderFor(before);
-        var volumeId = await SeedAndScanAsync(harness, reader, before);
+        var volumeId = await SeedAndScanAsync(harness, reader, before, realSearchIndex: true);
 
         var after = Replace(before, 140, i => i with
         {
@@ -555,6 +692,14 @@ public sealed class UsnDeltaConvergenceTests
     /// <para>Measured with the REAL <c>FileSearchIndex</c> on purpose: with the fake, the half of
     /// the claim that is about the index would not be observed at all, and a per-file loop there
     /// would leave this test green.</para>
+    ///
+    /// <para><b>What it does NOT say</b>, spelled out because a comparison of two runs is easy to
+    /// over-read: it catches a pass that has DEGRADED to per-file, and nothing else. Both numbers
+    /// move together, so deleting a statement that runs once — the index sync, say — subtracts the
+    /// same amount from each and leaves this green. That the index is touched at all is the
+    /// business of <see cref="An_excluded_subtree_leaves_the_search_index_and_takes_nothing_else_with_it"/>,
+    /// and that it is NOT touched for nothing is
+    /// <see cref="Replaying_a_subtree_exclusion_writes_nothing_the_second_time"/>.</para>
     /// </summary>
     [Fact]
     public async Task The_subtree_pass_costs_the_same_whatever_the_number_of_files_behind_it()
@@ -748,16 +893,28 @@ public sealed class UsnDeltaConvergenceTests
 
     // ── harness ───────────────────────────────────────────────────────────────
 
+    /// <param name="between">
+    /// Run on BOTH databases after the starting scan and before the second step. The world is not
+    /// the only thing that can change between two scans — a SETTING can, and a case about the two
+    /// perimeter rules meeting on one folder needs exactly that: the path rule has to be NEW in the
+    /// delta, or a cause the starting scan already wrote would hide a cause the delta dropped.
+    /// </param>
     private static async Task AssertConvergesAsync(
         List<Item> before,
         List<Item> after,
         List<UsnChangeRecord> changes,
-        Func<FileTracertDbContext, Task>? extra = null)
+        Func<FileTracertDbContext, Task>? extra = null,
+        Func<SqliteInMemoryContext, Task>? between = null)
     {
         // Long road: full scan of the starting world, then a full re-scan of the changed one.
         using var viaScan = new SqliteInMemoryContext();
         var scanReader = ReaderFor(before);
         var scanVolumeId = await SeedAndScanAsync(viaScan, scanReader, before);
+        if (between is not null)
+        {
+            await between(viaScan);
+        }
+
         var rescanReader = ReaderFor(after);
         await ScanAsync(viaScan, scanVolumeId, rescanReader, MetadataFor(after));
 
@@ -765,6 +922,11 @@ public sealed class UsnDeltaConvergenceTests
         using var viaDelta = new SqliteInMemoryContext();
         var deltaReader = ReaderFor(before);
         var deltaVolumeId = await SeedAndScanAsync(viaDelta, deltaReader, before);
+        if (between is not null)
+        {
+            await between(viaDelta);
+        }
+
         deltaReader.Changes = changes;
         deltaReader.NextUsn = 900;
 
@@ -850,8 +1012,16 @@ public sealed class UsnDeltaConvergenceTests
         return new UsnChangeRecord(entry, reason, isRename, oldName);
     }
 
+    /// <param name="realSearchIndex">
+    /// Populate the REAL FTS5 table from the starting scan, for the cases whose subject is the
+    /// index. Off by default because most cases never look at it and the virtual table then does
+    /// not even have to exist; on, the caller must have run <see cref="SqliteFts.Create"/> first.
+    /// Without it the index is empty when the delta runs, and every assertion about what the delta
+    /// took OUT of it is vacuously true.
+    /// </param>
     private static async Task<int> SeedAndScanAsync(
-        SqliteInMemoryContext harness, ScriptedUsnReader reader, List<Item> world)
+        SqliteInMemoryContext harness, ScriptedUsnReader reader, List<Item> world,
+        bool realSearchIndex = false)
     {
         int volumeId;
         using (var ctx = harness.CreateContext())
@@ -880,12 +1050,13 @@ public sealed class UsnDeltaConvergenceTests
             await ctx.SaveChangesAsync();
         }
 
-        await ScanAsync(harness, volumeId, reader, MetadataFor(world));
+        await ScanAsync(harness, volumeId, reader, MetadataFor(world), realSearchIndex);
         return volumeId;
     }
 
     private static async Task ScanAsync(
-        SqliteInMemoryContext harness, int volumeId, ScriptedUsnReader reader, FakeFileMetadataReader metadata)
+        SqliteInMemoryContext harness, int volumeId, ScriptedUsnReader reader, FakeFileMetadataReader metadata,
+        bool realSearchIndex = false)
     {
         await using var ctx = harness.CreateContext();
         var scan = new ScanService(
@@ -896,7 +1067,7 @@ public sealed class UsnDeltaConvergenceTests
             metadata,
             new BulkIndexWriter(ctx),
             new DirectoryMerger(ctx, new BulkIndexWriter(ctx), NullLogger<DirectoryMerger>.Instance),
-            new FakeFileSearchIndex(),
+            realSearchIndex ? new FileSearchIndex(ctx) : new FakeFileSearchIndex(),
             new FakeNotificationPublisher(),
             new ScanStatusTracker(TestProjection.Realtime(), TimeProvider.System),
             NullLogger<ScanService>.Instance);
