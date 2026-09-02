@@ -714,6 +714,96 @@ public sealed class UsnDeltaConvergenceTests
     }
 
     /// <summary>
+    /// TWO excluded folders in one tick, one inside the other, refused by DIFFERENT rules — the
+    /// shape that turns "each entry carries its own causes" from a phrasing into a claim with
+    /// something behind it.
+    ///
+    /// <para><b>What it holds that nothing else did.</b>
+    /// <see cref="UsnDeltaApplier"/>'s subtree pass walks every excluded entry and stamps each
+    /// one's own verdict over its own subtree; the union a row deserves is reached by an excluded
+    /// ancestor being an entry of that same set. Nothing was pinning the second half of that. Every
+    /// other case here has exactly ONE excluded entry, so "process only the outermost excluded
+    /// entries" — the same de-duplication <see cref="ExcludedSubtrees.Add"/> is documented as
+    /// refusing, moved one level up — left the entire suite green. Measured, not supposed: with
+    /// that skip in place this case is the only red in the file, and it reddens on the snapshot
+    /// itself.</para>
+    ///
+    /// <para><b>Why the loss is the bad half.</b> The outer folder is out for a path SEGMENT, the
+    /// inner one is HIDDEN. Skipping the inner entry leaves the rows below it carrying
+    /// <c>ExcludedByPath</c> alone: the user drops the segment, <see cref="FilterReconciler"/>
+    /// recomputes that column in SQL with no disk read, and the content of a hidden folder walks
+    /// back into the Catalog — the 11h regression, in the direction nobody can re-derive, because
+    /// an attribute is a fact of the disk. It is the shipped default's own shape:
+    /// <c>AppData</c> is a seeded excluded segment and <c>%USERPROFILE%\AppData</c> is Hidden.</para>
+    ///
+    /// <para><b>The row that must NOT learn the attribute cause</b> is <c>b.jpg</c>, which sits in
+    /// the outer folder only. Without it the case would be satisfied just as well by a pass that
+    /// unioned every verdict over every subtree — over-broad in the direction that pins a row
+    /// behind a column reconciliation may never touch.</para>
+    ///
+    /// <para>The segment is added WITHOUT running reconciliation, the same premise as
+    /// <see cref="The_delta_writes_both_causes_itself_when_the_catalog_carries_neither"/> and
+    /// asserted rather than assumed for the same reason: it makes the delta the only thing that has
+    /// written either column when the snapshots are compared.</para>
+    /// </summary>
+    [Fact]
+    public async Task A_hidden_folder_inside_a_path_excluded_one_still_reaches_its_own_rows()
+    {
+        var before = SubtreeWorld();
+        var after = Replace(before, 150, i => i with
+        {
+            Attributes = FileAttributes.Directory | FileAttributes.Hidden,
+        });
+
+        await AssertConvergesAsync(before, after,
+            [
+                // The outer folder is named too, and it has to be: an excluded entry that is not in
+                // the set cannot be skipped for being an ancestor of another. A journal record says
+                // something about that directory changed, not what — here it did not have to be the
+                // attributes, since what took it out of the perimeter is a setting.
+                Change(after, 140, UsnReason.SecurityChange | UsnReason.Close),
+                Change(after, 150, UsnReason.BasicInfoChange | UsnReason.Close),
+            ],
+            between: async harness =>
+            {
+                await SetExcludedPathsAsync(harness, "Cache");
+
+                await using var read = harness.CreateContext();
+                var rows = await read.Files
+                    .Where(f => f.UsnFileRef == 205 || f.UsnFileRef == 206)
+                    .ToListAsync();
+
+                rows.Should().HaveCount(2).And.OnlyContain(
+                    f => f.IsIncluded && !f.ExcludedByPath && !f.ExcludedByScan,
+                    "the delta must be the only thing that has written either cause when it is judged");
+            },
+            extra: async db =>
+            {
+                var deeper = await db.Files.SingleAsync(f => f.UsnFileRef == 206);
+                deeper.IsIncluded.Should().BeFalse();
+                deeper.ExcludedByPath.Should().BeTrue(
+                    "its own path carries the excluded segment, so reconciliation may retract this one");
+                deeper.ExcludedByScan.Should().BeTrue(
+                    "the folder directly above it is HIDDEN, and only its own entry says so — the outer "
+                    + "folder's verdict does not carry the attribute cause, so a pass that visited only "
+                    + "the outermost excluded entry would lose it for ever");
+                deeper.IsPresent.Should().BeTrue("an exclusion is not an absence (§6)");
+
+                var shallower = await db.Files.SingleAsync(f => f.UsnFileRef == 205);
+                shallower.IsIncluded.Should().BeFalse();
+                shallower.ExcludedByPath.Should().BeTrue("the segment is in its path as well");
+                shallower.ExcludedByScan.Should().BeFalse(
+                    "nothing about THIS row is hidden — the hidden folder is its sibling's parent, and a "
+                    + "pass that spread every verdict over every subtree would pin it behind a column "
+                    + "reconciliation never touches");
+                shallower.IsPresent.Should().BeTrue("an exclusion is not an absence (§6)");
+
+                var outside = await db.Files.SingleAsync(f => f.UsnFileRef == 200);
+                outside.IsIncluded.Should().BeTrue("it lives under neither of the two excluded folders");
+            });
+    }
+
+    /// <summary>
     /// A Setup save that adds <c>Cache</c> to the excluded segments, through the real
     /// <see cref="FilterReconciler"/> and the real <see cref="FileSearchIndex"/> — that is, the A2
     /// road of this same step. Nothing is hand-written into the columns: the rows arrive at the
