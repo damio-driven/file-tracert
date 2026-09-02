@@ -629,10 +629,28 @@ public sealed class UsnDeltaApplier
             // subtrees THIS delta excluded, and this delta does not name the hidden folder. So the
             // catalog does not merely let rows back inside the excluded subtree: it GROWS inside it.
             //
-            // Closing it needs a fact the catalog does not have. No row says "that folder is
-            // hidden" — Directories carry no inclusion flag, which is the product decision of 11g
-            // — and the alternative is a disk read per file per delta. Both are outside this step.
-            // The full scan repairs both halves, because it asks the perimeter about every directory
+            // And a third shape, which is neither "undoes" nor "adds" but "never looks": the SAME
+            // TICK. A folder X moved INTO the folder this delta just excluded is judged by Classify
+            // on its OWN clean attributes, lands in `directories`, and is then dropped by the C16
+            // second pass (`directories.RemoveAll`, above) because it sits under a subtree this
+            // delta excluded. From there nobody names it again — it is not in `outside`, which
+            // collects files only, nor in `goneDirectoryIds`, which collects deleted FRNs — so its
+            // row keeps the OLD MaterializedPath with IsPresent = 1, and the files under it keep
+            // IsIncluded = 1. ExcludeSubtreesAsync cannot reach them either: InSubtree matches by
+            // PATH, and the row's path is still the old one, outside the excluded folder. A full
+            // scan of the same world marks that row absent and the files with it, so the two roads
+            // diverge. Pre-existing (the RemoveAll is 14d's), and repaired by the next full scan.
+            //
+            // The three are one family — the delta's perimeter is a fact about THIS tick, and rows
+            // are addressed by the path they currently record — but they do not close the same way.
+            // The first two need a fact the catalog does not have: no row says "that folder is
+            // hidden", because Directories carry no inclusion flag (the product decision of 11g),
+            // and the alternative is a disk read per file per delta. The third is different, and
+            // worth naming as such: here the delta HOLDS the knowledge — `perimeter` knows the
+            // excluded subtree — and throws it away, because the item is discarded by path at the
+            // moment it would have to be carried on by identity. Closing that one is a change to
+            // what Classify hands on, not to what the catalog stores. All three outside this step;
+            // the full scan repairs all three, because it asks the perimeter about every directory
             // it walks.
         }
 

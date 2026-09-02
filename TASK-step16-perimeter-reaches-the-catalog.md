@@ -329,14 +329,35 @@ Se un file porta più preoccupazioni, staging a livello di hunk (`git add -p`).
   (`directories.RemoveAll(d => perimeter.IsExcluded(d.Path))`) non la ferma, perché `perimeter`
   conosce solo i sottoalberi esclusi da **questo** delta e questo delta non nomina la cartella
   nascosta. Quindi il catalogo non si limita a **riammettere** dentro il sottoalbero escluso: ci
-  **cresce** dentro. Stessa radice, stesso verdetto «fuori da questo task» — e la stessa
-  riparazione, cioè la prima scansione completa del volume.
+  **cresce** dentro.
 
-  **Chiuderlo richiede un fatto che il catalogo non ha**: nessuna riga dice «questa cartella è
-  nascosta» — le `Directories` non hanno un flag di inclusione, ed è la decisione di prodotto di
-  11g — e l'alternativa è leggere gli attributi dal disco per ogni file di ogni delta. Entrambe
-  fuori da questo task. Il confine è scritto **anche nel codice**, accanto al «KNOWN HOLE» di
-  `UsnDeltaApplier.ReconcileAsync`: i due lati vanno letti insieme.
+  **E c'è una terza forma, che non è né «non toglie» né «fa crescere» ma «non guarda mai»: lo
+  STESSO tick** *(trovata dalla terza passata di review; le due qui sopra parlano di tick
+  **successivi**, e si leggevano come se il caso simultaneo non esistesse)*. `Photos\Cache` diventa
+  nascosta e, **nello stesso delta**, la cartella `X` viene spostata dentro di lei. `Classify`
+  giudica `X` sui **propri** attributi puliti, quindi finisce in `directories`; il secondo passo del
+  C16 (`directories.RemoveAll`) la toglie perché sta sotto un sottoalbero escluso da questo delta —
+  e **da lì nessuno la nomina più**: non è in `outside`, che raccoglie solo file, né in
+  `goneDirectoryIds`, che raccoglie solo FRN cancellati. La sua riga conserva il **vecchio**
+  `MaterializedPath` con `IsPresent = 1` e i suoi file restano `IsIncluded = 1`. Nemmeno il pass di
+  sottoalbero li raggiunge: `InSubtree` matcha per **path**, e il path della riga è ancora quello
+  vecchio, fuori da `Photos\Cache`. Una scansione completa dello stesso mondo marca invece assente
+  quella riga e i file con lei → **le due strade divergono**. Comportamento di 14d (il `RemoveAll`
+  pre-esiste), non introdotto qui.
+
+  **Le tre sono una famiglia, ma non si chiudono allo stesso modo, ed è la differenza che conta.**
+  La radice comune è che il perimetro del delta è un fatto di **questo** tick e che le righe sono
+  indirizzate per il path che **registrano adesso**. Le prime due chiedono un fatto che il catalogo
+  non ha: nessuna riga dice «questa cartella è nascosta» — le `Directories` non hanno un flag di
+  inclusione, ed è la decisione di prodotto di 11g — e l'alternativa è leggere gli attributi dal
+  disco per ogni file di ogni delta. La terza no, e va nominata per quello che è: qui il delta **ha
+  in mano** la conoscenza (`perimeter` conosce il sottoalbero escluso) e la **butta**, perché l'item
+  viene scartato **per path** nell'istante in cui andrebbe portato avanti **per identità**.
+  Chiuderla è un cambiamento a ciò che `Classify` consegna, non a ciò che il catalogo persiste.
+  Tutte e tre fuori da questo task; tutte e tre riparate dalla prima scansione completa del volume,
+  che chiede il perimetro per ogni directory che cammina. Il confine è scritto **anche nel codice**,
+  accanto al «KNOWN HOLE» di `UsnDeltaApplier.ReconcileAsync`: i tre lati vanno letti insieme, e
+  sono scritti perché si leggano insieme.
 - **Il backfill pessimista lascia indietro le righe legacy**: una riga oggi esclusa solo da un
   segmento di path porta `ExcludedByScan = 1` e non rientrerà togliendo il segmento, finché una
   scansione non la riguarda. Prezzo scelto, non svista.
