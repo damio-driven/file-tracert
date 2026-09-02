@@ -1,4 +1,4 @@
-﻿using FileTracert.Business.Filtering;
+using FileTracert.Business.Filtering;
 using FileTracert.Business.Scanning;
 using FileTracert.Business.Setup;
 using FileTracert.Contracts.Enums;
