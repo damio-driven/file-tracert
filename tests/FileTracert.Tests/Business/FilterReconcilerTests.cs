@@ -45,6 +45,18 @@ public sealed class FilterReconcilerTests
         FilterReconciler.FilterWidened(Excluding("Windows"), Excluding("Windows", "AppData"))
             .Should().BeFalse();
 
+    /// <summary>
+    /// The comparison folds case the way the two MATCHING halves do — ASCII only, because SQLite's
+    /// <c>LIKE</c> can do no more and <c>FileFilter.IsPathExcluded</c> deliberately matches it. To
+    /// both of them <c>Über</c> and <c>über</c> are different segments: the rows under the first are
+    /// re-included by reconciliation with no scan, and the rows under the second were never indexed,
+    /// which is precisely a widening. Comparing with <c>OrdinalIgnoreCase</c> answered "nothing was
+    /// relaxed" and the screen told the user no scan was needed for work only a scan can do.
+    /// </summary>
+    [Fact]
+    public void A_non_ascii_case_variant_is_a_different_segment_to_both_halves_so_it_is_a_widening() =>
+        FilterReconciler.FilterWidened(Excluding("Über"), Excluding("über")).Should().BeTrue();
+
     [Fact]
     public void Path_exclusion_comparison_ignores_case() =>
         FilterReconciler.FilterWidened(Excluding("AppData"), Excluding("appdata")).Should().BeFalse();

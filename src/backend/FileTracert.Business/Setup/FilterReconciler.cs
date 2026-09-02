@@ -82,7 +82,12 @@ public sealed class FilterReconciler
             return false;
         }
 
-        var kept = new HashSet<string>(next.ExcludedPathSegments, StringComparer.OrdinalIgnoreCase);
+        // Compared the way the segments are MATCHED (FileFilter.SegmentComparer, ASCII-only), not
+        // with OrdinalIgnoreCase. Folding wider here than either matching half does answers "nothing
+        // was relaxed" for a change both halves treat as two different segments — swapping Über for
+        // über re-includes the rows under the first and leaves the never-indexed rows under the
+        // second to a scan that this method just said was unnecessary.
+        var kept = new HashSet<string>(next.ExcludedPathSegments, FileFilter.SegmentComparer);
         return previous.ExcludedPathSegments.Any(segment => !kept.Contains(segment));
     }
 

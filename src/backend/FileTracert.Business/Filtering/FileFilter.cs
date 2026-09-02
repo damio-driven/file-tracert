@@ -140,6 +140,45 @@ public static class FileFilter
     private static char ToLowerAscii(char c) => (uint)(c - 'A') <= 'Z' - 'A' ? (char)(c | 0x20) : c;
 
     /// <summary>
+    /// Two configured segments compared the way they are MATCHED — the ASCII-only fold above, not
+    /// <c>OrdinalIgnoreCase</c>.
+    ///
+    /// <para>It exists for <c>FilterReconciler.FilterWidened</c>, which asks whether a segment
+    /// stopped being excluded and therefore whether a scan is owed. Folding wider than the matcher
+    /// made that answer wrong in the direction that hides work: replacing <c>Über</c> with
+    /// <c>über</c> is, to both matching halves, two different segments — the rows under <c>Über</c>
+    /// are re-included by reconciliation and the rows under <c>über</c> were never indexed, which is
+    /// the textbook definition of a widening — and <c>OrdinalIgnoreCase</c> answered "nothing was
+    /// relaxed", so the screen said no scan was needed.</para>
+    ///
+    /// <para>Spelled here rather than in the reconciler so the fold has ONE definition: the whole
+    /// point of the ASCII restriction is that everybody who compares a segment does it the same way.
+    /// The de-duplication in <see cref="EffectiveFilter"/> still folds wider, on purpose and with
+    /// its own note — it drops a spelling both halves would then miss identically, which costs their
+    /// agreement nothing.</para>
+    /// </summary>
+    public static IEqualityComparer<string> SegmentComparer { get; } = new AsciiIgnoreCaseComparer();
+
+    private sealed class AsciiIgnoreCaseComparer : IEqualityComparer<string>
+    {
+        public bool Equals(string? x, string? y) =>
+            x is null
+                ? y is null
+                : y is not null && x.Length == y.Length && EqualsAsciiIgnoreCase(x, y);
+
+        public int GetHashCode(string obj)
+        {
+            var hash = new HashCode();
+            foreach (var c in obj)
+            {
+                hash.Add(ToLowerAscii(c));
+            }
+
+            return hash.ToHashCode();
+        }
+    }
+
+    /// <summary>
     /// The PERIMETER half of the filter, and WHICH of its two rules rejected the item — BOTH of
     /// them when both apply. Never <see cref="PerimeterVerdict.InactiveRoot"/>: the roots are asked
     /// before the filter is, and an item outside every active root is never offered to it.
