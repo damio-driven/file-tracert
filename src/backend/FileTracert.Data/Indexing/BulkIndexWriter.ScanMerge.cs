@@ -111,8 +111,13 @@ public sealed partial class BulkIndexWriter
     /// that is true of it. A single UPDATE could set all the flags with correlated CASE subqueries,
     /// at the price of asking the staging table once per flag per row instead of once; a cause with
     /// no areas costs nothing here, and the common shape of a scan closure is one cause or none.
-    /// This is also why an item rejected by BOTH perimeter rules can stage two areas for free: they
-    /// fall into statements that were going to run anyway.</para>
+    /// An item rejected by BOTH perimeter rules therefore adds no UPDATE — its two areas fall into
+    /// statements that were going to run anyway. It is NOT free, though, and the claim is worth
+    /// spelling exactly: staging is one INSERT per area, so that item stages twice, inside the
+    /// closing transaction that holds SQLite's only write lock. What keeps that a fair trade is
+    /// that the skipped set is normally empty — the catalog only holds what was inside the
+    /// perimeter when it was written, so a directory falls out of it only when the user narrows
+    /// the perimeter.</para>
     ///
     /// <para>The returned tally is the sum of rows touched per statement, so such an item counts
     /// twice in it. It feeds a log line, never a decision.</para>

@@ -883,7 +883,7 @@ public sealed class ExclusionCauseTests
     /// The same summing, on the OTHER pipeline path: a file the scan steps over one by one, rather
     /// than a whole subtree. <c>ScanPerimeter.SkipFile</c> is a list, so a file rejected by both
     /// rules emits two areas — and the closing pass runs one statement per distinct cause, never one
-    /// per area, so recording both costs nothing.
+    /// per area, so recording both adds no UPDATE — one staging INSERT, and nothing else.
     /// </summary>
     [Fact]
     public async Task A_file_that_fails_both_rules_records_both_causes()

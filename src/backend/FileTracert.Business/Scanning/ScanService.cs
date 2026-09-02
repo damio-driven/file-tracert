@@ -587,8 +587,10 @@ public sealed class ScanService
 
         // One area PER CAUSE, because the causes sum: a folder that is both hidden and under an
         // excluded segment has to record both, or dropping the segment would walk its content back
-        // into the Catalog. It costs no statement — the closing pass runs one UPDATE per DISTINCT
-        // cause over the staged areas, never one per area.
+        // into the Catalog. It costs no extra UPDATE — the closing pass runs one per DISTINCT cause
+        // over the staged areas, never one per area — but it does cost one staging INSERT per area,
+        // so such a folder stages two. This set is normally empty (the catalog only holds what was
+        // inside the perimeter when it was written), which is what keeps that a fair trade.
         foreach (var (path, id) in idByPath)
         {
             foreach (var cause in perimeter.SkipVerdict(path))

@@ -218,7 +218,12 @@ public sealed class FilterReconciler
 
     // ── the excluded-segment predicate ────────────────────────────────────────
 
-    private const string Separator = @"\";
+    /// <summary>
+    /// The path separator, from the shared kernel rather than re-spelled here: it is the same one
+    /// every volume-relative path is normalized to, and the frame below is only correct because
+    /// <c>MaterializedPath</c> uses it.
+    /// </summary>
+    private const string Separator = ScanPath.Separator;
 
     /// <summary>
     /// The LIKE escape character, and it CANNOT be the backslash the rest of this file uses.
@@ -242,9 +247,22 @@ public sealed class FilterReconciler
     /// </para>
     ///
     /// <para><b>Case folding</b> is SQLite's <c>LIKE</c>, which folds ASCII only — the same
-    /// limitation as <c>NOCASE</c> on <c>MaterializedPath</c> (step 9a/P2) and as
-    /// <c>OrdinalIgnoreCase</c> in memory. A non-ASCII case variant is a miss here exactly as it is
-    /// there, and consistently so.</para>
+    /// limitation as <c>NOCASE</c> on <c>MaterializedPath</c> (step 9a/P2), and the reason
+    /// <see cref="FileFilter.IsPathExcluded"/> folds ASCII-only too rather than with
+    /// <c>OrdinalIgnoreCase</c>. A non-ASCII case variant is a miss here exactly as it is there,
+    /// and consistently so.</para>
+    ///
+    /// <para><b>Provider-specific semantics living in Business, declared</b> (§3 wants this layer
+    /// provider-agnostic). Three things here are facts about SQLite and not about SQL: the framing
+    /// works because <c>LIKE</c>'s <c>%</c> and <c>_</c> are the only metacharacters; the escape
+    /// character has to be given explicitly and cannot be the backslash (see
+    /// <see cref="LikeEscape"/>); and the ASCII-only fold above is SQLite's, not the standard's.
+    /// This class was already written this way before step 16, so nothing regressed — but on SQL
+    /// Server the same <c>LIKE</c> folds by the COLUMN's collation, which is usually
+    /// case-insensitive and accent-insensitive, and the in-memory half would then be the NARROWER
+    /// of the two. The divergence would be silent and in the dangerous direction (reconciliation
+    /// re-including rows a scan excluded), so a port has to bring this predicate with it rather
+    /// than assume it travels.</para>
     /// </summary>
     private static Expression<Func<FileEntry, bool>>? UnderExcludedSegment(EffectiveFilter effective)
     {

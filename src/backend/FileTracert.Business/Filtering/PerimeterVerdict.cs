@@ -15,9 +15,13 @@ namespace FileTracert.Business.Filtering;
 /// that had seen the folder hidden before the segment was excluded leaves the row protected, the
 /// other order leaves it exposed.</para>
 ///
-/// <para>Recording every cause costs nothing downstream: the closing pass runs one statement per
+/// <para>Recording every cause costs no extra UPDATE: the closing pass runs one statement per
 /// DISTINCT cause (<c>BulkIndexWriter.ExcludeForCauseAsync</c>), not one per area, so a directory
-/// rejected by both rules simply contributes to two statements that were going to run anyway.</para>
+/// rejected by both rules simply contributes to two statements that were going to run anyway. It
+/// does cost a second STAGING row — <c>ExcludeSkippedAsync</c> inserts one per area, inside the
+/// closing transaction that holds SQLite's only write lock — so an item both rules reject stages
+/// two. Skipped areas are normally an empty set (the catalog only holds what was inside the
+/// perimeter when it was written), which is what keeps that honest.</para>
 ///
 /// <para>Callers that only need "inside or outside?" ask <see cref="IsInside"/>; callers that write
 /// the row enumerate, which is why this type is <c>foreach</c>-able over

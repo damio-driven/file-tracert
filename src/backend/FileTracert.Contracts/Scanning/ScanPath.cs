@@ -13,6 +13,14 @@ namespace FileTracert.Contracts.Scanning;
 /// </summary>
 public static class ScanPath
 {
+    /// <summary>
+    /// The separator every volume-relative path in this codebase is normalized to. Here rather than
+    /// re-spelled by each caller that has to BUILD with it (a subtree prefix, a join, the framed
+    /// LIKE pattern of <c>FilterReconciler</c>) — the members below that only READ a path keep the
+    /// char literal, because a span walk cannot take a string.
+    /// </summary>
+    public const string Separator = "\\";
+
     public static string Normalize(string path) => path.Replace('/', '\\').Trim('\\');
 
     public static string Parent(string path)
@@ -29,7 +37,7 @@ public static class ScanPath
 
     /// <summary>Joins a directory and a leaf name; the empty directory (volume root) yields just the name.</summary>
     public static string Join(string dir, string name) =>
-        dir.Length == 0 ? name : dir + "\\" + name;
+        dir.Length == 0 ? name : dir + Separator + name;
 
     /// <summary>
     /// True when <paramref name="path"/> sits within <paramref name="root"/> (root "" = whole volume).
@@ -62,5 +70,5 @@ public static class ScanPath
     /// The prefix that every strict descendant of <paramref name="path"/> starts with. Kept here
     /// so the subtree queries that must run in SQL all build it the same way.
     /// </summary>
-    public static string SubtreePrefix(string path) => path + "\\";
+    public static string SubtreePrefix(string path) => path + Separator;
 }
