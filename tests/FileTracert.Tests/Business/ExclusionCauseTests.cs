@@ -81,13 +81,18 @@ public sealed class ExclusionCauseTests
     }
 
     /// <summary>Changes the global type filter exactly the way the Setup screen does.</summary>
-    private static async Task<ReconcileResultDto> SetAllowedExtensionsAsync(
-        SqliteInMemoryContext harness, params string[] extensions)
+    private static Task<ReconcileResultDto> SetAllowedExtensionsAsync(
+        SqliteInMemoryContext harness, params string[] extensions) =>
+        SetFilterAsync(harness, extensions, []);
+
+    /// <summary>The same screen, both halves of the filter: allowed types and excluded segments.</summary>
+    private static async Task<ReconcileResultDto> SetFilterAsync(
+        SqliteInMemoryContext harness, string[] extensions, string[] excludedPaths)
     {
         await using var ctx = harness.CreateContext();
         var service = new FilterSettingsService(ctx, new FilterReconciler(ctx, new FileSearchIndex(ctx)));
         return await service.UpdateAsync(
-            new FilterSettingsDto(extensions.ToList(), []), CancellationToken.None);
+            new FilterSettingsDto(extensions.ToList(), excludedPaths.ToList()), CancellationToken.None);
     }
 
     private static ScanEntry Dir(string path, string name, FileAttributes extra = FileAttributes.None) =>
@@ -313,6 +318,263 @@ public sealed class ExclusionCauseTests
             .Should().BeFalse("its only cause was the hidden folder, and that one is not reconcilable");
     }
 
+    // ── step 16: the path half of the perimeter is a settings fact ────────────────────────────
+
+    /// <summary>
+    /// THE defect of step 16, and the worst shape a defect can take: a decision the user made,
+    /// acknowledged by the screen, and applied to nothing. Adding a segment to
+    /// <c>ExcludedPaths</c> left every row already in the catalog <c>IsIncluded = 1</c> — still
+    /// navigable, still findable in Search — because the only column that could have recorded it
+    /// was <c>ExcludedByScan</c>, which reconciliation may never write.
+    /// </summary>
+    [Fact]
+    public async Task Excluding_a_path_segment_excludes_the_rows_already_in_the_catalog()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, ["jpg"]);
+
+        await ScanAsync(harness, volumeId,
+            Dir("AppData", "AppData"),
+            Dir(@"AppData\Cache", "Cache"),
+            File(@"AppData\Cache\thumb.jpg", "thumb.jpg"),
+            Dir("Photos", "Photos"),
+            File(@"Photos\holiday.jpg", "holiday.jpg"));
+
+        (await SearchAsync(harness, "thumb")).Should().HaveCount(1, "arrange: it starts findable");
+
+        var result = await SetFilterAsync(harness, ["jpg"], ["AppData"]);
+
+        await using var read = harness.CreateContext();
+        var thumb = await read.Files.SingleAsync(f => f.Name == "thumb.jpg");
+        thumb.IsIncluded.Should().BeFalse("the user excluded the segment its path goes through");
+        thumb.ExcludedByPath.Should().BeTrue("and the row records WHICH cause, so it can be undone");
+        thumb.ExcludedByScan.Should().BeFalse("nothing here is a fact about the disk");
+        thumb.IsPresent.Should().BeTrue("an exclusion is not an absence (§6) — the file is still there");
+
+        (await SearchAsync(harness, "thumb")).Should()
+            .BeEmpty("Catalog and Search have to agree without waiting for a scan");
+        (await read.Files.SingleAsync(f => f.Name == "holiday.jpg")).IsIncluded
+            .Should().BeTrue("a sibling outside the segment is untouched");
+
+        // The note the Setup screen shows is these three fields. It has to read as
+        // "index realigned: 1 file included · 1 excluded", with no scan asked for.
+        result.IncludedCount.Should().Be(1, "the count must not call an excluded row included");
+        result.ExcludedCount.Should().Be(1);
+        result.NeedsScan.Should().BeFalse(
+            "a narrowing is applied in full right here; there is nothing left for a scan to do");
+    }
+
+    /// <summary>
+    /// The other direction, and the point of a settings-borne cause: dropping the segment puts the
+    /// rows back with no scan (§4). It is what <c>ExcludedByScan</c> could never do.
+    /// </summary>
+    [Fact]
+    public async Task Dropping_the_segment_puts_the_rows_back_without_a_scan()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, ["jpg"]);
+
+        await ScanAsync(harness, volumeId,
+            Dir("AppData", "AppData"),
+            File(@"AppData\thumb.jpg", "thumb.jpg"));
+
+        await SetFilterAsync(harness, ["jpg"], ["AppData"]);
+        await using (var arrange = harness.CreateContext())
+        {
+            (await arrange.Files.SingleAsync(f => f.Name == "thumb.jpg")).IsIncluded
+                .Should().BeFalse("arrange: the segment excludes it");
+        }
+
+        await SetFilterAsync(harness, ["jpg"], []);
+
+        await using var read = harness.CreateContext();
+        var thumb = await read.Files.SingleAsync(f => f.Name == "thumb.jpg");
+        thumb.IsIncluded.Should().BeTrue("the cause was a setting, and the setting is gone");
+        thumb.ExcludedByPath.Should().BeFalse();
+        (await SearchAsync(harness, "thumb")).Should()
+            .HaveCount(1, "back in the Catalog means back in Search, with no scan in between");
+    }
+
+    /// <summary>
+    /// A segment matches whole segments only, exactly as <c>FileFilter.IsPathExcluded</c> does when
+    /// a scan asks — and the file NAME is one of the segments it splits, so the two have to agree
+    /// there too. If they disagree, a scan and a reconciliation give the catalog different answers
+    /// about the same file.
+    /// </summary>
+    [Fact]
+    public async Task The_segment_match_is_the_one_the_scan_uses()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, []);
+
+        await ScanAsync(harness, volumeId,
+            Dir("Temp", "Temp"),
+            File(@"Temp\inside.jpg", "inside.jpg"),
+            Dir("Temporary", "Temporary"),
+            File(@"Temporary\sibling.jpg", "sibling.jpg"),
+            File("Temp.jpg", "Temp.jpg"),
+            File("Temp", "Temp"));
+
+        await SetFilterAsync(harness, [], ["temp"]);
+
+        await using var read = harness.CreateContext();
+        (await read.Files.SingleAsync(f => f.Name == "inside.jpg")).IsIncluded
+            .Should().BeFalse("its directory IS the segment");
+        (await read.Files.SingleAsync(f => f.Name == "sibling.jpg")).IsIncluded
+            .Should().BeTrue("segment-aware: Temp is not a prefix of Temporary");
+        (await read.Files.SingleAsync(f => f.Name == "Temp.jpg")).IsIncluded
+            .Should().BeTrue("a file that merely starts with the segment is not under it");
+        (await read.Files.Where(f => f.Name == "Temp").SingleAsync()).IsIncluded
+            .Should().BeFalse("the file NAME is a segment too — that is what IsPathExcluded splits");
+    }
+
+    /// <summary>
+    /// A LIKE metacharacter sitting in a configured segment is a character of a folder NAME, not a
+    /// wildcard the user asked for. Both neighbours here are chosen so that an unescaped pattern
+    /// would swallow them: <c>%\100%\%</c> matches <c>\1000\…\</c>, and <c>%\Te_p\%</c> matches
+    /// <c>\Temp\…\</c>. An exclusion that quietly takes more than it was given is worse than one
+    /// that takes nothing.
+    /// </summary>
+    [Fact]
+    public async Task A_wildcard_in_a_segment_is_matched_literally()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, []);
+
+        await ScanAsync(harness, volumeId,
+            Dir("100%", "100%"),
+            File(@"100%\literal.jpg", "literal.jpg"),
+            Dir("1000", "1000"),
+            File(@"1000\neighbour.jpg", "neighbour.jpg"),
+            Dir("Te_p", "Te_p"),
+            File(@"Te_p\underscore.jpg", "underscore.jpg"),
+            Dir("Temp", "Temp"),
+            File(@"Temp\anychar.jpg", "anychar.jpg"));
+
+        await SetFilterAsync(harness, [], ["100%", "Te_p"]);
+
+        await using var read = harness.CreateContext();
+        (await read.Files.SingleAsync(f => f.Name == "literal.jpg")).IsIncluded
+            .Should().BeFalse("the folder IS the configured segment");
+        (await read.Files.SingleAsync(f => f.Name == "underscore.jpg")).IsIncluded
+            .Should().BeFalse("so is this one");
+        (await read.Files.SingleAsync(f => f.Name == "neighbour.jpg")).IsIncluded
+            .Should().BeTrue("the % is a character, not 'anything'");
+        (await read.Files.SingleAsync(f => f.Name == "anychar.jpg")).IsIncluded
+            .Should().BeTrue("the _ is a character, not 'any single character'");
+    }
+
+    /// <summary>
+    /// The causes SUM, which is the reason they are four flags and not one value: a <c>.tmp</c>
+    /// under an excluded segment is out twice over, and undoing one leaves the other standing.
+    /// </summary>
+    [Fact]
+    public async Task A_row_excluded_by_type_and_by_path_needs_both_undone()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, []);
+
+        await ScanAsync(harness, volumeId,
+            Dir("AppData", "AppData"),
+            File(@"AppData\notes.tmp", "notes.tmp"),
+            File(@"AppData\pic.jpg", "pic.jpg"));
+
+        await SetFilterAsync(harness, ["jpg"], ["AppData"]);
+
+        await using (var narrowed = harness.CreateContext())
+        {
+            var tmp = await narrowed.Files.SingleAsync(f => f.Name == "notes.tmp");
+            tmp.ExcludedByType.Should().BeTrue();
+            tmp.ExcludedByPath.Should().BeTrue("both causes are recorded, because both are true");
+        }
+
+        // Undo only the type half.
+        await SetFilterAsync(harness, [], ["AppData"]);
+
+        await using var read = harness.CreateContext();
+        var notes = await read.Files.SingleAsync(f => f.Name == "notes.tmp");
+        notes.IsIncluded.Should().BeFalse("the segment is still excluded: one cause undone, one standing");
+        notes.ExcludedByType.Should().BeFalse();
+        notes.ExcludedByPath.Should().BeTrue();
+        (await read.Files.SingleAsync(f => f.Name == "pic.jpg")).IsIncluded
+            .Should().BeFalse("its only cause was the segment, and that one has not moved");
+    }
+
+    /// <summary>
+    /// A folder that is hidden AND on the excluded list fails both perimeter rules, and the row
+    /// records the PATH one. The consequence is what matters: the cause written there is the one
+    /// reconciliation can re-decide, so the row is not pinned out for the life of the catalog by a
+    /// verdict no setting can reach. The other order costs nothing less than that — and erring this
+    /// way costs one scan, which re-stamps the row with whichever rule still holds.
+    /// </summary>
+    [Fact]
+    public async Task A_folder_that_fails_both_rules_records_the_one_that_can_be_undone()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, ["jpg"]);
+
+        ScanEntry[] Entries(FileAttributes secret) =>
+        [
+            Dir("Secret", "Secret", secret),
+            File(@"Secret\both.jpg", "both.jpg"),
+        ];
+
+        // Indexed while the folder is plain and no segment is excluded…
+        await ScanAsync(harness, volumeId, Entries(FileAttributes.None));
+
+        // …then BOTH rules turn against it: the segment is excluded, and the folder goes hidden.
+        // The scan is what re-decides the row, and which cause it stamps is the question.
+        await SetFilterAsync(harness, ["jpg"], ["Secret"]);
+        await ScanAsync(harness, volumeId, Entries(FileAttributes.Hidden));
+
+        await using (var scanned = harness.CreateContext())
+        {
+            var both = await scanned.Files.SingleAsync(f => f.Name == "both.jpg");
+            both.IsIncluded.Should().BeFalse();
+            both.ExcludedByPath.Should().BeTrue("the segment is the cause a setting can retract");
+            both.ExcludedByScan.Should().BeFalse(
+                "recording the attribute cause instead would pin the row out for ever");
+        }
+
+        // And the proof that it is not pinned: the setting that put it there can take it back.
+        await SetFilterAsync(harness, ["jpg"], []);
+
+        await using var read = harness.CreateContext();
+        (await read.Files.SingleAsync(f => f.Name == "both.jpg")).IsIncluded.Should().BeTrue(
+            "the row carried a settings-borne cause, and the setting is gone — a later scan is what " +
+            "re-applies the attribute rule, which is the accepted price of this precedence");
+    }
+
+    /// <summary>
+    /// The regression step 11h exists to prevent, checked against the new lever: a file inside a
+    /// HIDDEN folder must stay out however the segments are edited. Nothing in Setup knows whether
+    /// that folder is still hidden.
+    /// </summary>
+    [Fact]
+    public async Task A_file_in_a_hidden_folder_survives_every_change_to_the_segments()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, ["jpg"]);
+
+        ScanEntry[] Entries(FileAttributes secret) =>
+        [
+            Dir("Secret", "Secret", secret),
+            File(@"Secret\private.jpg", "private.jpg"),
+        ];
+
+        await ScanAsync(harness, volumeId, Entries(FileAttributes.None));
+        await ScanAsync(harness, volumeId, Entries(FileAttributes.Hidden));
+
+        await SetFilterAsync(harness, ["jpg"], ["Secret"]);
+        await SetFilterAsync(harness, ["jpg"], []);
+
+        await using var read = harness.CreateContext();
+        var priv = await read.Files.SingleAsync(f => f.Name == "private.jpg");
+        priv.IsIncluded.Should().BeFalse("the folder is still hidden; only a scan can say otherwise");
+        priv.ExcludedByScan.Should().BeTrue("the attribute cause is the one reconciliation never touches");
+        priv.IsPresent.Should().BeTrue();
+    }
+
     /// <summary>
     /// Re-widening a filter on a big volume touches hundreds of thousands of rows, so the pass has
     /// to stay set-based — flags AND search index alike. Measured in statements, not milliseconds
@@ -336,7 +598,28 @@ public sealed class ExclusionCauseTests
             "the FTS DELETE + INSERT pair that follows them");
     }
 
-    private static async Task<int> ReconcileCostAsync(int files)
+    /// <summary>
+    /// The path half is decided in SQL, in ONE statement per group and with the OR of every
+    /// segment inside it — not one statement per segment. It runs inside the Setup transaction,
+    /// which holds SQLite's only write lock, and the segments are a handful by nature
+    /// (<c>Windows</c>, <c>Program Files</c>, <c>$Recycle.Bin</c>, <c>AppData</c>).
+    /// </summary>
+    [Fact]
+    public async Task Deciding_the_path_half_costs_a_fixed_number_of_statements()
+    {
+        var few = await ReconcileCostAsync(files: 50, "AppData", "Windows", "$Recycle.Bin");
+        var many = await ReconcileCostAsync(files: 500, "AppData", "Windows", "$Recycle.Bin");
+
+        many.Should().Be(few, "still set-based with the path predicate in play");
+        few.Should().Be(8,
+            "the three-way split becomes five — path-excluded, included, and the rest, times the " +
+            "type verdict — plus the same SELECT and FTS pair");
+
+        var oneSegment = await ReconcileCostAsync(files: 50, "AppData");
+        oneSegment.Should().Be(few, "the segments are ORed inside one statement, not one each");
+    }
+
+    private static async Task<int> ReconcileCostAsync(int files, params string[] excludedSegments)
     {
         var connection = new CountingSqliteConnection("Data Source=:memory:");
         using var harness = new SqliteInMemoryContext(connection: connection);
@@ -356,7 +639,9 @@ public sealed class ExclusionCauseTests
         // Counted from here: one reconciliation of one root, nothing else.
         connection.Reset();
         await reconciler.ReconcileRootAsync(
-            root, new EffectiveFilter(new HashSet<string> { "jpg", "png" }, []), CancellationToken.None);
+            root,
+            new EffectiveFilter(new HashSet<string> { "jpg", "png" }, excludedSegments),
+            CancellationToken.None);
         return connection.Statements;
     }
 

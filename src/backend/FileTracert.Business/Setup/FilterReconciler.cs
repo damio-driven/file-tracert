@@ -1,3 +1,4 @@
+using System.Linq.Expressions;
 using FileTracert.Business.Filtering;
 using FileTracert.Business.Scanning;
 using FileTracert.Contracts.Scanning;
@@ -13,15 +14,22 @@ namespace FileTracert.Business.Setup;
 /// delete (CLAUDE.md §4) — and, since step 11h, only for the causes it is entitled to undo.
 ///
 /// <para>A row records WHY it is out: <c>ExcludedByType</c> (the extension is off the allow-list),
-/// <c>ExcludedByRoot</c> (no active watched root governs it) or <c>ExcludedByScan</c> (the scan
-/// stepped over it — hidden folder, excluded path segment). The first two are facts of the
-/// settings and are recomputed here from scratch; the third is a fact of the disk, and nothing
-/// short of another scan may retract it. Before that distinction existed, widening the type filter
-/// re-included the content of a folder the user had hidden, until the next scan pushed it back
-/// out.</para>
+/// <c>ExcludedByRoot</c> (no active watched root governs it), <c>ExcludedByPath</c> (a segment of
+/// its path is on the excluded list) or <c>ExcludedByScan</c> (the scan stepped over it for its
+/// ATTRIBUTES — a hidden folder). The first three are facts of the settings and are recomputed
+/// here from scratch; the fourth is a fact of the disk, and nothing short of another scan may
+/// retract it. Before that distinction existed, widening the type filter re-included the content
+/// of a folder the user had hidden, until the next scan pushed it back out.</para>
+///
+/// <para><b>Step 16 moved the path half over the line.</b> It used to live in <c>ExcludedByScan</c>
+/// with the attributes, and this class deliberately never names that column — so ADDING a segment
+/// to <c>ExcludedPaths</c> excluded nothing that was already in the catalog, and the rows under it
+/// stayed navigable and findable until some full scan happened to pass. It is decidable here
+/// because <c>Directories.MaterializedPath</c> is right there: no disk read, which is precisely
+/// what separates the causes this class owns from the one it does not.</para>
 ///
 /// <para>Widening cannot resurrect never-indexed rows, so the result still flags
-/// <c>NeedsScan</c>.</para>
+/// <c>NeedsScan</c>. A NARROWING no longer needs one: it is applied here, in full.</para>
 /// </summary>
 public sealed class FilterReconciler
 {
@@ -43,6 +51,11 @@ public sealed class FilterReconciler
     /// indexed. Dropping an excluded path segment is a widening for exactly that reason — the
     /// rows under it were never written — and reading only the allow-list said "no scan needed"
     /// while nothing on disk had been looked at.</para>
+    ///
+    /// <para>The converse is now honest too, which it was not before step 16: false for a NARROWING
+    /// means "nothing left to do", because <see cref="ReconcileRootAsync"/> applies both halves of
+    /// a narrowing to the rows already in the catalog. Until then, adding an excluded segment
+    /// returned false while excluding nothing at all.</para>
     /// </summary>
     public static bool FilterWidened(EffectiveFilter previous, EffectiveFilter next) =>
         ExtensionsWidened(previous, next) || PathExclusionsRelaxed(previous, next);
@@ -80,9 +93,16 @@ public sealed class FilterReconciler
     /// included/excluded counts. Caller owns the transaction.
     ///
     /// <para>An inactive root is handled here rather than by the caller: it is the same question
-    /// ("which of the two settings-borne causes apply to these rows?"), and answering it in two
+    /// ("which of the settings-borne causes apply to these rows?"), and answering it in two
     /// places is how the global filter change used to quietly re-include the content of a root the
     /// user had switched off.</para>
+    ///
+    /// <para><b>The shape of the pass.</b> Rows are partitioned so that every cause is a CONSTANT
+    /// inside each statement — which is what lets each one be a single set-based
+    /// <c>ExecuteUpdate</c> rather than a computed SET clause per row. Three statements when no
+    /// segment is excluded (unchanged from step 11h), five when some are; never one per segment,
+    /// and never one per row. This runs inside the Setup transaction, which holds SQLite's only
+    /// write lock.</para>
     /// </summary>
     public async Task<(int Included, int Excluded)> ReconcileRootAsync(
         WatchedRoot root,
@@ -95,31 +115,60 @@ public sealed class FilterReconciler
         }
 
         var files = FilesUnder(root);
+        var underSegment = UnderExcludedSegment(effective);
 
-        // The type half, decided per row from the column the reconciler can read on its own.
-        // Everything the allow-list admits has its type cause cleared; the rest gets it set.
-        var typeAllowed = effective.AllowedExtensions.Count == 0
-            ? files
-            : files.Where(f => effective.AllowedExtensions.Contains(f.Extension));
+        // The path half, decided per row from MaterializedPath — no disk read, which is what makes
+        // it this class's business at all. With no excluded segments there is nothing to split on,
+        // and the pass keeps the exact shape (and cost) it had before step 16.
+        var insidePath = underSegment is null ? files : files.Where(Negate(underSegment));
+
+        var (typeAllowed, wrongType) = SplitByType(insidePath, effective);
 
         // Split by the cause we may NOT touch, so the count we report is the truth: a row the scan
         // skipped stays out however wide the allow-list gets, and calling it "included" on the
         // Setup screen would be a number that lies.
         var included = await typeAllowed.Where(f => !f.ExcludedByScan)
-            .ExecuteUpdateAsync(SettingsCauses(excludedByType: false, included: true), ct);
-        var stillSkipped = await typeAllowed.Where(f => f.ExcludedByScan)
-            .ExecuteUpdateAsync(SettingsCauses(excludedByType: false, included: false), ct);
+            .ExecuteUpdateAsync(SettingsCauses(byType: false, byPath: false, included: true), ct);
+        var excluded = await typeAllowed.Where(f => f.ExcludedByScan)
+            .ExecuteUpdateAsync(SettingsCauses(byType: false, byPath: false, included: false), ct);
 
-        var wrongType = 0;
-        if (effective.AllowedExtensions.Count != 0)
+        if (wrongType is not null)
         {
-            wrongType = await files.Where(f => !effective.AllowedExtensions.Contains(f.Extension))
-                .ExecuteUpdateAsync(SettingsCauses(excludedByType: true, included: false), ct);
+            excluded += await wrongType
+                .ExecuteUpdateAsync(SettingsCauses(byType: true, byPath: false, included: false), ct);
+        }
+
+        if (underSegment is not null)
+        {
+            // Path-excluded rows are never included, whatever the other causes say — so the only
+            // reason to split them again is to write the TYPE verdict truthfully. A `.tmp` under
+            // AppData is out twice over, and undoing one cause must not be enough (step 11h).
+            var (pathAllowed, pathWrongType) = SplitByType(files.Where(underSegment), effective);
+
+            excluded += await pathAllowed
+                .ExecuteUpdateAsync(SettingsCauses(byType: false, byPath: true, included: false), ct);
+
+            if (pathWrongType is not null)
+            {
+                excluded += await pathWrongType
+                    .ExecuteUpdateAsync(SettingsCauses(byType: true, byPath: true, included: false), ct);
+            }
         }
 
         await SyncSearchIndexAsync(root, ct);
-        return (included, stillSkipped + wrongType);
+        return (included, excluded);
     }
+
+    /// <summary>
+    /// Splits a row set by the extension allow-list. The rejected half is null when the allow-list
+    /// is empty ("every type"), because then there is no such row and no statement to spend.
+    /// </summary>
+    private static (IQueryable<FileEntry> Allowed, IQueryable<FileEntry>? Rejected) SplitByType(
+        IQueryable<FileEntry> files, EffectiveFilter effective) =>
+        effective.AllowedExtensions.Count == 0
+            ? (files, null)
+            : (files.Where(f => effective.AllowedExtensions.Contains(f.Extension)),
+               files.Where(f => !effective.AllowedExtensions.Contains(f.Extension)));
 
     /// <summary>
     /// Marks every file under <paramref name="root"/> as outside the perimeter — the root was
@@ -139,16 +188,102 @@ public sealed class FilterReconciler
     }
 
     /// <summary>
-    /// The two causes reconciliation owns, written together with the <c>IsIncluded</c> they imply.
-    /// <c>ExcludedByRoot</c> is always cleared here because every path that reaches it belongs to
-    /// an ACTIVE root; <c>ExcludedByScan</c> is never named, which is the whole point.
+    /// The three causes reconciliation owns, written together with the <c>IsIncluded</c> they
+    /// imply. <c>ExcludedByRoot</c> is always cleared here because every path that reaches it
+    /// belongs to an ACTIVE root; <c>ExcludedByScan</c> is never named, which is the whole point.
     /// </summary>
     private static Action<Microsoft.EntityFrameworkCore.Query.UpdateSettersBuilder<FileEntry>> SettingsCauses(
-        bool excludedByType, bool included) =>
+        bool byType, bool byPath, bool included) =>
         s => s
-            .SetProperty(f => f.ExcludedByType, excludedByType)
+            .SetProperty(f => f.ExcludedByType, byType)
             .SetProperty(f => f.ExcludedByRoot, false)
+            .SetProperty(f => f.ExcludedByPath, byPath)
             .SetProperty(f => f.IsIncluded, included);
+
+    // ── the excluded-segment predicate ────────────────────────────────────────
+
+    private const string Separator = @"\";
+
+    /// <summary>
+    /// The LIKE escape character, and it CANNOT be the backslash the rest of this file uses.
+    /// A backslash is the path separator we frame with, so with <c>ESCAPE '\'</c> the pattern's
+    /// own <c>\%</c> tail would stop being a wildcard and start being a literal percent sign —
+    /// the pattern would match nothing and the exclusion would silently apply to no row.
+    /// </summary>
+    private const string LikeEscape = "!";
+
+    /// <summary>
+    /// "Does a segment of this file's volume-relative path sit on the excluded list?", in SQL, as
+    /// ONE predicate however many segments there are — null when the list is empty.
+    ///
+    /// <para><b>The frame is what makes it one case instead of four.</b> The row's path and NAME
+    /// are wrapped in separators (<c>\dir\sub\file.jpg\</c>) and the segment is wrapped too
+    /// (<c>%\AppData\%</c>), so first segment, last segment, middle segment and whole-path all
+    /// collapse into a single <c>LIKE</c>. The NAME is part of the frame because
+    /// <see cref="FileFilter.IsPathExcluded"/> splits the file's RELATIVE path, which includes it —
+    /// matching the scan's semantics exactly is the requirement, not a choice: a scan and a
+    /// reconciliation that disagree would give the catalog two different answers about one file.
+    /// </para>
+    ///
+    /// <para><b>Case folding</b> is SQLite's <c>LIKE</c>, which folds ASCII only — the same
+    /// limitation as <c>NOCASE</c> on <c>MaterializedPath</c> (step 9a/P2) and as
+    /// <c>OrdinalIgnoreCase</c> in memory. A non-ASCII case variant is a miss here exactly as it is
+    /// there, and consistently so.</para>
+    /// </summary>
+    private static Expression<Func<FileEntry, bool>>? UnderExcludedSegment(EffectiveFilter effective)
+    {
+        Expression<Func<FileEntry, bool>>? combined = null;
+
+        foreach (var segment in effective.ExcludedPathSegments)
+        {
+            var normalized = ScanPath.Normalize(segment);
+            if (normalized.Length == 0)
+            {
+                continue; // an empty segment would frame to "\\" and match every row
+            }
+
+            // Escaped, because a '%' or '_' in a configured segment is a character of a folder
+            // name and not a wildcard the user asked for.
+            var pattern = $"%{Separator}{EscapeLike(normalized)}{Separator}%";
+            Expression<Func<FileEntry, bool>> one = f => EF.Functions.Like(
+                Separator + f.Directory.MaterializedPath + Separator + f.Name + Separator,
+                pattern,
+                LikeEscape);
+
+            combined = combined is null ? one : Or(combined, one);
+        }
+
+        return combined;
+    }
+
+    /// <summary>
+    /// Escapes the <c>LIKE</c> metacharacters plus <see cref="LikeEscape"/> itself. Deliberately
+    /// not shared with <c>SqliteLogStore</c>'s copy: that one escapes for <c>ESCAPE '\'</c>, and
+    /// the escape character is the one thing the two cannot agree on here (see
+    /// <see cref="LikeEscape"/>).
+    /// </summary>
+    private static string EscapeLike(string value) => value
+        .Replace(LikeEscape, LikeEscape + LikeEscape)
+        .Replace("%", LikeEscape + "%")
+        .Replace("_", LikeEscape + "_");
+
+    private static Expression<Func<FileEntry, bool>> Or(
+        Expression<Func<FileEntry, bool>> left, Expression<Func<FileEntry, bool>> right)
+    {
+        var parameter = left.Parameters[0];
+        var rebound = new ParameterSwap(right.Parameters[0], parameter).Visit(right.Body)!;
+        return Expression.Lambda<Func<FileEntry, bool>>(Expression.OrElse(left.Body, rebound), parameter);
+    }
+
+    private static Expression<Func<FileEntry, bool>> Negate(Expression<Func<FileEntry, bool>> predicate) =>
+        Expression.Lambda<Func<FileEntry, bool>>(Expression.Not(predicate.Body), predicate.Parameters[0]);
+
+    /// <summary>Rebinds a second lambda's parameter onto the first's, so the two bodies compose.</summary>
+    private sealed class ParameterSwap(ParameterExpression from, ParameterExpression to) : ExpressionVisitor
+    {
+        protected override Expression VisitParameter(ParameterExpression node) =>
+            node == from ? to : base.VisitParameter(node);
+    }
 
     /// <summary>
     /// Brings the FTS5 index back in step with the flags just written — the gap step 11g left open:
