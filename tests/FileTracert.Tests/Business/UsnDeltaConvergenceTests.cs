@@ -1,4 +1,4 @@
-using FileTracert.Business.Filtering;
+﻿using FileTracert.Business.Filtering;
 using FileTracert.Business.Scanning;
 using FileTracert.Business.Setup;
 using FileTracert.Contracts.Enums;
@@ -240,12 +240,11 @@ public sealed class UsnDeltaConvergenceTests
         await SetExcludedPathsAsync(harness, "Cache");
 
         var world = NestedWorld();
-        reader.Changes =
+        reader.Script(
         [
             Change(world, 140, UsnReason.BasicInfoChange | UsnReason.Close),
             Change(world, 205, UsnReason.DataOverwrite | UsnReason.Close),
-        ];
-        reader.NextUsn = 900;
+        ], nextUsn: 900);
 
         await using (var ctx = harness.CreateContext())
         {
@@ -281,12 +280,11 @@ public sealed class UsnDeltaConvergenceTests
             Attributes = FileAttributes.Directory | FileAttributes.Hidden,
         });
 
-        reader.Changes =
+        reader.Script(
         [
             Change(after, 140, UsnReason.BasicInfoChange | UsnReason.Close),
             Change(after, 205, UsnReason.DataOverwrite | UsnReason.Close),
-        ];
-        reader.NextUsn = 900;
+        ], nextUsn: 900);
 
         await using (var ctx = harness.CreateContext())
         {
@@ -416,8 +414,7 @@ public sealed class UsnDeltaConvergenceTests
 
         // Only the FOLDER is in this delta. Neither file under it is named by any record, which is
         // what separates this from the per-file loop of ReconcileAsync.
-        reader.Changes = [Change(world, 140, UsnReason.BasicInfoChange | UsnReason.Close)];
-        reader.NextUsn = 900;
+        reader.Script([Change(world, 140, UsnReason.BasicInfoChange | UsnReason.Close)], nextUsn: 900);
 
         await using (var ctx = harness.CreateContext())
         {
@@ -475,8 +472,7 @@ public sealed class UsnDeltaConvergenceTests
         {
             Attributes = FileAttributes.Directory | FileAttributes.Hidden,
         });
-        reader.Changes = [Change(after, 140, UsnReason.BasicInfoChange | UsnReason.Close)];
-        reader.NextUsn = 900;
+        reader.Script([Change(after, 140, UsnReason.BasicInfoChange | UsnReason.Close)], nextUsn: 900);
 
         await using (var ctx = harness.CreateContext())
         {
@@ -635,8 +631,7 @@ public sealed class UsnDeltaConvergenceTests
         {
             Attributes = FileAttributes.Directory | FileAttributes.Hidden,
         });
-        reader.Changes = [Change(after, 140, UsnReason.BasicInfoChange | UsnReason.Close)];
-        reader.NextUsn = 900;
+        reader.Script([Change(after, 140, UsnReason.BasicInfoChange | UsnReason.Close)], nextUsn: 900);
 
         int firstCost;
         await using (var ctx = harness.CreateContext())
@@ -739,8 +734,7 @@ public sealed class UsnDeltaConvergenceTests
         {
             Attributes = FileAttributes.Directory | FileAttributes.Hidden,
         });
-        reader.Changes = [Change(after, 140, UsnReason.BasicInfoChange | UsnReason.Close)];
-        reader.NextUsn = 900;
+        reader.Script([Change(after, 140, UsnReason.BasicInfoChange | UsnReason.Close)], nextUsn: 900);
 
         await using var ctx = harness.CreateContext();
         var applier = BuildApplier(ctx, reader, MetadataFor(after), new FileSearchIndex(ctx));
@@ -763,8 +757,7 @@ public sealed class UsnDeltaConvergenceTests
         var volumeId = await SeedAndScanAsync(harness, reader, StartingWorld());
 
         var after = new List<Item>(StartingWorld()) { File(203, 100, @"Photos\new.jpg", 44) };
-        reader.Changes = [Change(after, 203, UsnReason.FileCreate | UsnReason.Close)];
-        reader.NextUsn = 900;
+        reader.Script([Change(after, 203, UsnReason.FileCreate | UsnReason.Close)], nextUsn: 900);
 
         await using (var ctx = harness.CreateContext())
         {
@@ -805,12 +798,11 @@ public sealed class UsnDeltaConvergenceTests
         {
             File(203, 100, @"Photos\new.jpg", 44),
         };
-        reader.Changes =
+        reader.Script(
         [
             Change(StartingWorld(), 202, UsnReason.FileDelete | UsnReason.Close),
             Change(after, 203, UsnReason.FileCreate | UsnReason.Close),
-        ];
-        reader.NextUsn = 900;
+        ], nextUsn: 900);
 
         await using (var ctx = harness.CreateContext())
         {
@@ -927,8 +919,7 @@ public sealed class UsnDeltaConvergenceTests
             await between(viaDelta);
         }
 
-        deltaReader.Changes = changes;
-        deltaReader.NextUsn = 900;
+        deltaReader.Script(changes, nextUsn: 900);
 
         await using (var ctx = viaDelta.CreateContext())
         {

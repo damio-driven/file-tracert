@@ -105,15 +105,22 @@ internal sealed class FakeUsnReader(IReadOnlyList<UsnEntry> entries, long nextUs
 /// for the incremental pass. Records what cursor it was asked to resume from, which is how the
 /// checkpoint assertions can tell "read the delta again" from "read on from where it stopped".
 ///
-/// <para><b>Every mutable member is behind one lock, and that is not belt-and-braces.</b> The
-/// worker tests hand this object to a LIVE <c>UsnSyncWorker</c> and then rewrite it from the test
-/// thread — "the journal moved on" is expressed by assigning <c>Changes</c> and <c>NextUsn</c>
-/// while the worker is running. Without a barrier those two writes are independent: the worker can
-/// see the new <c>Changes</c> (a reference write) and the OLD <c>NextUsn</c>, and then checkpoint
-/// the stale cursor. The failure has a signature — <c>LastUsn</c> one increment behind what the
-/// test wrote — and it is a red that appears under load and nowhere else, which is the worst kind
-/// this suite can produce: it looks like the product and it is the fixture. Same for
-/// <c>Resumed</c>, which the worker appends to while the test reads its <c>Count</c>.</para>
+/// <para><b>Every mutable member is behind one lock, and the delta and its tail move TOGETHER.</b>
+/// The worker tests hand this object to a LIVE <c>UsnSyncWorker</c> and then rewrite it from the
+/// test thread — "the journal moved on" is expressed while the worker is running. A lock PER
+/// PROPERTY does not survive that, and it was the first thing tried: two setters are two critical
+/// sections, so the worker can take the lock BETWEEN them and compose an answer out of the new
+/// records and the OLD tail, then checkpoint that cursor. The failure has a signature —
+/// <c>LastUsn</c> one increment behind what the test wrote — and it is a red that appears under
+/// load and nowhere else, which is the worst kind this suite can produce: it looks like the product
+/// and it is the fixture. So the pair is not settable at all; <see cref="Script"/> writes both
+/// under one lock and is the only door. <c>Resumed</c> is the same problem in the other direction
+/// and is handed out as a copy.</para>
+///
+/// <para><c>JournalId</c> and <c>LowestValidUsn</c> keep plain setters, and that is not an
+/// oversight: each is ONE fact, so a lone assignment cannot tear anything, and a test that moves
+/// one of them is describing the journal's identity rather than publishing a delta. What has to be
+/// atomic is the pair a checkpoint is derived from.</para>
 ///
 /// <para><c>Snapshot</c> is <c>init</c> and never written after construction, so it stays out.</para>
 /// </summary>
@@ -128,16 +135,21 @@ internal sealed class ScriptedUsnReader : IUsnReader
 
     public List<UsnEntry> Snapshot { get; init; } = [];
 
-    public List<UsnChangeRecord> Changes
+    /// <summary>
+    /// Publishes a delta AND the journal tail it belongs to in ONE critical section — the only way
+    /// to move either, which is the point: there is no spelling of "set the records now and the
+    /// tail in a moment" for a live worker to land in the middle of. An empty <paramref name="changes"/>
+    /// is a legitimate script — it is how "the journal moved on and we changed nothing" is said.
+    /// </summary>
+    /// <param name="changes">Copied, so a caller that goes on building its own list cannot reach
+    /// inside a reader a worker is already reading.</param>
+    public void Script(IReadOnlyList<UsnChangeRecord> changes, long nextUsn)
     {
-        get { lock (_sync) { return _changes; } }
-        set { lock (_sync) { _changes = value; } }
-    }
-
-    public long NextUsn
-    {
-        get { lock (_sync) { return _nextUsn; } }
-        set { lock (_sync) { _nextUsn = value; } }
+        lock (_sync)
+        {
+            _changes = [.. changes];
+            _nextUsn = nextUsn;
+        }
     }
 
     public ulong JournalId
@@ -189,8 +201,9 @@ internal sealed class ScriptedUsnReader : IUsnReader
     public UsnChangeResult ReadChanges(string volumeGuid, long sinceUsn, ulong journalId, CancellationToken ct)
     {
         // The whole answer is composed under the lock: the delta a caller is handed and the NextUsn
-        // it will checkpoint have to come from the same version of this fixture, which is exactly
-        // what the test thread's two assignments can otherwise tear apart.
+        // it will checkpoint have to come from the same version of this fixture. Reading them under
+        // one lock is only half of it — the writing side has to be one section too, which is why
+        // Script exists and the two properties it replaced do not.
         lock (_sync)
         {
             _resumed.Add((sinceUsn, journalId));

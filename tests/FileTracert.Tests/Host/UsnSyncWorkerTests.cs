@@ -122,8 +122,7 @@ public sealed class UsnSyncWorkerTests
         // snapshot a scan would read is deliberately left alone, so a file that appears in the
         // catalog can only have come through the delta.
         disk[@"Media\new.jpg"] = new FileMetadata(44, T, T);
-        reader.Changes = [Created(201, 100, "new.jpg", usn: 600)];
-        reader.NextUsn = 900;
+        reader.Script([Created(201, 100, "new.jpg", usn: 600)], nextUsn: 900);
 
         await TestPolling.WaitUntilAsync(async () =>
         {
@@ -182,8 +181,7 @@ public sealed class UsnSyncWorkerTests
                 await WaitForFirstScanAsync(factory);
 
                 disk[@"Media\one.jpg"] = new FileMetadata(1, T, T);
-                first.Changes = [Created(201, 100, "one.jpg", usn: 600)];
-                first.NextUsn = 700;
+                first.Script([Created(201, 100, "one.jpg", usn: 600)], nextUsn: 700);
 
                 await TestPolling.WaitUntilAsync(async () =>
                 {
@@ -195,8 +193,7 @@ public sealed class UsnSyncWorkerTests
 
             // Second host, same catalog, no seeding: everything it knows it reads off the disk.
             var second = Reader();
-            second.NextUsn = 1100;
-            second.Changes = [Created(202, 100, "two.jpg", usn: 800)];
+            second.Script([Created(202, 100, "two.jpg", usn: 800)], nextUsn: 1100);
             disk[@"Media\two.jpg"] = new FileMetadata(2, T, T);
 
             using (var factory = new FileTracertAppFactory(databasePath)
@@ -310,7 +307,7 @@ public sealed class UsnSyncWorkerTests
         // delta checkpoints NextUsn, and a fake whose tail runs backwards would drag the cursor
         // back and make every later cycle unrecognisable.
         var reader = Reader();
-        reader.NextUsn = 777;
+        reader.Script([], nextUsn: 777);
 
         using var factory = new FileTracertAppFactory
         {
