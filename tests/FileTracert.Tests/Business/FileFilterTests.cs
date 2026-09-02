@@ -309,6 +309,36 @@ public class FileFilterTests
         excluded.Roots.Should().ContainKey("Secret");
     }
 
+    /// <summary>
+    /// <c>Add</c> UNIONS a second verdict for the same path instead of overwriting it, and until
+    /// now nothing held that: putting last-write-wins back left the whole suite green, because no
+    /// pipeline reaches a second <c>Add</c> on one path today — the scan enumerates each directory
+    /// once and the delta coalesces its records by FRN before classifying.
+    ///
+    /// <para>"Nothing reaches it today" is the argument for keeping the union cheap, not for
+    /// leaving it unguarded. It is the invariant this type exists to keep: overwrite the attribute
+    /// cause with the path cause and dropping the segment walks a HIDDEN folder's content back into
+    /// the Catalog with no scan, which is the 11h regression through a new door. Asserted in both
+    /// orders, because a union that only works one way is a precedence wearing a different name.</para>
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Excluded_subtree_causes_sum_when_the_same_path_is_added_twice(bool attributesFirst)
+    {
+        var attributes = new PerimeterVerdict(false, ExcludedByPath: false, ExcludedByAttributes: true);
+        var path = new PerimeterVerdict(false, ExcludedByPath: true, ExcludedByAttributes: false);
+
+        var excluded = new ExcludedSubtrees();
+        excluded.Add("Secret", attributesFirst ? attributes : path);
+        excluded.Add("Secret", attributesFirst ? path : attributes);
+
+        excluded.Count.Should().Be(1, "it is one directory, however many rules refused it");
+        excluded.Roots["Secret"].Should().Be(
+            new PerimeterVerdict(false, ExcludedByPath: true, ExcludedByAttributes: true),
+            "each cause has to be switchable off by its own owner, so neither may overwrite the other");
+    }
+
     [Fact]
     public void Excluded_subtree_set_ignores_the_volume_root()
     {
