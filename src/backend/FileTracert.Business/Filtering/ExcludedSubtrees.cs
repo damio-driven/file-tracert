@@ -88,8 +88,9 @@ public sealed class ExcludedSubtrees
     /// <para>A wrapper and not <c>_roots</c> itself: an <see cref="IReadOnlyDictionary{TKey,TValue}"/>
     /// that IS the live <see cref="Dictionary{TKey,TValue}"/> can be cast straight back to one and
     /// written through, which would put a second door on the union <see cref="Add"/> exists to
-    /// guarantee. Held in a field rather than built per call because the only caller asks twice per
-    /// tick and this type is on the scan's hot path (E7).</para>
+    /// guarantee. Held in a field because the wrapper has no state of its own — one per instance is
+    /// the whole of it — and not because anything measurable turns on it: the only product caller
+    /// reads this once per tick.</para>
     ///
     /// <para><b>It is a live view, and that is a CONSTRAINT on when it may be walked, not a feature
     /// to lean on.</b> The wrapper reads through to the set that is still being filled, so
@@ -97,8 +98,9 @@ public sealed class ExcludedSubtrees
     /// <see cref="InvalidOperationException"/> — the ordinary dictionary rule, not something this
     /// type softens. Every caller today reads it after the filling is done (the scan closes, the
     /// delta classifies before it reconciles); a caller that wanted to walk it CONCURRENTLY would
-    /// need a snapshot of its own, and this type deliberately does not hand one out, because a copy
-    /// per call on the scan's hot path is the cost E7 exists to avoid.</para>
+    /// need a snapshot of its own, and this type deliberately does not hand one out — handing out a
+    /// copy would advertise a safety this type does not provide, and would quietly duplicate a set
+    /// that holds one string per excluded directory of the volume.</para>
     /// </summary>
     public IReadOnlyDictionary<string, PerimeterVerdict> Roots { get; }
 
