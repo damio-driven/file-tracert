@@ -89,9 +89,16 @@ public sealed class ExcludedSubtrees
     /// that IS the live <see cref="Dictionary{TKey,TValue}"/> can be cast straight back to one and
     /// written through, which would put a second door on the union <see cref="Add"/> exists to
     /// guarantee. Held in a field rather than built per call because the only caller asks twice per
-    /// tick and this type is on the scan's hot path (E7). It stays a live VIEW — the set is still
-    /// being filled while the scan runs, and a caller that wanted a frozen copy would have to say
-    /// so.</para>
+    /// tick and this type is on the scan's hot path (E7).</para>
+    ///
+    /// <para><b>It is a live view, and that is a CONSTRAINT on when it may be walked, not a feature
+    /// to lean on.</b> The wrapper reads through to the set that is still being filled, so
+    /// enumerating it while a <see cref="Add"/> is in flight throws
+    /// <see cref="InvalidOperationException"/> — the ordinary dictionary rule, not something this
+    /// type softens. Every caller today reads it after the filling is done (the scan closes, the
+    /// delta classifies before it reconciles); a caller that wanted to walk it CONCURRENTLY would
+    /// need a snapshot of its own, and this type deliberately does not hand one out, because a copy
+    /// per call on the scan's hot path is the cost E7 exists to avoid.</para>
     /// </summary>
     public IReadOnlyDictionary<string, PerimeterVerdict> Roots { get; }
 

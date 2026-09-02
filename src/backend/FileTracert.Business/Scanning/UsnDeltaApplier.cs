@@ -1,4 +1,4 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using FileTracert.Business.Filtering;
 using FileTracert.Business.Volumes;
 using FileTracert.Contracts.Enums;
@@ -681,12 +681,20 @@ public sealed class UsnDeltaApplier
     /// a handful. Committing per chunk costs nothing in safety, because the cursor is written LAST
     /// and every statement here is idempotent.</para>
     ///
-    /// <para><b>The index is only touched when a row actually moved.</b> A folder that stays
-    /// excluded keeps turning up in every tick that writes anything inside it, and without the
-    /// guard each of those ticks would pay a DELETE plus an INSERT over its whole subtree — every
-    /// 30 seconds, to produce the state that was already there. The guard is sound because this
-    /// pass changes exactly one thing about a row, <c>IsIncluded</c>: if no row changed, nothing
-    /// this pass could have made stale is stale.</para>
+    /// <para><b>The index is only touched when a row actually moved.</b> Without the guard, a
+    /// subtree whose rows are all already excluded still pays a DELETE plus an INSERT over the whole
+    /// of it, to produce the state that was already there. What makes that recur is <b>not</b>
+    /// ordinary write traffic inside the folder: NTFS journals the change to the FILE, so writing a
+    /// file does not emit a record for its directory, and <see cref="Coalesce"/> plus the cursor
+    /// keep a record already consumed from coming back. The folder turns up again when IT changes,
+    /// and — the real recurring shape — when a NEW subdirectory inside it produces an excluded entry
+    /// of its own, at which point the whole subtree above is re-stamped for nothing. The other half
+    /// is replay: nested and duplicate entries within a single tick already reach the same rows
+    /// twice, and a delta re-offered after a crash reaches all of them again. The guard is sound
+    /// because this pass changes exactly one thing about a row, <c>IsIncluded</c>: if no row
+    /// changed, nothing this pass could have made stale is stale — which is a statement about THIS
+    /// pass, not a promise that nobody else makes the index stale (see the KNOWN HOLE in
+    /// <see cref="ReconcileAsync"/>).</para>
     ///
     /// <para><b>Each entry carries its OWN causes, not the union with its ancestors'</b>, and that
     /// is complete: an excluded ancestor is itself an entry in this set, and its own pass covers

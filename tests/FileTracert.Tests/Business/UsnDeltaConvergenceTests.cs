@@ -607,9 +607,11 @@ public sealed class UsnDeltaConvergenceTests
     /// <para><b>Asserted in STATEMENTS as well as in rows</b>, because "writes nothing" was not true
     /// of the index half and the snapshot could not tell: the pass pruned the subtree from the FTS
     /// unconditionally, so a DELETE and an INSERT over the whole subtree ran on every replay and
-    /// left exactly the rows that were already there. And the case that matters is not the crash
-    /// replay, it is the RECURRING one — a folder that stays excluded turns up in every tick that
-    /// writes anything inside it, which on a busy folder is every 30 seconds.</para>
+    /// left exactly the rows that were already there. The crash replay is the case this test drives;
+    /// the one that recurs on a live volume is a NEW subdirectory inside the excluded folder, which
+    /// produces an excluded entry of its own and re-stamps everything above it. Ordinary write
+    /// traffic inside the folder does not: NTFS journals the change to the FILE, so writing a file
+    /// emits no record for its directory.</para>
     ///
     /// <para>The REAL <see cref="FileSearchIndex"/>, for the reason the cost test gives: with the
     /// fake, the half of this claim that is about the index is not observed at all.</para>
