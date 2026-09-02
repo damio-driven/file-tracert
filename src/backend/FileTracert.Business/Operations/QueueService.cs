@@ -1,4 +1,4 @@
-﻿using FileTracert.Business.Projection;
+using FileTracert.Business.Projection;
 using FileTracert.Business.Realtime;
 using FileTracert.Business.Scanning;
 using FileTracert.Contracts.Enums;
@@ -585,6 +585,17 @@ public sealed class QueueService : IQueueService
 
         var sourcePaths = await FirstSourcePathsAsync([.. jobs.Select(j => j.Id)], ct);
 
+        // What each blocked job has already put on the target, as ONE grouped sum. Without it the
+        // items are not loaded (E1, deliberately), so the outstanding-bytes derivation would fall
+        // back to the whole original demand and this screen would quote a deficit the engine never
+        // decided on: a job 9 GB into a 10 GB copy, parked for wanting 1 GB more, would be shown
+        // as short of the full 10 GB + margin. Found by the final review of step 15b.
+        var blockedIds = jobs
+            .Where(j => j.State == JobState.Blocked && j.RequiredBytesTarget > 0)
+            .Select(j => j.Id)
+            .ToList();
+        var landedBytes = await JobStates.LandedBytesAsync(_db, blockedIds, ct);
+
         var dtos = new List<OperationJobDto>(jobs.Count);
         foreach (var job in jobs)
         {
@@ -599,7 +610,8 @@ public sealed class QueueService : IQueueService
                 // match the engine's execution-time re-check — same object, same live figure,
                 // same margin — instead of a planning estimate that would quote a different
                 // number than the one that parked the job.
-                feasibility = (await _spaceCheck.EvaluateHardAsync(job, ct)).Feasibility;
+                feasibility = (await _spaceCheck.EvaluateHardAsync(
+                    job, ct, landedBytes.GetValueOrDefault(job.Id))).Feasibility;
             }
             dtos.Add(MapToDto(job, sourcePaths.GetValueOrDefault(job.Id), feasibility));
         }

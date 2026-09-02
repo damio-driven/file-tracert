@@ -115,9 +115,12 @@ export const VolumesStore = signalStore(
       },
 
       clearSelection(): void {
-        // Both halves: leaving `selectedId` behind would make the next click on that same volume
-        // a no-op for the screen's own guard.
-        patchState(store, { selectedId: null, selected: null });
+        // All three. `selectedId` because leaving it behind would make the next click on that same
+        // volume a no-op for the screen's own guard; `detailLoading` because this is the ONE caller
+        // that moves `selectedId` without issuing a request — so a selection still in flight when
+        // this runs has its answer dropped by the staleness guard, and nothing else would ever
+        // clear the spinner. (Found by the final review of step 15b.)
+        patchState(store, { selectedId: null, selected: null, detailLoading: false });
       },
 
       async rescan(id: number): Promise<void> {

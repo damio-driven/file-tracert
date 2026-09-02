@@ -288,4 +288,59 @@ public sealed class ResumedJobSpaceRecheckTests : IDisposable
         (await LoadAsync(jobId)).State.Should().NotBe(JobState.Blocked,
             "the bytes are already written; what is left frees space, it does not consume it");
     }
+
+    /// <summary>
+    /// The number the Coda screen shows for a job parked mid-copy must be the number that parked
+    /// it. The list deliberately does not load the job's items (step 11e, E1), so the
+    /// outstanding-bytes derivation would fall back to the whole original demand and quote a
+    /// deficit the engine never decided on — a job 9 GB into a 10 GB copy shown as short of the
+    /// full 10 GB. Found by the final code review of this step.
+    /// </summary>
+    [Fact]
+    public async Task The_queue_list_quotes_the_deficit_that_actually_parked_the_job()
+    {
+        SeedFile(1, R("src"), "a.bin", 4_000);
+        SeedFile(2, R("src"), "b.bin", 4_000);
+
+        int jobId;
+        await using (var db = _harness.CreateContext())
+        {
+            var dto = await Queue(db).EnqueueAsync(new CreateJobRequest
+            {
+                Type = JobType.MoveFolder, SourceDirectoryId = 101,
+                TargetVolumeId = TgtVolId, TargetRelativePath = R("dst"),
+            }, CancellationToken.None);
+            jobId = dto.Id;
+
+            var f2 = await db.Files.SingleAsync(f => f.Id == 2);
+            f2.DirectoryId = 101;
+            await db.SaveChangesAsync();
+        }
+
+        // Half the demand already on the target, and the drive now too full for the rest.
+        await using (var db = _harness.CreateContext())
+        {
+            var parked = await db.OperationJobs.Include(j => j.Items).SingleAsync(j => j.Id == jobId);
+            parked.State = JobState.Copying;
+            var first = parked.Items.First(i => i.FileId == 1);
+            first.State = JobItemState.Copied;
+            first.BytesCopied = first.SizeBytes;
+            await db.SaveChangesAsync();
+        }
+
+        _probe.FreeBytes = 10;
+        await RunAsync(jobId);
+
+        var blocked = await LoadAsync(jobId);
+        blocked.State.Should().Be(JobState.Blocked, "arrange: the resume must have been refused");
+
+        await using var listDb = _harness.CreateContext();
+        var page = await Queue(listDb).ListAsync(0, 50, CancellationToken.None);
+        var row = page.Items.Single(j => j.Id == jobId);
+
+        // 4 000 still to write, not the 8 000 the job started with.
+        row.Feasibility.Should().NotBeNull();
+        row.Feasibility!.RequiredBytes.Should().Be(4_000,
+            "the screen must quote what is left, which is what the engine judged");
+    }
 }

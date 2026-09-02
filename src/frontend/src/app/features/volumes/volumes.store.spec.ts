@@ -187,4 +187,23 @@ describe('VolumesStore', () => {
     expect(store.selectedId()).toBeNull();
     expect(store.selected()).toBeNull();
   });
+
+  it('clearing while a selection is in flight does not strand the spinner', async () => {
+    // clearSelection is the one caller that moves `selectedId` without issuing a request, so the
+    // in-flight answer is dropped by the staleness guard and nothing else would ever turn the
+    // spinner off: the screen would sit on "Caricamento dettaglio…" for ever.
+    const { api, answer } = deferredDetail();
+    const store = configure(api as never);
+
+    const pending = store.select(1);
+    expect(store.detailLoading()).toBe(true);
+
+    store.clearSelection();
+    answer(1, { ...detail, id: 1 });
+    await pending;
+
+    expect(store.detailLoading()).toBe(false);
+    expect(store.selected()).toBeNull();
+    expect(store.selectedId()).toBeNull();
+  });
 });

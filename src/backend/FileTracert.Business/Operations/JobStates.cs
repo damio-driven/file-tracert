@@ -1,5 +1,7 @@
 using FileTracert.Contracts.Enums;
+using FileTracert.Data;
 using FileTracert.Data.Entities;
+using Microsoft.EntityFrameworkCore;
 
 namespace FileTracert.Business.Operations;
 
@@ -61,20 +63,51 @@ public static class JobStates
     /// every interrupted large job for ever: 9 GB of a 10 GB copy written, half a gigabyte free,
     /// and a job that needs 1 GB more refused for wanting 10.</para>
     ///
-    /// <para>With no items loaded the caller cannot say what landed, so the whole demand is
-    /// returned. That errs in the safe direction — it can refuse a job that would have fit, never
-    /// admit one that would not.</para>
+    /// <para>With no items loaded and nothing passed in, the caller cannot say what landed, so
+    /// the whole demand is returned. That errs in the safe direction for a DECIDER — it can refuse
+    /// a job that would have fit, never admit one that would not — but it is the wrong number to
+    /// SHOW, which is why <paramref name="landedBytes"/> exists.</para>
     /// </summary>
-    public static long OutstandingBytes(OperationJob job)
+    /// <param name="landedBytes">
+    /// What the caller already knows is on the target, when it knows it from somewhere other than
+    /// the loaded items. Exactly one caller needs this: the queue LIST, which must not materialise
+    /// every item of every job on the page (step 11e, E1) and so reads the figure as a grouped sum
+    /// instead. Everything that DECIDES loads the items and leaves this null — the derivation stays
+    /// in one place either way, and no decider can pass the wrong thing because it passes nothing.
+    /// </param>
+    public static long OutstandingBytes(OperationJob job, long? landedBytes = null)
     {
-        if (job.Items.Count == 0) return job.RequiredBytesTarget;
+        long landed = landedBytes ?? LandedFromItems(job);
+        return Math.Max(0, job.RequiredBytesTarget - landed);
+    }
 
+    /// <summary>Bytes of this job already on the target, read off the loaded items. Zero when none are loaded.</summary>
+    private static long LandedFromItems(OperationJob job)
+    {
         long landed = 0;
         foreach (var item in job.Items)
             if (Array.IndexOf(Landed, item.State) >= 0)
                 landed += item.SizeBytes;
+        return landed;
+    }
 
-        return Math.Max(0, job.RequiredBytesTarget - landed);
+    /// <summary>
+    /// The landed bytes of several jobs at once, without materialising a single
+    /// <see cref="OperationJobItem"/>. For the queue list (E1): a page holding a cross-volume
+    /// folder job would otherwise load one entity per file to print one number.
+    /// </summary>
+    public static async Task<Dictionary<int, long>> LandedBytesAsync(
+        FileTracertDbContext db, IReadOnlyList<int> jobIds, CancellationToken ct)
+    {
+        if (jobIds.Count == 0) return [];
+
+        var rows = await db.OperationJobItems.AsNoTracking()
+            .Where(i => jobIds.Contains(i.JobId) && Landed.Contains(i.State))
+            .GroupBy(i => i.JobId)
+            .Select(g => new { JobId = g.Key, Bytes = g.Sum(i => i.SizeBytes) })
+            .ToListAsync(ct);
+
+        return rows.ToDictionary(r => r.JobId, r => r.Bytes);
     }
 
     /// <summary>Terminal states: the job will never run again (Blocked is NOT terminal).</summary>

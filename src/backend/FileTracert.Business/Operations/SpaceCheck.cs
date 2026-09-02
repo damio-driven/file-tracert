@@ -201,7 +201,13 @@ public sealed class SpaceCheck
     /// <c>job.IsIntraVolume</c> from both at once — an intra-volume COPY consumes room on its own
     /// volume, so the geometry was never the question; the demand is.</para>
     /// </summary>
-    public async Task<HardSpaceVerdict> EvaluateHardAsync(OperationJob job, CancellationToken ct)
+    /// <param name="landedBytes">
+    /// Passed only by the queue LIST, which cannot load the job's items (E1) and reads what has
+    /// already landed as a grouped sum instead. Left null by everything that decides, so a decider
+    /// cannot supply the wrong figure — it supplies none, and the items answer.
+    /// </param>
+    public async Task<HardSpaceVerdict> EvaluateHardAsync(
+        OperationJob job, CancellationToken ct, long? landedBytes = null)
     {
         if (job.RequiredBytesTarget <= 0 || job.TargetVolume is null)
             return NothingToCheck;
@@ -209,7 +215,7 @@ public sealed class SpaceCheck
         // Everything already written to the target is already reflected in the free-space reading
         // below, so what has to fit is what is LEFT. For a job that has never run this is the
         // whole demand and nothing changes.
-        long outstanding = JobStates.OutstandingBytes(job);
+        long outstanding = JobStates.OutstandingBytes(job, landedBytes);
         if (outstanding <= 0)
             return NothingToCheck;
 
