@@ -195,6 +195,17 @@ public static class FileFilter
     /// invocation, and the 11g review had already taken a second split off this branch. The
     /// attribute half is two flag tests, so asking it unconditionally costs nothing measurable.
     /// </para>
+    ///
+    /// <para><b>The two halves are not equally guarded, on purpose — stated so a green suite is
+    /// not read as more than it is.</b> Suppressing the ATTRIBUTE cause when the path one applies
+    /// is caught everywhere, including by the integration tests, and it has to be: nothing else in
+    /// the system can re-derive "is that folder still hidden", so a dropped attribute cause is
+    /// permanent and lets a settings change walk a hidden folder's content back into the Catalog.
+    /// The mirror mutation — suppressing the PATH cause when the attribute one applies — survives
+    /// those same integration tests, and that is not a gap in them: <c>FilterReconciler</c>
+    /// recomputes <c>ExcludedByPath</c> from the catalog's own paths in SQL, so the state repairs
+    /// itself at the next Setup save. The unit tests on this method are what pin that direction.
+    /// </para>
     /// </summary>
     public static PerimeterVerdict EvaluatePerimeter(
         string relativePath, FileAttributes attributes, EffectiveFilter filter) =>

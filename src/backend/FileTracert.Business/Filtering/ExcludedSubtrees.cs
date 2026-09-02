@@ -1,4 +1,4 @@
-﻿using FileTracert.Contracts.Scanning;
+using FileTracert.Contracts.Scanning;
 
 namespace FileTracert.Business.Filtering;
 
@@ -53,13 +53,24 @@ public sealed class ExcludedSubtrees
     /// Records a directory the filter excluded, and every rule that rejected it. The volume root is
     /// never recorded: excluding it would mean the scan has nothing to do, which is a watched-root
     /// decision, not a filter one.
+    ///
+    /// <para>A second call for the same path UNIONS instead of replacing. No pipeline reaches that
+    /// today — the scan enumerates each directory once and the delta coalesces its records by FRN
+    /// before classifying — but "the causes sum" is the invariant this whole type exists to keep,
+    /// and last-write-wins is the one spelling of <c>Add</c> that could silently drop one. The union
+    /// costs a lookup that was already being paid, so making it unconditional buys the invariant for
+    /// nothing rather than leaving it resting on a caller's habit.</para>
     /// </summary>
     public void Add(string relativePath, PerimeterVerdict verdict)
     {
-        if (!string.IsNullOrEmpty(relativePath))
+        if (string.IsNullOrEmpty(relativePath))
         {
-            _roots[relativePath] = verdict;
+            return;
         }
+
+        _roots[relativePath] = _roots.TryGetValue(relativePath, out var already)
+            ? already.Union(verdict)
+            : verdict;
     }
 
     /// <summary>
