@@ -57,6 +57,12 @@ public sealed record EffectiveFilter(
     /// the folder), folds <c>/</c> onto <c>\</c> and strips the outer separators, drops what is left
     /// empty, and de-duplicates case-insensitively so the SQL side does not OR the same term twice.
     ///
+    /// <para>The de-duplication folds with <c>OrdinalIgnoreCase</c>, which is WIDER than the rule
+    /// both readers match with (ASCII-only, see <see cref="FileFilter.IsPathExcluded"/>). It costs
+    /// nothing to either half's agreement — two spellings differing only in non-ASCII case collapse
+    /// to one, and both halves then miss the dropped spelling identically — but it is a configured
+    /// segment quietly not honoured, so it is written down rather than discovered again.</para>
+    ///
     /// <para>What it deliberately does NOT do is reduce a multi-part segment to a single one:
     /// <c>AppData\Local</c> stays as it is and is matched as a SEQUENCE of segments, which is the
     /// semantics the SQL frame already had. The alternative — whole-segment equality — is not a

@@ -98,6 +98,8 @@ public class FileFilterTests
     [InlineData(@"AppData\Local", @"Users\AppData\Roaming\x.jpg", false)]
     [InlineData(@"Windows\", @"Windows\System32\x.dll", true)]      // §4's own spelling
     [InlineData(" Windows ", @"Windows\System32\x.dll", true)]
+    [InlineData("Über", @"Über\x.jpg", true)]                       // identical is identical
+    [InlineData("Über", @"über\x.jpg", false)]                      // …but the fold stops at ASCII
     public void An_excluded_segment_matches_between_separators(string segment, string path, bool excluded) =>
         FileFilter.IsPathExcluded(path, Filter(excludedSegments: [segment])).Should().Be(excluded);
 

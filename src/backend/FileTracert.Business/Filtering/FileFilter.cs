@@ -43,9 +43,16 @@ public static class FileFilter
     /// segment on every one of those calls; the segments arrive already normalized
     /// (<see cref="EffectiveFilter.ExcludedPathSegments"/>), so nothing is built here either.</para>
     ///
-    /// <para>Case folding is <c>OrdinalIgnoreCase</c>, matching SQLite's ASCII-only <c>LIKE</c> on
-    /// the other side and <c>NOCASE</c> on <c>MaterializedPath</c> (9a/P2) — the known limit, and
-    /// the same one in all three places.</para>
+    /// <para><b>Case folding is ASCII-only</b>, deliberately, because the other half cannot be
+    /// anything else: SQLite's <c>LIKE</c> folds <c>a-z</c> and nothing more, exactly like
+    /// <c>NOCASE</c> on <c>MaterializedPath</c> (9a/P2) and like the merge's match by path. This
+    /// side used to fold with <c>OrdinalIgnoreCase</c>, i.e. the whole invariant table, and the two
+    /// then disagreed on every non-ASCII case variant — segment <c>Über</c> against
+    /// <c>über\x.jpg</c> matched here and missed in SQL. That is not a missed exclusion but a
+    /// silent UNDOING of a scan's verdict, since reconciliation writes <c>ExcludedByPath</c> in both
+    /// directions: the row comes back, the next scan pushes it out, for ever.
+    /// <b>The limit, stated:</b> a non-ASCII case variant of a configured segment does not match —
+    /// here, in SQL, and in the catalog's path collation alike.</para>
     /// </summary>
     public static bool IsPathExcluded(string relativePath, EffectiveFilter filter)
     {
@@ -73,30 +80,58 @@ public static class FileFilter
     /// <summary>
     /// True when <paramref name="segment"/> occurs in <paramref name="path"/> bounded by separators
     /// or by the ends of the path — the in-memory spelling of the SQL frame.
+    ///
+    /// <para>Candidates are only the positions the frame allows: the start of the path, and every
+    /// index just past a separator. That is both cheaper than scanning for the segment anywhere and
+    /// the reason the comparison can be a plain span compare with the ASCII fold SQLite's
+    /// <c>LIKE</c> uses — see the note on <see cref="IsPathExcluded"/>. No allocation on any path.
+    /// </para>
     /// </summary>
     private static bool ContainsFramed(ReadOnlySpan<char> path, string segment)
     {
+        var needle = segment.AsSpan();
         var start = 0;
-        while (start <= path.Length - segment.Length)
-        {
-            var found = path[start..].IndexOf(segment, StringComparison.OrdinalIgnoreCase);
-            if (found < 0)
-            {
-                return false;
-            }
 
-            var at = start + found;
-            var end = at + segment.Length;
-            if ((at == 0 || path[at - 1] == '\\') && (end == path.Length || path[end] == '\\'))
+        while (start <= path.Length - needle.Length)
+        {
+            var end = start + needle.Length;
+            if ((end == path.Length || path[end] == '\\')
+                && EqualsAsciiIgnoreCase(path.Slice(start, needle.Length), needle))
             {
                 return true;
             }
 
-            start = at + 1;
+            var separator = path[start..].IndexOf('\\');
+            if (separator < 0)
+            {
+                return false;
+            }
+
+            start += separator + 1;
         }
 
         return false;
     }
+
+    /// <summary>
+    /// Ordinal equality with the ASCII-only case fold, which is what SQLite's <c>LIKE</c> and
+    /// <c>NOCASE</c> do. <c>OrdinalIgnoreCase</c> would fold more than the SQL half can, and the two
+    /// halves disagreeing about one file is the thing this rule exists to prevent.
+    /// </summary>
+    private static bool EqualsAsciiIgnoreCase(ReadOnlySpan<char> left, ReadOnlySpan<char> right)
+    {
+        for (var i = 0; i < left.Length; i++)
+        {
+            if (left[i] != right[i] && ToLowerAscii(left[i]) != ToLowerAscii(right[i]))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static char ToLowerAscii(char c) => (uint)(c - 'A') <= 'Z' - 'A' ? (char)(c | 0x20) : c;
 
     /// <summary>
     /// The PERIMETER half of the filter, and WHICH of its two rules rejected the item — BOTH of

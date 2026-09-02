@@ -431,6 +431,62 @@ public sealed class ExclusionCauseTests
     }
 
     /// <summary>
+    /// …and they have to agree about a NON-ASCII case variant too, which is where they used to part
+    /// company. SQLite's <c>LIKE</c> folds ASCII only; <c>OrdinalIgnoreCase</c> folds the whole
+    /// invariant table. So <c>Über</c> against <c>über\…</c> was a miss in SQL and a match in memory.
+    ///
+    /// <para>Because reconciliation writes <c>ExcludedByPath</c> in BOTH directions, that is not a
+    /// missed exclusion: it is a silent UNDOING of a scan's decision. The row lands in the "inside"
+    /// partition, takes <c>ExcludedByPath = 0, IsIncluded = 1</c>, returns to Catalog and Search, and
+    /// the next scan pushes it back out — a permanent flip-flop, the failure class step 16 exists to
+    /// remove.</para>
+    ///
+    /// <para>Aligned to ASCII-only, which is what the rest of the project already chose: <c>NOCASE</c>
+    /// on <c>MaterializedPath</c> (P2/9a), <c>DirectoryQueries</c>, and the merge's own match by path.
+    /// A non-ASCII case variant is now a miss on both sides — the declared limit, not a divergence.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task The_two_halves_agree_on_a_non_ascii_case_variant()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, []);
+
+        // Only the lower-case spelling exists on disk. The two spellings are deliberately NOT both
+        // present: the scan's own path map folds with OrdinalIgnoreCase, so it would merge them into
+        // one directory row and the test would be measuring that instead (9a's declared limit).
+        ScanEntry[] entries =
+        [
+            Dir("über", "über"),
+            File(@"über\lower.jpg", "lower.jpg"),
+            Dir("Photos", "Photos"),
+            File(@"Photos\plain.jpg", "plain.jpg"),
+        ];
+
+        await ScanAsync(harness, volumeId, entries);
+
+        // Setup excludes the segment spelled with the capital. SQL cannot fold 'Ü' onto 'ü'.
+        await SetFilterAsync(harness, [], ["Über"]);
+
+        await using (var reconciled = harness.CreateContext())
+        {
+            (await reconciled.Files.SingleAsync(f => f.Name == "lower.jpg")).IsIncluded
+                .Should().BeTrue("arrange: SQLite's LIKE folds ASCII only, so this one is a miss");
+        }
+
+        // The scan re-decides the very same row. Whatever it answers has to be what Setup answered,
+        // or the two take turns overwriting each other for ever.
+        await ScanAsync(harness, volumeId, entries);
+
+        await using var read = harness.CreateContext();
+        var row = await read.Files.SingleAsync(f => f.Name == "lower.jpg");
+        row.IsIncluded.Should().BeTrue("the scan must not exclude what reconciliation just re-included");
+        row.ExcludedByPath.Should().BeFalse();
+        (await read.Files.SingleAsync(f => f.Name == "plain.jpg")).IsIncluded
+            .Should().BeTrue("and the control row is untouched throughout");
+    }
+
+    /// <summary>
     /// A LIKE metacharacter sitting in a configured segment is a character of a folder NAME, not a
     /// wildcard the user asked for. Both neighbours here are chosen so that an unescaped pattern
     /// would swallow them: <c>%\100%\%</c> matches <c>\1000\…\</c>, and <c>%\Te_p\%</c> matches
