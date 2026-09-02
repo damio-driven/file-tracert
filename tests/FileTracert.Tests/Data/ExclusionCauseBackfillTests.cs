@@ -176,6 +176,93 @@ public sealed class ExclusionCauseBackfillTests : IDisposable
         included.IsIncluded.Should().BeTrue("an included row is left alone by an additive column");
     }
 
+    /// <summary>
+    /// The sequence the pessimistic stamp exists for, end to end — and the one the assertion above
+    /// does not reach, because "a column with <c>defaultValue: false</c> is false" is close to an
+    /// echo of the migration itself.
+    ///
+    /// <para>A row excluded by the OLD code under <c>AppData</c> carries one flag for two possible
+    /// facts: the segment, or a Hidden folder. Guessing "segment" would have been the convenient
+    /// answer and the dangerous one — the user then drops <c>AppData</c> and the content of a hidden
+    /// folder comes back into the Catalog, silently. So it is held, and the row beside it, indexed
+    /// after the split, does exactly what the user asked: out with the segment, back without it.
+    /// That contrast is what makes this a test of the backfill and not of the reconciler refusing to
+    /// touch <c>ExcludedByScan</c> in general.</para>
+    /// </summary>
+    [Fact]
+    public async Task A_legacy_row_is_not_re_admitted_by_dropping_the_segment_that_might_have_excluded_it()
+    {
+        await MigrateToAsync(MigrationBeforeThePathCause);
+        await SeedLegacyRowsAsync();
+
+        await using (var legacy = CreateContext())
+        {
+            // A folder on what will become the excluded list, holding two rows: one the old code
+            // had already excluded (cause forgotten), one it had not.
+            await legacy.Database.ExecuteSqlRawAsync(
+                """
+                INSERT INTO Directories (VolumeId, ParentId, Name, MaterializedPath, IsMaterialized,
+                                         IsPresent, PendingState, CreatedUtc, UpdatedUtc)
+                VALUES (1, 1, 'AppData', 'AppData', 1, 1, 'None',
+                        '2026-08-19 00:00:00', '2026-08-19 00:00:00');
+
+                INSERT INTO Files (VolumeId, DirectoryId, Name, Extension, Category, SizeBytes,
+                                   CreatedUtc, ModifiedUtc, Attributes, IsIncluded, ExcludedByType,
+                                   ExcludedByRoot, ExcludedByScan, IsPresent,
+                                   LastIndexedUtc, PendingState, RowCreatedUtc, RowUpdatedUtc)
+                VALUES (1, 2, 'legacy.txt', 'txt', 'Document', 1,
+                        '2026-08-19 00:00:00', '2026-08-19 00:00:00', 0, 0, 0, 0, 1, 1,
+                        '2026-08-19 00:00:00', 'None', '2026-08-19 00:00:00', '2026-08-19 00:00:00'),
+                       (1, 2, 'fresh.txt', 'txt', 'Document', 1,
+                        '2026-08-19 00:00:00', '2026-08-19 00:00:00', 0, 1, 0, 0, 0, 1,
+                        '2026-08-19 00:00:00', 'None', '2026-08-19 00:00:00', '2026-08-19 00:00:00');
+                """);
+        }
+
+        await using (var db = CreateContext())
+        {
+            await db.Database.MigrateAsync();
+        }
+
+        var root = 0;
+        await using (var db = CreateContext())
+        {
+            var watched = new WatchedRoot { VolumeId = 1, RelativePath = string.Empty, IsActive = true };
+            db.WatchedRoots.Add(watched);
+            await db.SaveChangesAsync();
+            root = watched.Id;
+        }
+
+        await ReconcileAsync(root, @"AppData\");
+
+        await using (var narrowed = CreateContext())
+        {
+            (await narrowed.Files.SingleAsync(f => f.Name == "fresh.txt")).ExcludedByPath
+                .Should().BeTrue("arrange: the segment applies to this folder");
+        }
+
+        // The user changes their mind and drops the segment.
+        await ReconcileAsync(root);
+
+        await using var read = CreateContext();
+        var fresh = await read.Files.SingleAsync(f => f.Name == "fresh.txt");
+        fresh.IsIncluded.Should().BeTrue("a row whose only cause was the segment comes back, no scan");
+
+        var stamped = await read.Files.SingleAsync(f => f.Name == "legacy.txt");
+        stamped.ExcludedByPath.Should().BeFalse();
+        stamped.ExcludedByScan.Should().BeTrue();
+        stamped.IsIncluded.Should().BeFalse(
+            "its cause was never knowable, so it waits for a scan rather than being guessed back in");
+    }
+
+    private async Task ReconcileAsync(int rootId, params string[] excludedSegments)
+    {
+        await using var db = CreateContext();
+        var root = await db.WatchedRoots.SingleAsync(r => r.Id == rootId);
+        await new FilterReconciler(db, new FileSearchIndex(db)).ReconcileRootAsync(
+            root, new EffectiveFilter(new HashSet<string>(), excludedSegments), CancellationToken.None);
+    }
+
     private async Task MigrateToAsync(string migration)
     {
         await using var db = CreateContext();

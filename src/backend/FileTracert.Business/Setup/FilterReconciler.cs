@@ -103,6 +103,22 @@ public sealed class FilterReconciler
     /// segment is excluded (unchanged from step 11h), five when some are; never one per segment,
     /// and never one per row. This runs inside the Setup transaction, which holds SQLite's only
     /// write lock.</para>
+    ///
+    /// <para><b>What the path half costs, measured rather than assumed</b> (throwaway probe,
+    /// 200 000 files over 2 001 directories, in-memory SQLite, three runs each). End to end the
+    /// pass is 2 131–2 162 ms with no excluded segment and 1 972–2 266 ms with five: the same
+    /// number, because the extra statements do not write extra rows — they redistribute the same
+    /// rows across more of them. Isolated, the framed <c>LIKE</c> evaluated over all 200 000 rows
+    /// costs 78–90 ms for one segment and 262–277 ms for five, against 555–638 ms for one flag pass
+    /// that writes every row and 1 402–1 526 ms for the FTS resync, which is 70% of the whole thing
+    /// and predates step 16. Writing rows dominates; the predicate does not.</para>
+    ///
+    /// <para>So the per-directory form (11h/E4's idiom — resolve the directories under the segment,
+    /// then name the files by <c>DirectoryId</c>) was NOT taken: at this scale it would trade
+    /// ~10% of the pass for a second shape of the same rule, and it would need a clause of its own
+    /// for the case the frame gets for free — a FILE whose own name is the segment, which
+    /// <see cref="FileFilter.IsPathExcluded"/> matches and which the two halves must agree on. The
+    /// numbers are here so whoever revisits it starts from them.</para>
     /// </summary>
     public async Task<(int Included, int Excluded)> ReconcileRootAsync(
         WatchedRoot root,

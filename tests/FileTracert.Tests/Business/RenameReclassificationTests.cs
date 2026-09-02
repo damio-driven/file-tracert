@@ -149,6 +149,69 @@ public sealed class RenameReclassificationTests : IDisposable
         file.ExcludedByScan.Should().BeFalse("the scan said nothing about this row");
     }
 
+    /// <summary>
+    /// Step 16, and the reason "only ever SET, never cleared" is right for ONE of the two perimeter
+    /// causes and wrong for the other. Whether the destination path carries an excluded segment is
+    /// entirely decidable from here — the path and the settings are both in hand, no disk read is
+    /// involved — and that decidability is the whole premise of the column. Leaving it pinned kept
+    /// a file excluded after a job carried it out of the excluded place, until some scan passed.
+    /// </summary>
+    [Fact]
+    public async Task Rename_out_of_an_excluded_segment_clears_the_path_cause()
+    {
+        // The excluded segment is the file's own name: IsPathExcluded splits the file's RELATIVE
+        // path, which includes it, and that is the one part of the path a rename can move.
+        Seed(oldName: "cache", newName: "foto.txt", allowedExtensions: ["txt"],
+             excludedPaths: ["cache"], startsIncluded: false, excludedByPath: true);
+
+        await RunRenameAsync();
+
+        await using var probe = _harness.CreateContext();
+        var file = await probe.Files.SingleAsync();
+        file.ExcludedByPath.Should().BeFalse("the new path goes through no excluded segment");
+        file.IsIncluded.Should().BeTrue("and nothing else was holding it out");
+
+        var hits = await new FileSearchIndex(probe).SearchAsync(
+            Query("foto", Category: null), CancellationToken.None);
+        hits.Items.Should().ContainSingle("the Catalog and Search agree without waiting for a scan");
+    }
+
+    /// <summary>The other direction is unchanged: a rename INTO an excluded segment records it.</summary>
+    [Fact]
+    public async Task Rename_into_an_excluded_segment_records_the_path_cause()
+    {
+        Seed(oldName: "foto.jpg", newName: "cache", allowedExtensions: [], excludedPaths: ["cache"]);
+
+        await RunRenameAsync();
+
+        await using var probe = _harness.CreateContext();
+        var file = await probe.Files.SingleAsync();
+        file.ExcludedByPath.Should().BeTrue();
+        file.IsIncluded.Should().BeFalse();
+        file.ExcludedByScan.Should().BeFalse("no scan said anything about this row");
+    }
+
+    /// <summary>
+    /// And the asymmetry stands: the ATTRIBUTE cause is still never cleared here, because this call
+    /// cannot see whether a FOLDER above the file is still Hidden. Only the path half became
+    /// two-way, and only because it is knowable from what this method already holds.
+    /// </summary>
+    [Fact]
+    public async Task Rename_out_of_an_excluded_segment_still_leaves_the_scan_cause_alone()
+    {
+        Seed(oldName: "cache", newName: "foto.txt", allowedExtensions: ["txt"],
+             excludedPaths: ["cache"], startsIncluded: false,
+             excludedByPath: true, excludedByScan: true);
+
+        await RunRenameAsync();
+
+        await using var probe = _harness.CreateContext();
+        var file = await probe.Files.SingleAsync();
+        file.ExcludedByPath.Should().BeFalse();
+        file.ExcludedByScan.Should().BeTrue("only a scan retracts what a scan decided");
+        file.IsIncluded.Should().BeFalse("one cause undone is not all of them");
+    }
+
     // ── plumbing ──────────────────────────────────────────────────────────────
 
     private async Task RunRenameAsync()
@@ -161,7 +224,8 @@ public sealed class RenameReclassificationTests : IDisposable
 
     private void Seed(
         string newName, string[]? allowedExtensions = null, bool startsIncluded = true,
-        bool excludedByScan = false)
+        bool excludedByScan = false, string oldName = "foto.jpg", string[]? excludedPaths = null,
+        bool excludedByPath = false)
     {
         using var db = _harness.CreateContext();
 
@@ -170,6 +234,7 @@ public sealed class RenameReclassificationTests : IDisposable
             Id = 1,
             ApiToken = "test",
             DefaultExtensionFilter = [.. allowedExtensions ?? []],
+            ExcludedPaths = [.. excludedPaths ?? []],
         });
 
         db.Volumes.Add(new Volume
@@ -183,9 +248,10 @@ public sealed class RenameReclassificationTests : IDisposable
         });
         db.Files.Add(new FileEntry
         {
-            Id = 1, VolumeId = 1, DirectoryId = 10, Name = "foto.jpg", Extension = "jpg",
+            Id = 1, VolumeId = 1, DirectoryId = 10, Name = oldName,
+            Extension = FileTracert.Business.Filtering.FileFilter.GetExtension(oldName),
             Category = FileCategory.Image, SizeBytes = 10, IsPresent = true, IsIncluded = startsIncluded,
-            ExcludedByScan = excludedByScan,
+            ExcludedByScan = excludedByScan, ExcludedByPath = excludedByPath,
             FileCreatedUtc = DateTime.UtcNow, FileModifiedUtc = DateTime.UtcNow, LastIndexedUtc = DateTime.UtcNow,
         });
 
@@ -198,7 +264,7 @@ public sealed class RenameReclassificationTests : IDisposable
         job.Items.Add(new OperationJobItem
         {
             FileId = 1,
-            SourceRelativePath = @"Media\foto.jpg",
+            SourceRelativePath = @"Media\" + oldName,
             TargetRelativePath = @"Media\" + newName,
             SizeBytes = 10, State = JobItemState.Done,
             CreatedUtc = DateTime.UtcNow, UpdatedUtc = DateTime.UtcNow,
@@ -209,7 +275,7 @@ public sealed class RenameReclassificationTests : IDisposable
         // The index as the scan would have left it before the rename.
         if (startsIncluded)
         {
-            new FileSearchIndex(db).UpsertAsync(1, "foto.jpg", @"Media\foto.jpg", CancellationToken.None)
+            new FileSearchIndex(db).UpsertAsync(1, oldName, @"Media\" + oldName, CancellationToken.None)
                 .GetAwaiter().GetResult();
         }
     }

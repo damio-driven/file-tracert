@@ -251,18 +251,20 @@ public sealed class IndexUpdater
         // The type cause is fully knowable from the new name, so it is recomputed both ways.
         file.ExcludedByType = !FileFilter.IsAllowedType(extension, filter);
 
-        // The perimeter half is only ever SET here, never cleared: this call can see that the new
-        // path now carries an excluded segment, but it cannot see that the folder above the file
-        // is still Hidden. Clearing on "looks fine from here" is how a scan decision gets undone
-        // by something that never looked at the disk. Which rules spoke decides which flags are
-        // raised (step 16) — every one that applies, because they sum, and raising the wrong one
-        // would either pin the row out for ever or hand it to a setting that says nothing about it.
+        // The perimeter's two rules are recomputed differently here, and the asymmetry is the whole
+        // reason step 16 gave the path half a column of its own.
         var perimeter = FileFilter.EvaluatePerimeter(item.TargetRelativePath, file.Attributes, filter);
-        if (perimeter.ExcludedByPath)
-        {
-            file.ExcludedByPath = true;
-        }
 
+        // Fully decidable from what this method already holds — the destination path and the
+        // settings, no disk read — so it is written BOTH ways, like the type cause above. That
+        // decidability is the premise of the column: leaving it pinned would keep a file excluded
+        // after a job carried it out of the excluded place, until some scan happened to pass.
+        file.ExcludedByPath = perimeter.ExcludedByPath;
+
+        // The ATTRIBUTE cause is only ever SET, never cleared: this call sees the file's own
+        // attributes, not that a FOLDER above it is still Hidden. Clearing on "looks fine from
+        // here" is how a scan decision gets undone by something that never looked at the disk —
+        // and it breaks the invariant that keeps the next scan's absence pass off this row.
         if (perimeter.ExcludedByAttributes)
         {
             file.ExcludedByScan = true;
