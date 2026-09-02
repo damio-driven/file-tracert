@@ -124,11 +124,17 @@ public sealed class UsnSyncWorkerTests
         disk[@"Media\new.jpg"] = new FileMetadata(44, T, T);
         reader.Script([Created(201, 100, "new.jpg", usn: 600)], nextUsn: 900);
 
+        // Waiting on the CURSOR and not on the row, and the difference is not cosmetic. The cursor
+        // is written LAST, in a transaction of its own (14d), so a tick that has committed the file
+        // row has not necessarily finished: waiting on the row and then reading LastUsn is a race
+        // the test loses on a loaded machine — and it loses it with exactly the message a torn
+        // fixture produces, "LastUsn one increment behind", which is how one symptom came to have
+        // two causes. The cursor is the one point at which everything asserted below is settled.
         await TestPolling.WaitUntilAsync(async () =>
         {
             using var scope = factory.Services.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<FileTracertDbContext>();
-            return await db.Files.AnyAsync(f => f.Name == "new.jpg");
+            return (await db.Volumes.SingleAsync()).LastUsn == 900;
         });
 
         using var verify = factory.Services.CreateScope();
@@ -140,6 +146,10 @@ public sealed class UsnSyncWorkerTests
         indexed.IsIncluded.Should().BeTrue();
         indexed.IsPresent.Should().BeTrue();
 
+        // The cursor is what the wait above settled on, so this line restates the property rather
+        // than discovering it — a tick that never wrote it fails as a TimeoutException there, which
+        // is still a red and a clearer one. The journal id beside it is not restated anywhere: a
+        // position without the instance it belongs to is not a cursor (§4).
         var volume = await verifyDb.Volumes.SingleAsync();
         volume.LastUsn.Should().Be(900, "the cursor moves only once the delta is applied");
         volume.UsnJournalId.Should().Be(7);
@@ -207,11 +217,14 @@ public sealed class UsnSyncWorkerTests
             {
                 using var _ = factory.CreateClient();
 
+                // The cursor again, for the reason given in the first case: the row lands one
+                // transaction before it, and this is the assertion that read 700 on a loaded
+                // machine while `two.jpg` was already in the catalog.
                 await TestPolling.WaitUntilAsync(async () =>
                 {
                     using var scope = factory.Services.CreateScope();
                     var db = scope.ServiceProvider.GetRequiredService<FileTracertDbContext>();
-                    return await db.Files.AnyAsync(f => f.Name == "two.jpg");
+                    return (await db.Volumes.SingleAsync()).LastUsn == 1100;
                 });
 
                 using var verify = factory.Services.CreateScope();
@@ -268,8 +281,19 @@ public sealed class UsnSyncWorkerTests
             return await db.Notifications.AnyAsync(n => n.Source == "Scan");
         });
 
-        // Several more cycles. The requested full scan re-establishes a cursor under the new id,
-        // so what must not repeat is the WARNING, not the reading.
+        // The requested full scan re-establishes a cursor under the new id. Waited for, not slept
+        // through: a fixed slice of wall clock is "several cycles" only on a machine that is not
+        // busy, and this assertion was one of the ones that reddened on a loaded one.
+        await TestPolling.WaitUntilAsync(async () =>
+        {
+            using var scope = factory.Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<FileTracertDbContext>();
+            var v = await db.Volumes.SingleAsync();
+            return v.UsnJournalId == 4242 && v.LastUsn == 500;
+        });
+
+        // …and only THEN several more cycles, because what must not repeat is the WARNING, not the
+        // reading — and that is a claim about time passing with nothing being written.
         await Task.Delay(2500);
 
         using var verify = factory.Services.CreateScope();
