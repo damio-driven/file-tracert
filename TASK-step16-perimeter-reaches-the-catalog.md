@@ -319,6 +319,19 @@ Se un file porta più preoccupazioni, staging a livello di hunk (`git add -p`).
   stato **misto** che *nessuna delle due strade produce da sola* — il sottoalbero escluso, e dentro
   di esso le righe che nel frattempo qualcuno ha scritto, rientrate.
 
+  **E il buco ha una seconda metà, che non è «non rimuove» ma «fa crescere»** *(trovata dalla
+  seconda passata di review; il paragrafo qui sopra si leggeva come esaustivo e non lo era)*. Sopra
+  si parla di righe **già a catalogo** che rientrano. Una **sottocartella nuova**, creata dentro la
+  cartella nascosta in un tick successivo, non ha nemmeno una riga da riammettere: `Classify` la
+  giudica sui **propri** attributi, che sono puliti, `EvaluatePerimeter` risponde `IsInside`, finisce
+  in `directories`, `DirectoryMerger.EnsureAsync` **inserisce la riga**, e i file creati lì dentro
+  passano `insidePerimeter` e vengono **indicizzati**. Il secondo passo del C16
+  (`directories.RemoveAll(d => perimeter.IsExcluded(d.Path))`) non la ferma, perché `perimeter`
+  conosce solo i sottoalberi esclusi da **questo** delta e questo delta non nomina la cartella
+  nascosta. Quindi il catalogo non si limita a **riammettere** dentro il sottoalbero escluso: ci
+  **cresce** dentro. Stessa radice, stesso verdetto «fuori da questo task» — e la stessa
+  riparazione, cioè la prima scansione completa del volume.
+
   **Chiuderlo richiede un fatto che il catalogo non ha**: nessuna riga dice «questa cartella è
   nascosta» — le `Directories` non hanno un flag di inclusione, ed è la decisione di prodotto di
   11g — e l'alternativa è leggere gli attributi dal disco per ogni file di ogni delta. Entrambe

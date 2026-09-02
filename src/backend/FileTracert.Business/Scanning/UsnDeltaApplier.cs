@@ -621,9 +621,19 @@ public sealed class UsnDeltaApplier
             // produces on its own: the subtree excluded, and the rows that happened to be written
             // since back inside it.
             //
+            // The hole has a second half, and it is not "fails to remove" but "adds". A NEW
+            // subdirectory created inside that hidden folder has no catalogued row to re-admit:
+            // Classify judges it on its OWN clean attributes, EvaluatePerimeter answers IsInside, it
+            // lands in `directories`, DirectoryMerger inserts the row, and files created under it
+            // are indexed. The C16 second pass does not stop it either — `perimeter` only knows the
+            // subtrees THIS delta excluded, and this delta does not name the hidden folder. So the
+            // catalog does not merely let rows back inside the excluded subtree: it GROWS inside it.
+            //
             // Closing it needs a fact the catalog does not have. No row says "that folder is
             // hidden" — Directories carry no inclusion flag, which is the product decision of 11g
             // — and the alternative is a disk read per file per delta. Both are outside this step.
+            // The full scan repairs both halves, because it asks the perimeter about every directory
+            // it walks.
         }
 
         // FIRST, and the ordering is the scan's own trick (see
