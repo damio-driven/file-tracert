@@ -47,6 +47,8 @@ public sealed class ExcludedSubtrees
 {
     private readonly Dictionary<string, PerimeterVerdict> _roots = new(StringComparer.OrdinalIgnoreCase);
 
+    public ExcludedSubtrees() => Roots = _roots.AsReadOnly();
+
     public int Count => _roots.Count;
 
     /// <summary>
@@ -82,8 +84,16 @@ public sealed class ExcludedSubtrees
     /// union is reached by processing the entries rather than by pre-computing it into each one.
     /// <see cref="VerdictFor"/> exists for the opposite shape of question — one path, asked in
     /// isolation, whose ancestors will never be visited.</para>
+    ///
+    /// <para>A wrapper and not <c>_roots</c> itself: an <see cref="IReadOnlyDictionary{TKey,TValue}"/>
+    /// that IS the live <see cref="Dictionary{TKey,TValue}"/> can be cast straight back to one and
+    /// written through, which would put a second door on the union <see cref="Add"/> exists to
+    /// guarantee. Held in a field rather than built per call because the only caller asks twice per
+    /// tick and this type is on the scan's hot path (E7). It stays a live VIEW — the set is still
+    /// being filled while the scan runs, and a caller that wanted a frozen copy would have to say
+    /// so.</para>
     /// </summary>
-    public IReadOnlyDictionary<string, PerimeterVerdict> Roots => _roots;
+    public IReadOnlyDictionary<string, PerimeterVerdict> Roots { get; }
 
     /// <summary>
     /// True when <paramref name="relativePath"/> is, or lives under, an excluded directory. Its own

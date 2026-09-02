@@ -290,6 +290,25 @@ public class FileFilterTests
         excluded.Covers(path).Should().Be(covered);
     }
 
+    /// <summary>
+    /// The view the delta walks must not be a door back into the set. Handing out the live
+    /// dictionary made <c>Roots</c> castable straight to <see cref="IDictionary{TKey,TValue}"/> and
+    /// writable through it — the same fragility that was taken out of <c>Add</c>, which unions
+    /// rather than replaces so that no caller's habit can silently drop a cause.
+    /// </summary>
+    [Fact]
+    public void Excluded_subtree_roots_are_a_view_and_not_a_way_in()
+    {
+        var excluded = new ExcludedSubtrees();
+        excluded.Add("Secret", new PerimeterVerdict(false, false, ExcludedByAttributes: true));
+
+        var writeThrough = () => ((IDictionary<string, PerimeterVerdict>)excluded.Roots).Clear();
+
+        writeThrough.Should().Throw<NotSupportedException>();
+        excluded.Count.Should().Be(1);
+        excluded.Roots.Should().ContainKey("Secret");
+    }
+
     [Fact]
     public void Excluded_subtree_set_ignores_the_volume_root()
     {
