@@ -87,11 +87,15 @@ public sealed class ExclusionCauseTests
 
     /// <summary>The same screen, both halves of the filter: allowed types and excluded segments.</summary>
     private static async Task<ReconcileResultDto> SetFilterAsync(
-        SqliteInMemoryContext harness, string[] extensions, string[] excludedPaths)
+        SqliteInMemoryContext harness,
+        string[] extensions,
+        string[] excludedPaths,
+        FakeNotificationPublisher? notifications = null)
     {
         await using var ctx = harness.CreateContext();
         var service = new FilterSettingsService(
             ctx, new FilterReconciler(ctx, new FileSearchIndex(ctx)),
+            notifications ?? new FakeNotificationPublisher(),
             NullLogger<FilterSettingsService>.Instance);
         return await service.UpdateAsync(
             new FilterSettingsDto(extensions.ToList(), excludedPaths.ToList()), CancellationToken.None);
@@ -564,6 +568,97 @@ public sealed class ExclusionCauseTests
 
         result.IncludedCount.Should().Be(1);
         result.ExcludedCount.Should().Be(1, "the numbers on the screen have to count this root");
+    }
+
+    /// <summary>
+    /// A root whose override does not parse is reconciled against the DEFAULT filter, and that is
+    /// not a harmless fallback: the default allow-list can be narrower than the override the user
+    /// wrote, so pressing Save excludes in bulk every row whose extension the override admitted.
+    /// The exception was logged in full — half of §9 — and nothing reached the screen, while the
+    /// counts reported the exclusion as if it were what had been asked for.
+    ///
+    /// <para>Before this round those roots were skipped entirely, so the fallback could not misfire;
+    /// reconciling all of them (which is what makes the global excluded segments reach them) is what
+    /// put it in the path.</para>
+    /// </summary>
+    [Fact]
+    public async Task A_malformed_override_is_reported_to_the_user_and_not_only_to_the_log()
+    {
+        using var harness = new SqliteInMemoryContext();
+
+        // The default allow-list starts empty ("every type"), so the row exists before Save narrows
+        // it: the point is what the SAVE does to a root whose own allow-list nobody can read.
+        var volumeId = Seed(harness, [], rootPath: "Photos");
+
+        await using (var arrange = harness.CreateContext())
+        {
+            var root = await arrange.WatchedRoots.SingleAsync();
+            root.FilterOverrideJson = """{ "extensions": ["jpg", "txt"  """;
+            await arrange.SaveChangesAsync();
+        }
+
+        await ScanAsync(harness, volumeId,
+            Dir("Photos", "Photos"),
+            File(@"Photos\note.txt", "note.txt"));
+
+        var notifications = new FakeNotificationPublisher();
+        await SetFilterAsync(harness, ["jpg"], [], notifications);
+
+        await using (var read = harness.CreateContext())
+        {
+            (await read.Files.SingleAsync(f => f.Name == "note.txt")).IsIncluded.Should().BeFalse(
+                "arrange: the default allow-list is narrower than the override, so the row goes out");
+        }
+
+        var raised = notifications.Published.Should().ContainSingle(
+            "the user pressed Save and rows were excluded against a filter they did not choose").Subject;
+        raised.Severity.Should().Be(NotificationSeverity.Warning);
+        raised.Source.Should().Be("Setup");
+        raised.VolumeId.Should().Be(volumeId);
+        raised.Title.Should().Contain("Photos");
+    }
+
+    /// <summary>
+    /// Two watched roots may overlap, and an INACTIVE one stamps <c>ExcludedByRoot</c> over its whole
+    /// subtree. Reconciling them in the order the rows happen to come back therefore let a later
+    /// inactive root overwrite the <c>IsIncluded = 1</c> an earlier active one had just written — the
+    /// files simply disappear from the Catalog. The risk pre-dates this round for roots on the
+    /// default filter; reconciling ALL roots opened it to the overridden ones too.
+    ///
+    /// <para>Fixed by making the ORDER irrelevant: inactive first, active last. The proper answer is
+    /// to decide every row against the union of the active roots once, which is a round of its own.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task An_inactive_root_does_not_overwrite_an_active_one_that_overlaps_it()
+    {
+        using var harness = new SqliteInMemoryContext();
+
+        // Root 1: the whole volume, ACTIVE. Root 2: a subtree of it, INACTIVE, and later by Id.
+        var volumeId = Seed(harness, ["jpg"]);
+        await using (var arrange = harness.CreateContext())
+        {
+            arrange.WatchedRoots.Add(new WatchedRoot
+            {
+                VolumeId = volumeId,
+                RelativePath = "Photos",
+                IsActive = false,
+                FilterOverrideJson = """{ "extensions": ["jpg"] }""",
+            });
+            await arrange.SaveChangesAsync();
+        }
+
+        await ScanAsync(harness, volumeId,
+            Dir("Photos", "Photos"),
+            File(@"Photos\holiday.jpg", "holiday.jpg"));
+
+        await SetFilterAsync(harness, ["jpg"], []);
+
+        await using var read = harness.CreateContext();
+        var row = await read.Files.SingleAsync(f => f.Name == "holiday.jpg");
+        row.ExcludedByRoot.Should().BeFalse("an ACTIVE root governs this file, whatever else overlaps it");
+        row.IsIncluded.Should().BeTrue("and it must not vanish from the Catalog because of a root order");
+        (await SearchAsync(harness, "holiday")).Should().HaveCount(1, "Search has to agree");
     }
 
     /// <summary>
