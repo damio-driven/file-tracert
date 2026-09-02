@@ -276,3 +276,30 @@ internal sealed class FakeFileSearchIndex : IFileSearchIndex
     public Task<PagedResult<int>> SearchAsync(FileSearchQuery query, CancellationToken ct)
         => Task.FromResult(new PagedResult<int>([], 0, query.Skip, query.Take));
 }
+
+/// <summary>
+/// The real index with ONE fault injected: <see cref="SyncDirectoriesAsync"/> throws. Everything
+/// else reads and writes through to <paramref name="inner"/>, so the failure is a failure of that
+/// call and not of a stand-in for the component under test.
+///
+/// <para>It exists to reach a property no ordinary case can: that a pass writing exclusion flags
+/// and pruning the index for the same directories does BOTH or NEITHER. Crash injection would say
+/// the same thing and cannot be written deterministically; a throw at the second half is the same
+/// window with a repeatable edge, because the transaction the caller opened is the thing being
+/// measured and an exception unwinds it exactly as a crash would leave it uncommitted.</para>
+/// </summary>
+internal sealed class ExplodingDirectorySyncIndex(IFileSearchIndex inner) : IFileSearchIndex
+{
+    public Task ClearVolumeAsync(int volumeId, CancellationToken ct) => inner.ClearVolumeAsync(volumeId, ct);
+    public Task SyncVolumeFromDbAsync(int volumeId, CancellationToken ct) => inner.SyncVolumeFromDbAsync(volumeId, ct);
+    public Task RebuildAsync(CancellationToken ct) => inner.RebuildAsync(ct);
+    public Task<long> CountEntriesAsync(CancellationToken ct) => inner.CountEntriesAsync(ct);
+    public Task SyncFilesAsync(IReadOnlyCollection<int> fileIds, CancellationToken ct) => inner.SyncFilesAsync(fileIds, ct);
+    public Task PruneVolumeAsync(int volumeId, CancellationToken ct) => inner.PruneVolumeAsync(volumeId, ct);
+    public Task UpsertAsync(int fileId, string name, string path, CancellationToken ct) => inner.UpsertAsync(fileId, name, path, ct);
+    public Task RemoveAsync(int fileId, CancellationToken ct) => inner.RemoveAsync(fileId, ct);
+    public Task<PagedResult<int>> SearchAsync(FileSearchQuery query, CancellationToken ct) => inner.SearchAsync(query, ct);
+
+    public Task SyncDirectoriesAsync(IReadOnlyCollection<int> directoryIds, CancellationToken ct) =>
+        throw new InvalidOperationException("the search index refused this directory sync");
+}

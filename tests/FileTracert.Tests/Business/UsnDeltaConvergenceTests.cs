@@ -488,6 +488,103 @@ public sealed class UsnDeltaConvergenceTests
     }
 
     /// <summary>
+    /// The atomicity the pass's own documentation promises — <i>the flags and the index prune for
+    /// the same directories land together or not at all</i> — asserted instead of asserted-in-a-
+    /// comment. Nothing else in the suite holds it: moving the index call to AFTER
+    /// <c>CommitAsync</c>, inside the same <c>if</c>, leaves every case here green, the statement
+    /// counts unmoved and the end state unmoved, because on a run that does not fail the two
+    /// orderings are indistinguishable.
+    ///
+    /// <para><b>They are not indistinguishable on a run that does fail, and the damage is
+    /// permanent rather than transient.</b> Under that ordering a failure between the two lands
+    /// committed flags and an untouched index; the retry then finds the rows already excluded, so
+    /// the pass's <c>written &gt; 0</c> guard reads zero, skips the prune, and the index stays
+    /// stale until <c>PruneVolumeAsync</c> of some future full scan. Files inside the hidden folder
+    /// go on answering searches while <c>Files</c> declares them excluded. The guard is sound only
+    /// because a chunk that failed left nothing behind — it is the transaction that makes "no row
+    /// changed" mean "nothing this pass could have made stale is stale".</para>
+    ///
+    /// <para>Fault injection, not a mock of the pass: the real <see cref="FileSearchIndex"/> on
+    /// both runs, with one call replaced by a throw. That is the same window a crash opens, with a
+    /// deterministic edge — an exception unwinds the caller's transaction exactly as a crash leaves
+    /// it uncommitted — and it is the only shape of this proof that does not need a process to
+    /// die.</para>
+    ///
+    /// <para>The retry needs no arrangement: the cursor is written LAST (14d), so a tick that threw
+    /// never checkpointed and the journal re-offers the very same delta. That is the crash-safety
+    /// property being leaned on here, and it is the reason a delta may be repeated but never
+    /// skipped.</para>
+    /// </summary>
+    [Fact]
+    public async Task A_failed_index_prune_takes_the_flags_written_beside_it_down_with_it()
+    {
+        using var harness = new SqliteInMemoryContext();
+        using (var create = harness.CreateContext())
+        {
+            SqliteFts.Create(create);
+        }
+
+        var before = SubtreeWorld();
+        var reader = ReaderFor(before);
+        var volumeId = await SeedAndScanAsync(harness, reader, before, realSearchIndex: true);
+
+        var after = Replace(before, 140, i => i with
+        {
+            Attributes = FileAttributes.Directory | FileAttributes.Hidden,
+        });
+        reader.Script([Change(after, 140, UsnReason.BasicInfoChange | UsnReason.Close)], nextUsn: 900);
+
+        await using (var ctx = harness.CreateContext())
+        {
+            var applier = BuildApplier(
+                ctx, reader, MetadataFor(after), new ExplodingDirectorySyncIndex(new FileSearchIndex(ctx)));
+
+            var run = async () => await applier.SyncVolumeAsync(volumeId, default);
+            await run.Should().ThrowAsync<InvalidOperationException>(
+                "the pass does not swallow a failing index — a half-applied exclusion must not be "
+                + "reported as a completed tick");
+        }
+
+        await using (var read = harness.CreateContext())
+        {
+            foreach (var frn in (long[])[205, 206])
+            {
+                var row = await read.Files.SingleAsync(f => f.UsnFileRef == frn);
+                row.IsIncluded.Should().BeTrue(
+                    "the flags share the chunk's transaction with the prune that failed, so they "
+                    + "must have rolled back with it — a committed flag here is a row the retry's "
+                    + "written-count guard would then decline to prune out of the index, for ever");
+            }
+        }
+
+        SqliteFts.Rows(harness).Select(r => r.Path).Should().BeEquivalentTo(
+            [@"Photos\keep.jpg", @"Photos\Cache\b.jpg", @"Photos\Cache\Sub\c.jpg"],
+            "the prune never ran, and the catalog agrees with the index: both still say included");
+
+        await using (var ctx = harness.CreateContext())
+        {
+            var result = await BuildApplier(ctx, reader, MetadataFor(after), new FileSearchIndex(ctx))
+                .SyncVolumeAsync(volumeId, default);
+            result.Status.Should().Be(UsnSyncStatus.Applied);
+        }
+
+        await using (var read = harness.CreateContext())
+        {
+            foreach (var frn in (long[])[205, 206])
+            {
+                var row = await read.Files.SingleAsync(f => f.UsnFileRef == frn);
+                row.IsIncluded.Should().BeFalse("the retry re-decided the same subtree from scratch");
+                row.ExcludedByScan.Should().BeTrue();
+                row.IsPresent.Should().BeTrue("an exclusion is not an absence (§6)");
+            }
+        }
+
+        SqliteFts.Rows(harness).Select(r => r.Path).Should().Equal([@"Photos\keep.jpg"],
+            "a clean retry after a failed one must reach the index too, which it can only do if the "
+            + "failed attempt left the rows for it to move");
+    }
+
+    /// <summary>
     /// One folder, BOTH perimeter rules: hidden, and under a segment the user excluded in the same
     /// window. It is the case the two structural decisions of this round were made for, and until
     /// now nothing in the suite was holding either of them.
