@@ -106,11 +106,16 @@ public sealed partial class BulkIndexWriter
     /// are staged the same way the merge stages its batch — a per-connection TEMP table — so the
     /// pass stays one UPDATE PER CAUSE whatever the number of rows behind those areas.
     ///
-    /// <para>Two statements rather than one because the two causes are undone by different people
-    /// (step 11h) and a row must carry the one that is true of it. A single UPDATE could set both
-    /// flags with correlated CASE subqueries, at the price of asking the staging table three times
-    /// per row instead of once; a cause with no areas costs nothing here, and the common shape of a
-    /// scan closure is one cause or none at all.</para>
+    /// <para>One statement PER CAUSE rather than one overall, because the causes are undone by
+    /// different people (step 11h, and step 16 for the path half) and a row must carry every one
+    /// that is true of it. A single UPDATE could set all the flags with correlated CASE subqueries,
+    /// at the price of asking the staging table once per flag per row instead of once; a cause with
+    /// no areas costs nothing here, and the common shape of a scan closure is one cause or none.
+    /// This is also why an item rejected by BOTH perimeter rules can stage two areas for free: they
+    /// fall into statements that were going to run anyway.</para>
+    ///
+    /// <para>The returned tally is the sum of rows touched per statement, so such an item counts
+    /// twice in it. It feeds a log line, never a decision.</para>
     /// </summary>
     private static async Task<int> ExcludeSkippedAsync(
         SqliteConnection conn, SqliteTransaction? tx, int volumeId,

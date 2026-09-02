@@ -39,9 +39,18 @@ public sealed record EffectiveFilter(
     /// <para><see cref="FilterReconciler.FilterWidened"/> compares these lists, so it gets the same
     /// answer for free: dropping <c>Windows\</c> in favour of <c>Windows</c> is not a widening.
     /// </para>
+    ///
+    /// <para>Normalizing in the <c>init</c> accessor rather than in a property initializer so that a
+    /// <c>with</c> expression cannot slip a raw list past it either — the whole point is that there
+    /// is no way to hold an EffectiveFilter whose two readers would disagree.</para>
     /// </summary>
-    public IReadOnlyList<string> ExcludedPathSegments { get; init; } =
-        NormalizeSegments(ExcludedPathSegments);
+    public IReadOnlyList<string> ExcludedPathSegments
+    {
+        get => _excludedPathSegments;
+        init => _excludedPathSegments = NormalizeSegments(value);
+    }
+
+    private readonly IReadOnlyList<string> _excludedPathSegments = NormalizeSegments(ExcludedPathSegments);
 
     /// <summary>
     /// Trims whitespace (no Windows path component may carry it, and the user who typed it meant

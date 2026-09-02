@@ -63,6 +63,24 @@ public class FileFilterTests
     }
 
     /// <summary>
+    /// The normalization lives on the VALUE, so there is no way to hold an
+    /// <see cref="EffectiveFilter"/> whose two readers — the scan in memory and the reconciler in
+    /// SQL — would disagree about a segment. A <c>with</c> expression is the other door, and it goes
+    /// through the same accessor.
+    /// </summary>
+    [Fact]
+    public void An_effective_filter_cannot_hold_an_unnormalized_segment()
+    {
+        var built = Filter(excludedSegments: [@"Windows\", " AppData ", @"\Temp", "", "   ", "windows"]);
+
+        // Trimmed, folded, emptied and de-duplicated — once, for both halves.
+        built.ExcludedPathSegments.Should().Equal("Windows", "AppData", "Temp");
+
+        (built with { ExcludedPathSegments = [@"Program Files\"] }).ExcludedPathSegments
+            .Should().Equal("Program Files");
+    }
+
+    /// <summary>
     /// The segment is matched between separators, which is the SQL side's frame — so the four
     /// boundary cases (first, last, middle, whole path) are one case, a segment never matches a
     /// prefix of a longer name, and a MULTI-PART segment matches the sequence instead of never
