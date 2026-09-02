@@ -720,11 +720,13 @@ public sealed class UsnDeltaApplier
     /// (another attribute write, a rename, a security change) and being re-decided over a subtree
     /// that is already out; nested or duplicate entries within one tick, where an excluded
     /// directory under another excluded directory covers the same rows a second time; and replay,
-    /// a delta re-offered after a crash reaching all of them again. The guard is sound
-    /// because this pass changes exactly one thing about a row, <c>IsIncluded</c>: if no row
-    /// changed, nothing this pass could have made stale is stale — which is a statement about THIS
-    /// pass, not a promise that nobody else makes the index stale (see the KNOWN HOLE in
-    /// <see cref="ReconcileAsync"/>).</para>
+    /// a delta re-offered after a crash reaching all of them again. The guard is sound because of
+    /// the columns this pass writes. It writes three — the cause's own flag, <c>IsIncluded</c>, and
+    /// the row's audit stamp — and of those three <c>FileSearchIndex.IndexableSql</c> reads exactly
+    /// one, <c>IsIncluded</c>. So a pass that updated no row cannot have moved anything the index's
+    /// membership is a function of, and nothing it could have made stale is stale — which is a
+    /// statement about THIS pass, not a promise that nobody else makes the index stale (see the
+    /// KNOWN HOLE in <see cref="ReconcileAsync"/>).</para>
     ///
     /// <para><b>Not</b> what an earlier version of this note claimed, and worth leaving written
     /// down because it is the plausible-sounding one: a NEW subdirectory created inside the
