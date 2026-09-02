@@ -687,7 +687,7 @@ public sealed class UsnDeltaApplier
 
                 foreach (var cause in verdict)
                 {
-                    excluded += await ExcludeForCauseAsync(rows, cause, DateTime.UtcNow, ct);
+                    excluded += await ExcludeForCauseAsync(rows, cause, now, ct);
                 }
             }
 
