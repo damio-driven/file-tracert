@@ -671,6 +671,64 @@ public sealed class ExclusionCauseTests
     }
 
     /// <summary>
+    /// The same rule, one level up: the causes of an excluded ancestor are inherited by everything
+    /// below it, and a NESTED excluded folder must not shadow them.
+    ///
+    /// <para>The two perimeter rules are inherited differently, and that is exactly what makes this
+    /// bite. A path segment re-derives itself at every depth — the segment is in the descendant's
+    /// own path — while an ATTRIBUTE is recorded only on the folder that actually carries
+    /// Hidden/System. So a hidden folder containing a folder excluded for its path used to answer
+    /// with the deeper verdict alone, and the attribute cause vanished for the whole subtree
+    /// underneath: drop the segment and the content of a HIDDEN folder walks back into the Catalog
+    /// with no scan. Same defect as
+    /// <see cref="A_folder_that_fails_both_rules_records_both_causes"/>, surviving one level up.</para>
+    ///
+    /// <para>It is the shape the product ships with, not a contrived one: <c>DatabaseInitializer</c>
+    /// seeds <c>AppData</c> as an excluded segment, and <c>%USERPROFILE%\AppData</c> is Hidden on
+    /// Windows while <c>AppData\Local</c> under it is not.</para>
+    /// </summary>
+    [Fact]
+    public async Task A_nested_excluded_folder_does_not_shadow_its_ancestors_causes()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, ["jpg"]);
+
+        // Secret is the one carrying the attribute; Cache underneath carries only the segment.
+        ScanEntry[] Entries(FileAttributes secret) =>
+        [
+            Dir("Secret", "Secret", secret),
+            Dir(@"Secret\Cache", "Cache"),
+            File(@"Secret\Cache\deep.jpg", "deep.jpg"),
+        ];
+
+        await ScanAsync(harness, volumeId, Entries(FileAttributes.None));
+
+        await SetFilterAsync(harness, ["jpg"], ["Cache"]);
+        await ScanAsync(harness, volumeId, Entries(FileAttributes.Hidden));
+
+        await using (var scanned = harness.CreateContext())
+        {
+            var deep = await scanned.Files.SingleAsync(f => f.Name == "deep.jpg");
+            deep.ExcludedByPath.Should().BeTrue("its own path goes through the excluded segment");
+            deep.ExcludedByScan.Should().BeTrue(
+                "and it sits INSIDE a hidden folder — the nearer exclusion does not repeal that one");
+            deep.IsIncluded.Should().BeFalse();
+        }
+
+        // The user drops the segment. The hidden folder is untouched and nothing in Setup can know
+        // whether it is still hidden, so its content must stay out.
+        await SetFilterAsync(harness, ["jpg"], []);
+
+        await using var read = harness.CreateContext();
+        var row = await read.Files.SingleAsync(f => f.Name == "deep.jpg");
+        row.ExcludedByPath.Should().BeFalse("the setting that raised it is gone");
+        row.IsIncluded.Should().BeFalse(
+            "the content of a hidden folder must not come back because an unrelated segment was dropped");
+        row.IsPresent.Should().BeTrue("an exclusion is never an absence (§6)");
+        (await SearchAsync(harness, "deep")).Should().BeEmpty("and Search must agree with the Catalog");
+    }
+
+    /// <summary>
     /// The same summing, on the OTHER pipeline path: a file the scan steps over one by one, rather
     /// than a whole subtree. <c>ScanPerimeter.SkipFile</c> is a list, so a file rejected by both
     /// rules emits two areas — and the closing pass runs one statement per distinct cause, never one

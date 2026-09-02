@@ -61,9 +61,12 @@ public sealed class ScanPerimeter
 
     /// <summary>
     /// True when the scan looked at <paramref name="relativePath"/>: inside an active root and not
-    /// under an excluded subtree.
+    /// under an excluded subtree. Spelled through the yes/no walk rather than
+    /// <c>SkipVerdict(...).IsInside</c>: the verdict has to union every excluded ancestor, while a
+    /// caller that only wants "inside or outside?" can stop at the first one.
     /// </summary>
-    public bool Covers(string relativePath) => SkipVerdict(relativePath).IsInside;
+    public bool Covers(string relativePath) =>
+        _roots.Governing(relativePath) is not null && !_excluded.Covers(relativePath);
 
     /// <summary>
     /// Why the scan did not look at <paramref name="relativePath"/>, or
@@ -75,7 +78,9 @@ public sealed class ScanPerimeter
     /// ATTRIBUTES is a fact about the disk, and only another scan can retract it. Asking the roots
     /// first is a real precedence — an item outside every active root was never offered to the
     /// filter at all, so it cannot have been "filtered out". Between the two FILTER rules there is
-    /// no precedence: both are recorded when both apply (<see cref="PerimeterVerdict"/>).</para>
+    /// no precedence: both are recorded when both apply (<see cref="PerimeterVerdict"/>), and that
+    /// holds across DEPTH too — the answer is the union of every excluded ancestor, not the nearest
+    /// one (<see cref="ExcludedSubtrees.VerdictFor"/>).</para>
     /// </summary>
     public PerimeterVerdict SkipVerdict(string relativePath) =>
         _roots.Governing(relativePath) is null

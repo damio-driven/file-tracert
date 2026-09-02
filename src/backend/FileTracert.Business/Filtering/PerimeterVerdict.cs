@@ -42,6 +42,17 @@ public readonly record struct PerimeterVerdict(
 
     public bool IsInside => !InactiveRoot && !ExcludedByPath && !ExcludedByAttributes;
 
+    /// <summary>
+    /// Every cause of both verdicts. The operation the "causes sum" rule needs whenever two
+    /// verdicts apply to the same row — which happens as soon as one excluded directory sits under
+    /// another (see <c>ExcludedSubtrees.VerdictFor</c>): taking either one alone drops a cause, and
+    /// a dropped cause is a row that comes back the moment its surviving cause is undone.
+    /// </summary>
+    public PerimeterVerdict Union(PerimeterVerdict other) => new(
+        InactiveRoot || other.InactiveRoot,
+        ExcludedByPath || other.ExcludedByPath,
+        ExcludedByAttributes || other.ExcludedByAttributes);
+
     /// <summary>The causes this verdict carries, in no significant order and without allocating.</summary>
     public Enumerator GetEnumerator() => new(this);
 
