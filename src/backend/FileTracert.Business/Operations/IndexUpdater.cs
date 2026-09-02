@@ -310,7 +310,17 @@ public sealed class IndexUpdater
             RepointToVolume(file, targetVolumeId);
 
         await _db.SaveChangesAsync(ct);
-        await _fts.UpsertAsync(file.Id, file.Name, item.TargetRelativePath, ct);
+
+        // The same guard RenameFileIndexAsync carries, and for the same reason: what belongs in the
+        // index is what FileSearchIndex.IndexableSql says belongs in it, and a naked upsert here put
+        // an EXCLUDED row back — Files saying the file is outside the perimeter while Search went on
+        // handing it to the user. This method does NOT re-decide the perimeter (the Move handlers
+        // write no cause at all; that gap is declared, not closed here) — it only stops contradicting
+        // the columns the row already carries.
+        if (file.IsIncluded && file.IsPresent)
+            await _fts.UpsertAsync(file.Id, file.Name, item.TargetRelativePath, ct);
+        else
+            await _fts.RemoveAsync(file.Id, ct);
     }
 
     private async Task MoveFolderIndexAsync(

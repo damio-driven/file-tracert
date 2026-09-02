@@ -362,6 +362,90 @@ public sealed class IndexUpdaterTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// The one FTS writer in this class that did not ask whether the row belongs in the index.
+    /// Every other handler respects <c>FileSearchIndex.IndexableSql</c> — <c>RenameFileIndexAsync</c>
+    /// asks in so many words, and the Copy, cross-volume MoveFolder and cancel-reconciliation paths
+    /// go through <c>SyncFilesAsync</c>, which applies the predicate in SQL. <c>MoveFileIndexAsync</c>
+    /// issued a naked upsert, so a completed MoveFile put an EXCLUDED row back into the index: Files
+    /// says the file is outside the perimeter and Search hands it to the user anyway.
+    ///
+    /// <para>It matters more since the delta grew a subtree pass. That pass skips the index when no
+    /// row moved — sound of itself, and it means the delta has stopped being the accidental repair
+    /// of staleness introduced elsewhere. Sequence: a MoveFile is queued on a file under
+    /// <c>Photos\Cache</c>; a tick excludes that folder and prunes its entries; the job completes and
+    /// this handler puts the entry back; every later tick writes no rows and therefore skips the
+    /// prune. Only a full scan's <c>PruneVolumeAsync</c> clears it.</para>
+    ///
+    /// <para>The fix is the guard <c>RenameFileIndexAsync</c> already carries, and deliberately no
+    /// more: this round does not give the Move handlers a perimeter CAUSE — that is declared in the
+    /// task's limits and stays there. It only stops them contradicting the column the row already
+    /// has.</para>
+    /// </summary>
+    [Fact]
+    public async Task MoveFile_does_not_put_an_excluded_row_back_into_the_search_index()
+    {
+        using (var db = _harness.CreateContext())
+        {
+            SeedVolumes(db);
+            db.Directories.AddRange(
+                Dir(50, SrcVol, "Docs", "Docs"),
+                Dir(60, TgtVol, "Archive", "Archive"));
+
+            // Outside the perimeter before the job runs — the state a subtree exclusion leaves
+            // behind, written the way the product writes it: the cause, and IsIncluded derived.
+            var excluded = File(1, SrcVol, 50, "report.txt", 42);
+            excluded.ExcludedByPath = true;
+            excluded.IsIncluded = false;
+            db.Files.Add(excluded);
+
+            // The control: an ordinary included file moved by the same handler must still be
+            // findable where it now lives, or the guard would be indistinguishable from deleting
+            // the upsert.
+            db.Files.Add(File(2, SrcVol, 50, "notes.txt", 43));
+
+            var job = Job(JobType.MoveFile, @"Archive\report.txt");
+            job.Items.Add(Item(1, @"Docs\report.txt", @"Archive\report.txt"));
+            db.OperationJobs.Add(job);
+
+            var second = Job(JobType.MoveFile, @"Archive\notes.txt");
+            second.SequenceOrder = 2;
+            second.Items.Add(Item(2, @"Docs\notes.txt", @"Archive\notes.txt"));
+            db.OperationJobs.Add(second);
+            db.SaveChanges();
+        }
+
+        // Index the catalog the way a scan would: the excluded row gets no entry, which is what
+        // makes "the move put it back" observable rather than assumed.
+        await using (var db = _harness.CreateContext())
+        {
+            await new FileSearchIndex(db).RebuildAsync(CancellationToken.None);
+        }
+
+        FtsRows().Select(r => r.Rowid).Should().Equal([2],
+            "a row outside the perimeter is not indexable in the first place");
+
+        await using (var db = _harness.CreateContext())
+        {
+            foreach (var job in await db.OperationJobs.Include(j => j.Items).OrderBy(j => j.SequenceOrder).ToListAsync())
+            {
+                await TestProjection.Index(db, new FileSearchIndex(db))
+                    .UpdateAfterCompletionAsync(job, CancellationToken.None);
+            }
+        }
+
+        await using (var probe = _harness.CreateContext())
+        {
+            // The move happened: this is about the index, not about refusing to do the work.
+            (await probe.Files.SingleAsync(f => f.Id == 1)).DirectoryId.Should().Be(60);
+            (await probe.Files.SingleAsync(f => f.Id == 1)).IsIncluded.Should().BeFalse(
+                "nothing here re-decides the perimeter");
+        }
+
+        FtsRows().Should().Equal([(2, "notes.txt", @"Archive\notes.txt")],
+            "the excluded row must stay out of the index, and the included one must follow the move");
+    }
+
     // ── seed helpers ──────────────────────────────────────────────────────────
 
     private static void SeedVolumes(FileTracert.Data.FileTracertDbContext db) =>
