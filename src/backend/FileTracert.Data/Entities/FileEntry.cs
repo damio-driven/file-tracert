@@ -39,10 +39,11 @@ public class FileEntry : IAuditable
     public string? Hash { get; set; }
 
     /// <summary>
-    /// The row is part of the catalog the user asked for. Derived, and kept in step with the three
+    /// The row is part of the catalog the user asked for. Derived, and kept in step with the four
     /// cause flags below by every writer: <c>IsIncluded == !(ExcludedByType || ExcludedByRoot ||
-    /// ExcludedByScan)</c>. It stays a column of its own because it is what the Catalog, the search
-    /// index and the covering indexes read — one boolean instead of three ORed at every seek.
+    /// ExcludedByScan || ExcludedByPath)</c>. It stays a column of its own because it is what the
+    /// Catalog, the search index and the covering indexes read — one boolean instead of four ORed
+    /// at every seek.
     /// </summary>
     public bool IsIncluded { get; set; }
 
@@ -60,14 +61,35 @@ public class FileEntry : IAuditable
     public bool ExcludedByRoot { get; set; }
 
     /// <summary>
-    /// Excluded because the scan itself stepped over it: its attributes (Hidden/System), an
-    /// excluded segment in its path, or a folder above it that failed one of those rules.
+    /// Excluded because of ATTRIBUTES the scan read off the disk — its own Hidden/System bits, or
+    /// a folder above it carrying them.
     ///
     /// <para>This is the cause reconciliation must NOT undo, and the reason the causes are
     /// persisted at all (step 11h). Nothing in Setup can know whether that folder is still hidden;
     /// only a scan can, and the merge clears the flag when it sees the file again.</para>
+    ///
+    /// <para><b>Step 16 narrowed what it holds.</b> Until then it also carried "an excluded segment
+    /// in its path", which is a fact of the SETTINGS sitting in plain sight on
+    /// <c>Directories.MaterializedPath</c> — and folding it in here made it hostage to the half
+    /// nobody can retract: adding a segment to <c>ExcludedPaths</c> excluded nothing already in the
+    /// catalog. That half moved to <see cref="ExcludedByPath"/>. The column keeps its name on
+    /// purpose: <c>ExcludedByAttributes</c> would read better and would cost a column rename over
+    /// 742 675 rows plus every writer, for no behaviour.</para>
     /// </summary>
     public bool ExcludedByScan { get; set; }
+
+    /// <summary>
+    /// Excluded because a segment of its volume-relative path is on the excluded list
+    /// (<c>Windows</c>, <c>AppData</c>, <c>$Recycle.Bin</c>, …).
+    ///
+    /// <para>A settings-borne cause, like <see cref="ExcludedByType"/> and
+    /// <see cref="ExcludedByRoot"/>, and undone by <c>FilterReconciler</c> without a scan: the path
+    /// is on the row's directory already, so the reconciler can decide it from the catalog alone.
+    /// Kept apart from <see cref="ExcludedByScan"/> for the reason step 11h separated the causes at
+    /// all — they SUM (a file under <c>AppData</c> inside a hidden folder is excluded twice) and
+    /// each has to be cleared by its own owner.</para>
+    /// </summary>
+    public bool ExcludedByPath { get; set; }
 
     /// <summary>
     /// The file exists ON DISK. False only for a row a queued Copy has projected at its

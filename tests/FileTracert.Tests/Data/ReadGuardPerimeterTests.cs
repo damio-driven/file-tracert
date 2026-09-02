@@ -92,9 +92,9 @@ public sealed class ReadGuardPerimeterTests : IAsyncLifetime
                 INSERT INTO Files
                   (VolumeId, DirectoryId, Name, Extension, Category, SizeBytes,
                    CreatedUtc, ModifiedUtc, Attributes, IsIncluded, ExcludedByType, ExcludedByRoot,
-                   ExcludedByScan, IsPresent, LastIndexedUtc, PendingState, RowCreatedUtc, RowUpdatedUtc)
+                   ExcludedByScan, ExcludedByPath, IsPresent, LastIndexedUtc, PendingState, RowCreatedUtc, RowUpdatedUtc)
                 SELECT {_volumeId}, {_rootId}, 'match' || n || '.bin', 'bin', 'Other', 1024 * n,
-                       '{now}', '{now}', 0, 1, 0, 0, 0, 1, '{now}', 'None', '{now}', '{now}'
+                       '{now}', '{now}', 0, 1, 0, 0, 0, 0, 1, '{now}', 'None', '{now}', '{now}'
                 FROM seq WHERE tick(n) = 1
                 """, ct);
 #pragma warning restore EF1002

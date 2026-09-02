@@ -25,6 +25,7 @@ namespace FileTracert.Tests.Data;
 public sealed class ExclusionCauseBackfillTests : IDisposable
 {
     private const string PreviousMigration = "CatalogCountCoveringIndexes";
+    private const string MigrationBeforeThePathCause = "CatalogVisibilityIncludesProjectedCopies";
 
     private readonly SqliteConnection _connection = new("Data Source=:memory:");
 
@@ -136,6 +137,43 @@ public sealed class ExclusionCauseBackfillTests : IDisposable
         var repaired = await read.Files.SingleAsync(f => f.Name == "old.txt");
         repaired.IsIncluded.Should().BeTrue();
         repaired.ExcludedByScan.Should().BeFalse("the merge IS the filter's decision (§4)");
+    }
+
+    /// <summary>
+    /// Step 16 splits the path half out of <c>ExcludedByScan</c>, and the migration deliberately
+    /// carries NO backfill: a row already excluded stays excluded for the cause nobody can undo.
+    /// The alternative — reading <c>MaterializedPath</c> and re-attributing rows to
+    /// <c>ExcludedByPath</c> — would let the very next widening of <c>ExcludedPaths</c> walk the
+    /// content of a hidden folder back into the Catalog, silently, for every row the old code had
+    /// lumped together.
+    /// </summary>
+    [Fact]
+    public async Task The_path_cause_arrives_empty_and_takes_nothing_away_from_the_attribute_cause()
+    {
+        await MigrateToAsync(MigrationBeforeThePathCause);
+        await SeedLegacyRowsAsync();
+
+        // Written the way the PREVIOUS version wrote a path-excluded row: one flag for both facts.
+        await using (var legacy = CreateContext())
+        {
+            await legacy.Database.ExecuteSqlRawAsync(
+                "UPDATE Files SET ExcludedByScan = 1, IsIncluded = 0 WHERE Name = 'old.txt';");
+        }
+
+        await using (var db = CreateContext())
+        {
+            await db.Database.MigrateAsync();
+        }
+
+        await using var read = CreateContext();
+        var legacyRow = await read.Files.SingleAsync(f => f.Name == "old.txt");
+        legacyRow.ExcludedByScan.Should().BeTrue("the migration does not guess which of the two facts it was");
+        legacyRow.ExcludedByPath.Should().BeFalse("the new column starts empty on every existing row");
+        legacyRow.IsIncluded.Should().BeFalse();
+
+        var included = await read.Files.SingleAsync(f => f.Name == "old.jpg");
+        included.ExcludedByPath.Should().BeFalse();
+        included.IsIncluded.Should().BeTrue("an included row is left alone by an additive column");
     }
 
     private async Task MigrateToAsync(string migration)
