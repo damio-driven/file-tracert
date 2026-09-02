@@ -1,5 +1,6 @@
 using FileTracert.Business.Filtering;
 using FileTracert.Contracts.Enums;
+using FileTracert.Contracts.Scanning;
 using FileTracert.Data.Entities;
 using FluentAssertions;
 
@@ -118,6 +119,44 @@ public class FileFilterTests
 
     // ── C16: the excluded-subtree set ─────────────────────────────────────────
 
+    /// <summary>
+    /// The perimeter answer is a CAUSE since step 16, because its two rules are undone by different
+    /// owners: a path segment reconciliation can retract from the catalog alone, an attribute only
+    /// another scan can. A bool made the first hostage to the second.
+    /// </summary>
+    [Fact]
+    public void The_perimeter_says_which_of_its_two_rules_rejected_the_item()
+    {
+        var filter = Filter(excludedSegments: ["AppData"]);
+
+        FileFilter.PerimeterCause(@"Photos\a.jpg", FileAttributes.Normal, filter)
+            .Should().BeNull("inside the perimeter on both counts");
+        FileFilter.PerimeterCause(@"AppData\a.jpg", FileAttributes.Normal, filter)
+            .Should().Be(ScanSkipCause.ExcludedPath);
+        FileFilter.PerimeterCause(@"Photos\a.jpg", FileAttributes.Hidden, filter)
+            .Should().Be(ScanSkipCause.ExcludedAttributes);
+    }
+
+    /// <summary>
+    /// Both rules rejecting it: the PATH wins. Attributing it to the attribute cause would pin the
+    /// row out for the lifetime of the catalog — the reconciler refuses to touch that flag however
+    /// the segments change — while erring this way costs at most one scan, which re-stamps it.
+    /// </summary>
+    [Fact]
+    public void When_both_perimeter_rules_reject_it_the_path_is_the_recorded_cause() =>
+        FileFilter.PerimeterCause(
+                @"AppData\a.jpg", FileAttributes.Hidden, Filter(excludedSegments: ["AppData"]))
+            .Should().Be(ScanSkipCause.ExcludedPath);
+
+    /// <summary>The old yes/no is the same question with the answer thrown away; it must stay so.</summary>
+    [Theory]
+    [InlineData(@"Photos\a.jpg", FileAttributes.Normal, true)]
+    [InlineData(@"AppData\a.jpg", FileAttributes.Normal, false)]
+    [InlineData(@"Photos\a.jpg", FileAttributes.Hidden, false)]
+    public void IsInsidePerimeter_agrees_with_the_cause(string path, FileAttributes attributes, bool inside) =>
+        FileFilter.IsInsidePerimeter(path, attributes, Filter(excludedSegments: ["AppData"]))
+            .Should().Be(inside);
+
     [Theory]
     [InlineData(@"Secret", true)]
     [InlineData(@"Secret\a.jpg", true)]
@@ -128,7 +167,7 @@ public class FileFilterTests
     public void Excluded_subtree_set_covers_descendants_and_only_whole_segments(string path, bool covered)
     {
         var excluded = new ExcludedSubtrees();
-        excluded.Add(@"Secret");
+        excluded.Add(@"Secret", ScanSkipCause.ExcludedAttributes);
 
         excluded.Covers(path).Should().Be(covered);
     }
@@ -137,7 +176,7 @@ public class FileFilterTests
     public void Excluded_subtree_set_ignores_the_volume_root()
     {
         var excluded = new ExcludedSubtrees();
-        excluded.Add(string.Empty);
+        excluded.Add(string.Empty, ScanSkipCause.ExcludedAttributes);
 
         excluded.Count.Should().Be(0);
         excluded.Covers(@"Anything\at\all").Should().BeFalse();

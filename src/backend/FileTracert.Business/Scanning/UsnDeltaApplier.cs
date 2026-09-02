@@ -381,13 +381,13 @@ public sealed class UsnDeltaApplier
                 continue; // outside every active root: nothing to insert, nothing to say
             }
 
-            if (FileFilter.ShouldIncludeDirectory(item.Path, item.Entry.Attributes, filters[root]))
+            if (FileFilter.PerimeterCause(item.Path, item.Entry.Attributes, filters[root]) is { } cause)
             {
-                directories.Add(new ScannedDirectory(item.Path, unchecked((long)item.Entry.FileReferenceNumber)));
+                perimeter.ExcludeSubtree(item.Path, cause);
             }
             else
             {
-                perimeter.ExcludeSubtree(item.Path);
+                directories.Add(new ScannedDirectory(item.Path, unchecked((long)item.Entry.FileReferenceNumber)));
             }
         }
 
@@ -528,9 +528,12 @@ public sealed class UsnDeltaApplier
         CancellationToken ct)
     {
         var goneFileIds = new List<int>();
-        var excludedByRoot = new List<int>();
-        var excludedByScan = new List<int>();
         var goneDirectoryIds = new List<int>();
+
+        // One bucket per cause, because each is undone by a different owner (11h, and step 16 for
+        // the path half): writing the wrong flag would either pin a row out for ever or let it back
+        // in on a setting that says nothing about it.
+        var excludedByCause = new Dictionary<ScanSkipCause, List<int>>();
 
         if (deletedFrns.Count > 0)
         {
@@ -565,28 +568,30 @@ public sealed class UsnDeltaApplier
                 continue;
             }
 
-            switch (perimeter.SkipCause(item.Path))
+            if (perimeter.SkipCause(item.Path) is { } cause)
             {
-                case ScanSkipCause.InactiveRoot:
-                    excludedByRoot.Add(existing.Id);
-                    break;
-                case ScanSkipCause.FilteredOut:
-                    excludedByScan.Add(existing.Id);
-                    break;
-                default:
-                    // Inside the perimeter and unmoved: the only thing left that can reject it is
-                    // the type allow-list, and a row that is still IsIncluded under an unchanged
-                    // name cannot have failed it (FilterReconciler owns that verdict and applies
-                    // it the moment the allow-list changes, without a scan).
-                    break;
+                if (!excludedByCause.TryGetValue(cause, out var bucket))
+                {
+                    excludedByCause[cause] = bucket = [];
+                }
+
+                bucket.Add(existing.Id);
             }
+
+            // Otherwise: inside the perimeter and unmoved. The only thing left that can reject it
+            // is the type allow-list, and a row that is still IsIncluded under an unchanged name
+            // cannot have failed it (FilterReconciler owns that verdict and applies it the moment
+            // the allow-list changes, without a scan).
         }
 
         var absent = await MarkFilesAbsentAsync(goneFileIds, ct);
         absent += await MarkDirectoriesAbsentAsync(goneDirectoryIds, ct);
 
-        var excluded = await ExcludeFilesAsync(excludedByRoot, ScanSkipCause.InactiveRoot, ct);
-        excluded += await ExcludeFilesAsync(excludedByScan, ScanSkipCause.FilteredOut, ct);
+        var excluded = 0;
+        foreach (var (cause, ids) in excludedByCause)
+        {
+            excluded += await ExcludeFilesAsync(ids, cause, ct);
+        }
 
         return (absent, excluded);
     }
@@ -658,19 +663,25 @@ public sealed class UsnDeltaApplier
             await using var tx = await _db.Database.BeginTransactionAsync(ct);
 
             // The invariant of §6: IsIncluded is the derived column, the cause flag is the fact.
-            // Only the cause this pass can prove is written — the other two are left as they are,
-            // because each is undone by a different owner (step 11h).
-            excluded += cause == ScanSkipCause.InactiveRoot
-                ? await _db.Files.Where(f => ids.Contains(f.Id))
-                    .ExecuteUpdateAsync(s => s
-                        .SetProperty(f => f.ExcludedByRoot, true)
-                        .SetProperty(f => f.IsIncluded, false)
-                        .SetProperty(f => f.UpdatedUtc, now), ct)
-                : await _db.Files.Where(f => ids.Contains(f.Id))
-                    .ExecuteUpdateAsync(s => s
-                        .SetProperty(f => f.ExcludedByScan, true)
-                        .SetProperty(f => f.IsIncluded, false)
-                        .SetProperty(f => f.UpdatedUtc, now), ct);
+            // Only the cause this pass can prove is written — the other three are left as they are,
+            // because each is undone by a different owner (step 11h, step 16).
+            var rows = _db.Files.Where(f => ids.Contains(f.Id));
+            excluded += cause switch
+            {
+                ScanSkipCause.InactiveRoot => await rows.ExecuteUpdateAsync(s => s
+                    .SetProperty(f => f.ExcludedByRoot, true)
+                    .SetProperty(f => f.IsIncluded, false)
+                    .SetProperty(f => f.UpdatedUtc, now), ct),
+                ScanSkipCause.ExcludedPath => await rows.ExecuteUpdateAsync(s => s
+                    .SetProperty(f => f.ExcludedByPath, true)
+                    .SetProperty(f => f.IsIncluded, false)
+                    .SetProperty(f => f.UpdatedUtc, now), ct),
+                ScanSkipCause.ExcludedAttributes => await rows.ExecuteUpdateAsync(s => s
+                    .SetProperty(f => f.ExcludedByScan, true)
+                    .SetProperty(f => f.IsIncluded, false)
+                    .SetProperty(f => f.UpdatedUtc, now), ct),
+                _ => throw new ArgumentOutOfRangeException(nameof(cause), cause, "Unknown scan skip cause."),
+            };
 
             foreach (var id in ids)
             {

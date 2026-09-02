@@ -269,13 +269,15 @@ public sealed class ScanService
 
             if (item.IsDirectory)
             {
-                if (FileFilter.ShouldIncludeDirectory(item.RelativePath, item.Attributes, filter))
+                // The cause travels with the exclusion: a subtree dropped for a path segment is one
+                // reconciliation can re-decide later, a subtree dropped for Hidden/System is not.
+                if (FileFilter.PerimeterCause(item.RelativePath, item.Attributes, filter) is { } dirCause)
                 {
-                    dirs.Add(item);
+                    perimeter.ExcludeSubtree(item.RelativePath, dirCause);
                 }
                 else
                 {
-                    perimeter.ExcludeSubtree(item.RelativePath);
+                    dirs.Add(item);
                 }
             }
             else
@@ -285,14 +287,14 @@ public sealed class ScanService
                 // ShouldIncludeFile and then re-asking the perimeter on the reject branch spent a
                 // second path split on every rejected item of a volume (E7 territory).
                 var extension = FileFilter.GetExtension(item.Name);
-                var insidePerimeter = FileFilter.IsInsidePerimeter(item.RelativePath, item.Attributes, filter);
+                var perimeterCause = FileFilter.PerimeterCause(item.RelativePath, item.Attributes, filter);
                 var allowedType = FileFilter.IsAllowedType(extension, filter);
 
-                if (insidePerimeter && allowedType)
+                if (perimeterCause is null && allowedType)
                 {
                     files.Add(item);
                 }
-                else if (!insidePerimeter && allowedType)
+                else if (perimeterCause is { } fileCause && allowedType)
                 {
                     // On disk, outside the perimeter: the closing pass must call it excluded, not
                     // absent. Only if its TYPE is allowed, though — a file the allow-list rejects
@@ -301,7 +303,7 @@ public sealed class ScanService
                     // allow-list is FilterReconciler's job, not the scan's). Without that guard
                     // every desktop.ini and Thumbs.db of a watched volume would be carried through
                     // the merge to say nothing.
-                    perimeter.SkipFile(item.RelativePath);
+                    perimeter.SkipFile(item.RelativePath, fileCause);
                 }
             }
         }
@@ -589,14 +591,14 @@ public sealed class ScanService
             }
         }
 
-        foreach (var file in perimeter.SkippedFiles)
+        foreach (var (file, cause) in perimeter.SkippedFiles)
         {
             if (idByPath.TryGetValue(ScanPath.Parent(file), out var directoryId))
             {
-                // FilteredOut by construction: an item outside every active root never reaches
-                // ScanPerimeter.SkipFile, so a file on this list was offered to the filter and
-                // refused by it — the cause no setting can retract.
-                areas.Add(new SkippedScanArea(directoryId, ScanPath.Name(file), ScanSkipCause.FilteredOut));
+                // Never InactiveRoot by construction: an item outside every active root never
+                // reaches ScanPerimeter.SkipFile, so a file on this list was offered to the filter
+                // and refused by one of its two perimeter rules — and the pipeline carries which.
+                areas.Add(new SkippedScanArea(directoryId, ScanPath.Name(file), cause));
                 continue;
             }
 

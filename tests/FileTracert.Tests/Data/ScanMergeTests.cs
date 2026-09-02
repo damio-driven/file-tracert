@@ -315,7 +315,7 @@ public sealed class ScanMergeTests
                 CancellationToken.None);
 
             var closure = await writer.ReconcileUnseenFilesAsync(
-                fx.VolumeId, scanStart, [new SkippedScanArea(fx.SubDirId, FileName: null, ScanSkipCause.FilteredOut)], CancellationToken.None);
+                fx.VolumeId, scanStart, [new SkippedScanArea(fx.SubDirId, FileName: null, ScanSkipCause.ExcludedAttributes)], CancellationToken.None);
 
             closure.Should().Be(new ScanClosureResult(Excluded: 1, Absent: 1));
         }
@@ -352,7 +352,7 @@ public sealed class ScanMergeTests
         }
 
         var scanStart = T0.AddHours(1);
-        SkippedScanArea[] areas = [new(fx.SubDirId, null, ScanSkipCause.FilteredOut)];
+        SkippedScanArea[] areas = [new(fx.SubDirId, null, ScanSkipCause.ExcludedAttributes)];
 
         await using (var ctx = harness.CreateContext())
         {
@@ -401,7 +401,7 @@ public sealed class ScanMergeTests
         {
             var closure = await new BulkIndexWriter(ctx).ReconcileUnseenFilesAsync(
                 fx.VolumeId, T0.AddHours(1),
-                [new SkippedScanArea(fx.SubDirId, null, ScanSkipCause.FilteredOut)], CancellationToken.None);
+                [new SkippedScanArea(fx.SubDirId, null, ScanSkipCause.ExcludedAttributes)], CancellationToken.None);
             closure.Absent.Should().Be(0);
         }
 
@@ -436,7 +436,7 @@ public sealed class ScanMergeTests
             // Spelled in the other case on purpose: Windows does not distinguish it, and SQLite's
             // default BINARY collation does.
             var closure = await writer.ReconcileUnseenFilesAsync(
-                fx.VolumeId, scanStart, [new SkippedScanArea(fx.RootDirId, "hidden.JPG", ScanSkipCause.FilteredOut)], CancellationToken.None);
+                fx.VolumeId, scanStart, [new SkippedScanArea(fx.RootDirId, "hidden.JPG", ScanSkipCause.ExcludedAttributes)], CancellationToken.None);
 
             closure.Should().Be(new ScanClosureResult(Excluded: 1, Absent: 0));
         }
@@ -535,9 +535,9 @@ public sealed class ScanMergeTests
         // Counted from here: the closure pass only, not the arrange.
         SkippedScanArea[] areas = skipTheDirectory
             ? secondCause
-                ? [new SkippedScanArea(fx.SubDirId, null, ScanSkipCause.FilteredOut),
+                ? [new SkippedScanArea(fx.SubDirId, null, ScanSkipCause.ExcludedAttributes),
                    new SkippedScanArea(fx.RootDirId, null, ScanSkipCause.InactiveRoot)]
-                : [new SkippedScanArea(fx.SubDirId, null, ScanSkipCause.FilteredOut)]
+                : [new SkippedScanArea(fx.SubDirId, null, ScanSkipCause.ExcludedAttributes)]
             : [];
 
         connection.Reset();

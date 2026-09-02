@@ -1,4 +1,5 @@
 using FileTracert.Contracts.Enums;
+using FileTracert.Contracts.Scanning;
 
 namespace FileTracert.Business.Filtering;
 
@@ -50,14 +51,44 @@ public static class FileFilter
     }
 
     /// <summary>
-    /// The PERIMETER half of the filter: the rules that have nothing to do with the file's type —
-    /// excluded attributes and excluded path segments. Spelled once because the two halves are
-    /// undone differently (§4): re-widening the type allow-list is <c>FilterReconciler</c>'s job
-    /// on the rows already indexed, while an attribute or a path segment only changes what a scan
-    /// walks into, so a row that fails THIS is one the scan deliberately skipped.
+    /// The PERIMETER half of the filter, and WHICH of its two rules rejected the item: null when
+    /// it is inside, otherwise <see cref="ScanSkipCause.ExcludedPath"/> or
+    /// <see cref="ScanSkipCause.ExcludedAttributes"/>. Never
+    /// <see cref="ScanSkipCause.InactiveRoot"/> — the roots are asked before the filter is, and an
+    /// item outside every active root is never offered to it.
+    ///
+    /// <para>Step 16 made the answer a cause rather than a bool because the two rules are undone by
+    /// different owners, exactly as step 11h found for the three causes it split: a path segment is
+    /// a fact of the settings and reconciliation retracts it with no disk read, while an attribute
+    /// is a fact of the disk and only another scan can. Folded into one verdict, the first was
+    /// hostage to the second.</para>
+    ///
+    /// <para>The PATH is asked first, and that precedence is deliberate. Attributing to the
+    /// attribute cause something that is also path-excluded would pin it there for the lifetime of
+    /// the row — the reconciler would refuse to touch it however the segments change. Erring the
+    /// other way costs at most one scan, which is the same trade the pessimistic backfill makes,
+    /// read from the other end.</para>
+    ///
+    /// <para>One <see cref="IsPathExcluded"/> call, not two: it splits the path on every
+    /// invocation, and the 11g review had already taken a second split off this branch.</para>
+    /// </summary>
+    public static ScanSkipCause? PerimeterCause(
+        string relativePath, FileAttributes attributes, EffectiveFilter filter)
+    {
+        if (IsPathExcluded(relativePath, filter))
+        {
+            return ScanSkipCause.ExcludedPath;
+        }
+
+        return IsExcludedByAttributes(attributes, filter) ? ScanSkipCause.ExcludedAttributes : null;
+    }
+
+    /// <summary>
+    /// The PERIMETER half of the filter as a yes/no, for the callers that do not need to record
+    /// which rule spoke. <see cref="PerimeterCause"/> is the same question with its answer kept.
     /// </summary>
     public static bool IsInsidePerimeter(string relativePath, FileAttributes attributes, EffectiveFilter filter) =>
-        !IsExcludedByAttributes(attributes, filter) && !IsPathExcluded(relativePath, filter);
+        PerimeterCause(relativePath, attributes, filter) is null;
 
     /// <summary>
     /// Directories are not filtered by extension (the tree needs them), so the perimeter rules

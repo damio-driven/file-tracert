@@ -200,7 +200,8 @@ public sealed partial class BulkIndexWriter
     private static string ColumnFor(ScanSkipCause cause) => cause switch
     {
         ScanSkipCause.InactiveRoot => "ExcludedByRoot",
-        ScanSkipCause.FilteredOut => "ExcludedByScan",
+        ScanSkipCause.ExcludedPath => "ExcludedByPath",
+        ScanSkipCause.ExcludedAttributes => "ExcludedByScan",
         _ => throw new ArgumentOutOfRangeException(nameof(cause), cause, "Unknown scan skip cause."),
     };
 
@@ -361,7 +362,7 @@ public sealed partial class BulkIndexWriter
         // IsIncluded IS set, because a row in this batch is a row the pipeline's filter let
         // through: the scan IS the filter's decision (§4), and it is the only one that can undo an
         // exclusion nobody asked for through Setup — a folder that stops being hidden raises no
-        // event, so without this its content would stay invisible for ever. The three cause flags
+        // event, so without this its content would stay invisible for ever. The four cause flags
         // go with it: the row is inside the perimeter, of an allowed type, under an active root —
         // every reason it could have carried is gone, and leaving one behind would keep the row
         // out of the next reconciliation for a cause that is no longer true.
@@ -381,6 +382,7 @@ public sealed partial class BulkIndexWriter
                    ExcludedByType = 0,
                    ExcludedByRoot = 0,
                    ExcludedByScan = 0,
+                   ExcludedByPath = 0,
                    IsMaterialized = 1,
                    IsPresent      = 1,
                    LastIndexedUtc = $now,
@@ -398,9 +400,9 @@ public sealed partial class BulkIndexWriter
             INSERT INTO Files
                 (VolumeId, DirectoryId, Name, Extension, Category, SizeBytes, CreatedUtc, ModifiedUtc,
                  Attributes, UsnFileRef, IsIncluded, ExcludedByType, ExcludedByRoot, ExcludedByScan,
-                 IsPresent, LastIndexedUtc, PendingState, RowCreatedUtc, RowUpdatedUtc)
+                 ExcludedByPath, IsPresent, LastIndexedUtc, PendingState, RowCreatedUtc, RowUpdatedUtc)
             SELECT $vol, s.DirectoryId, s.Name, s.Extension, s.Category, s.SizeBytes, s.CreatedUtc,
-                   s.ModifiedUtc, s.Attributes, s.UsnFileRef, 1, 0, 0, 0, 1, $now, 'None', $now, $now
+                   s.ModifiedUtc, s.Attributes, s.UsnFileRef, 1, 0, 0, 0, 0, 1, $now, 'None', $now, $now
               FROM ScanStageFiles s
              WHERE s.MatchedId IS NULL;
             """, ct, ("$vol", volumeId), ("$now", indexedUtc));

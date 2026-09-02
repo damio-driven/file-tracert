@@ -271,7 +271,7 @@ public sealed class OverlayWriter
     /// reason and one more: it is the FRN of a file that does not exist, and the unique
     /// <c>(VolumeId, UsnFileRef)</c> index is filtered, so nulls coexist.</para>
     ///
-    /// <para><c>IsIncluded</c> and its three causes are inherited from the source as a
+    /// <para><c>IsIncluded</c> and its four causes are inherited from the source as a
     /// PROVISIONAL value. The copy keeps the name, so the type verdict is right; the root and
     /// perimeter verdicts belong to the destination and are recomputed by <c>IndexUpdater</c> when
     /// the job completes. Deciding them here would mean giving this class the filter resolution,
@@ -361,6 +361,7 @@ public sealed class OverlayWriter
             ExcludedByType = source.ExcludedByType,
             ExcludedByRoot = source.ExcludedByRoot,
             ExcludedByScan = source.ExcludedByScan,
+            ExcludedByPath = source.ExcludedByPath,
             IsMaterialized = false,
             IsPresent = false,
             LastIndexedUtc = DateTime.UtcNow,

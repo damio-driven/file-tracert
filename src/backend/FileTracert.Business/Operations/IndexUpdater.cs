@@ -164,8 +164,14 @@ public sealed class IndexUpdater
             row.Category = FileFilter.ResolveCategory(extension, categories);
             row.ExcludedByType = !FileFilter.IsAllowedType(extension, filter);
             row.ExcludedByRoot = false;
-            row.ExcludedByScan = !FileFilter.IsInsidePerimeter(item.TargetRelativePath, row.Attributes, filter);
-            row.IsIncluded = !(row.ExcludedByType || row.ExcludedByRoot || row.ExcludedByScan);
+            // Which perimeter rule rejected it decides which flag records it, and the two are
+            // undone by different owners (step 16): a path segment reconciliation can retract, an
+            // attribute only another scan can.
+            var perimeterCause = FileFilter.PerimeterCause(item.TargetRelativePath, row.Attributes, filter);
+            row.ExcludedByPath = perimeterCause == ScanSkipCause.ExcludedPath;
+            row.ExcludedByScan = perimeterCause == ScanSkipCause.ExcludedAttributes;
+            row.IsIncluded =
+                !(row.ExcludedByType || row.ExcludedByRoot || row.ExcludedByScan || row.ExcludedByPath);
 
             // The mover writes a NEW stream (Win32FileMover.CopyFileAsync), so the destination's
             // timestamps are the moment of the copy, not the source's — carrying the source's over
@@ -248,13 +254,21 @@ public sealed class IndexUpdater
         // The perimeter half is only ever SET here, never cleared: this call can see that the new
         // path now carries an excluded segment, but it cannot see that the folder above the file
         // is still Hidden. Clearing on "looks fine from here" is how a scan decision gets undone
-        // by something that never looked at the disk.
-        if (!FileFilter.IsInsidePerimeter(item.TargetRelativePath, file.Attributes, filter))
+        // by something that never looked at the disk. Which of the two rules spoke decides which
+        // flag is raised (step 16) — and raising the wrong one would either pin the row out for
+        // ever or hand it to a setting that says nothing about it.
+        switch (FileFilter.PerimeterCause(item.TargetRelativePath, file.Attributes, filter))
         {
-            file.ExcludedByScan = true;
+            case ScanSkipCause.ExcludedPath:
+                file.ExcludedByPath = true;
+                break;
+            case ScanSkipCause.ExcludedAttributes:
+                file.ExcludedByScan = true;
+                break;
         }
 
-        file.IsIncluded = !(file.ExcludedByType || file.ExcludedByRoot || file.ExcludedByScan);
+        file.IsIncluded =
+            !(file.ExcludedByType || file.ExcludedByRoot || file.ExcludedByScan || file.ExcludedByPath);
 
         await _db.SaveChangesAsync(ct);
 
