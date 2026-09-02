@@ -583,22 +583,19 @@ public sealed class UsnDeltaApplier
                 bucket.Add(existing.Id);
             }
 
-            // Otherwise: inside the perimeter and unmoved. The only thing left that can reject it
-            // is the type allow-list, and a row that is still IsIncluded under an unchanged name
-            // cannot have failed it (FilterReconciler owns that verdict and applies it the moment
-            // the allow-list changes, without a scan).
+            // KNOWN HOLE, stated rather than implied by silence: this loop can find no cause at
+            // all. The perimeter only records DIRECTORIES it excluded, so a file whose OWN
+            // attributes turned against it — one that just became Hidden — is refused indexing
+            // above and then answers "inside" here, and the row keeps IsIncluded = 1 until a full
+            // scan passes. The verdict is not wrong, it is missing: nothing recorded the file
+            // itself. Closing it means recording the file's own perimeter verdict at classify
+            // time; it belongs with the subtree pass of A3, not here.
         }
 
         var absent = await MarkFilesAbsentAsync(goneFileIds, ct);
         absent += await MarkDirectoriesAbsentAsync(goneDirectoryIds, ct);
 
-        var excluded = 0;
-        foreach (var (cause, ids) in excludedByCause)
-        {
-            excluded += await ExcludeFilesAsync(ids, cause, ct);
-        }
-
-        return (absent, excluded);
+        return (absent, await ExcludeFilesAsync(excludedByCause, ct));
     }
 
     private async Task<int> MarkFilesAbsentAsync(List<int> fileIds, CancellationToken ct)
@@ -656,46 +653,67 @@ public sealed class UsnDeltaApplier
         return marked;
     }
 
-    private async Task<int> ExcludeFilesAsync(List<int> fileIds, ScanSkipCause cause, CancellationToken ct)
+    /// <summary>
+    /// Writes every cause this delta proved, for every row it proved one about — in ONE
+    /// transaction.
+    ///
+    /// <para>One transaction because the causes SUM and a row can be in two buckets: a
+    /// transaction per cause meant such a row was written through two of them, and a crash in
+    /// between left it carrying one cause and not the other. Nothing catastrophic follows (the
+    /// cursor is written last, so the delta simply replays, and every write here is idempotent) —
+    /// but it is a window this pass did not have to open, and the two flags describe ONE verdict.
+    /// The chunking inside stays: it bounds the size of each statement, not of the transaction,
+    /// and a delta names a handful of files.</para>
+    /// </summary>
+    private async Task<int> ExcludeFilesAsync(
+        Dictionary<ScanSkipCause, List<int>> fileIdsByCause, CancellationToken ct)
     {
-        var excluded = 0;
-        foreach (var chunk in fileIds.Distinct().Chunk(BatchSize))
+        if (fileIdsByCause.Count == 0)
         {
-            ct.ThrowIfCancellationRequested();
-            var ids = chunk.ToList();
-            var now = DateTime.UtcNow;
-
-            await using var tx = await _db.Database.BeginTransactionAsync(ct);
-
-            // The invariant of §6: IsIncluded is the derived column, the cause flag is the fact.
-            // Only the cause this pass can prove is written — the other three are left as they are,
-            // because each is undone by a different owner (step 11h, step 16).
-            var rows = _db.Files.Where(f => ids.Contains(f.Id));
-            excluded += cause switch
-            {
-                ScanSkipCause.InactiveRoot => await rows.ExecuteUpdateAsync(s => s
-                    .SetProperty(f => f.ExcludedByRoot, true)
-                    .SetProperty(f => f.IsIncluded, false)
-                    .SetProperty(f => f.UpdatedUtc, now), ct),
-                ScanSkipCause.ExcludedPath => await rows.ExecuteUpdateAsync(s => s
-                    .SetProperty(f => f.ExcludedByPath, true)
-                    .SetProperty(f => f.IsIncluded, false)
-                    .SetProperty(f => f.UpdatedUtc, now), ct),
-                ScanSkipCause.ExcludedAttributes => await rows.ExecuteUpdateAsync(s => s
-                    .SetProperty(f => f.ExcludedByScan, true)
-                    .SetProperty(f => f.IsIncluded, false)
-                    .SetProperty(f => f.UpdatedUtc, now), ct),
-                _ => throw new ArgumentOutOfRangeException(nameof(cause), cause, "Unknown scan skip cause."),
-            };
-
-            foreach (var id in ids)
-            {
-                await _ftsIndex.RemoveAsync(id, ct);
-            }
-
-            await tx.CommitAsync(CancellationToken.None);
+            return 0;
         }
 
+        var excluded = 0;
+        await using var tx = await _db.Database.BeginTransactionAsync(ct);
+
+        foreach (var (cause, fileIds) in fileIdsByCause)
+        {
+            foreach (var chunk in fileIds.Distinct().Chunk(BatchSize))
+            {
+                ct.ThrowIfCancellationRequested();
+                var ids = chunk.ToList();
+                var now = DateTime.UtcNow;
+
+                // The invariant of §6: IsIncluded is the derived column, the cause flag is the fact.
+                // Only the causes this pass can prove are written — the others are left as they
+                // are, because each is undone by a different owner (step 11h, step 16).
+                var rows = _db.Files.Where(f => ids.Contains(f.Id));
+                excluded += cause switch
+                {
+                    ScanSkipCause.InactiveRoot => await rows.ExecuteUpdateAsync(s => s
+                        .SetProperty(f => f.ExcludedByRoot, true)
+                        .SetProperty(f => f.IsIncluded, false)
+                        .SetProperty(f => f.UpdatedUtc, now), ct),
+                    ScanSkipCause.ExcludedPath => await rows.ExecuteUpdateAsync(s => s
+                        .SetProperty(f => f.ExcludedByPath, true)
+                        .SetProperty(f => f.IsIncluded, false)
+                        .SetProperty(f => f.UpdatedUtc, now), ct),
+                    ScanSkipCause.ExcludedAttributes => await rows.ExecuteUpdateAsync(s => s
+                        .SetProperty(f => f.ExcludedByScan, true)
+                        .SetProperty(f => f.IsIncluded, false)
+                        .SetProperty(f => f.UpdatedUtc, now), ct),
+                    _ => throw new ArgumentOutOfRangeException(
+                        nameof(fileIdsByCause), cause, "Unknown scan skip cause."),
+                };
+
+                foreach (var id in ids)
+                {
+                    await _ftsIndex.RemoveAsync(id, ct);
+                }
+            }
+        }
+
+        await tx.CommitAsync(CancellationToken.None);
         return excluded;
     }
 
