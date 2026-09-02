@@ -629,21 +629,43 @@ public sealed class UsnDeltaApplier
     /// through <see cref="IFileSearchIndex.SyncDirectoriesAsync"/> rather than the per-file
     /// <c>RemoveAsync</c> loop the rest of this class uses. That loop is the right shape for the
     /// handful of files a delta names by hand; a subtree can hold thousands and none of them is
-    /// named anywhere. The ids are read ONCE and handed to both halves, so the flags and the index
+    /// named anywhere. Both halves are handed the SAME chunk of ids, so the flags and the index
     /// cannot be written for two different sets of directories.</para>
     ///
-    /// <para><b>The cost is per excluded DIRECTORY of this delta, never per file behind them.</b>
-    /// Each one pays a seek on <c>IX_Directories_MaterializedPath</c> (C4) plus its updates; the
-    /// rows underneath cost nothing extra, however many there are. That is the right axis: on a
-    /// system volume a tick can name a few directories the filter refuses and each of them can
-    /// stand over thousands of rows. A directory the catalog never held returns an empty id list
-    /// and stops there, which is the common case for journal traffic in places this index has never
-    /// been.</para>
+    /// <para><b>The number of STATEMENTS is per excluded DIRECTORY of this delta, not per file
+    /// behind them</b> — which is the claim worth making, and it is not the same as "the rows
+    /// underneath are free". They are not: the UPDATE and the index pair each touch every one of
+    /// them, and that work is the point of the pass. What the shape buys is that the work stays
+    /// inside SQLite instead of arriving as one round trip per file. Each excluded directory pays a
+    /// seek on <c>IX_Directories_MaterializedPath</c> (C4) plus its updates; on a system volume a
+    /// tick can name a few directories the filter refuses and each of them can stand over thousands
+    /// of rows. A directory the catalog never held returns an empty id list and stops there, which
+    /// is the common case for journal traffic in places this index has never been.</para>
+    ///
+    /// <para><b>A chunk is the unit of atomicity as well as of statement size</b>, exactly like the
+    /// two absence passes below and for the reason <see cref="BatchSize"/> is documented with: the
+    /// flags and the index prune for the same directories land together or not at all — an index
+    /// still listing a row the perimeter now excludes is a search result the user can see — while
+    /// the write lock is held for at most <see cref="BatchSize"/> directories at a time. One
+    /// transaction around the whole pass would have been bounded by nothing: the number of subtrees
+    /// is the number of directory records this delta carries, and after a long shutdown that is not
+    /// a handful. Committing per chunk costs nothing in safety, because the cursor is written LAST
+    /// and every statement here is idempotent.</para>
+    ///
+    /// <para><b>The index is only touched when a row actually moved.</b> A folder that stays
+    /// excluded keeps turning up in every tick that writes anything inside it, and without the
+    /// guard each of those ticks would pay a DELETE plus an INSERT over its whole subtree — every
+    /// 30 seconds, to produce the state that was already there. The guard is sound because this
+    /// pass changes exactly one thing about a row, <c>IsIncluded</c>: if no row changed, nothing
+    /// this pass could have made stale is stale.</para>
     ///
     /// <para><b>Each entry carries its OWN causes, not the union with its ancestors'</b>, and that
     /// is complete: an excluded ancestor is itself an entry in this set, and its own pass covers
     /// the very same subtree — so a row under two excluded folders is reached twice and ends up
-    /// with both causes, which is what "the causes sum" means here.</para>
+    /// with both causes, which is what "the causes sum" means here. The returned tally counts such
+    /// a row once per (subtree, cause) that had something to write to it, the same double count
+    /// <see cref="ExcludeFilesAsync"/>'s callers already live with: it is a number for the log, not
+    /// for a decision.</para>
     ///
     /// <para>Only <c>Files</c>. <c>Directories</c> have no inclusion flag and a folder that exists
     /// on disk exists (11g), and <c>IsPresent</c> is never touched: an exclusion is not an absence
@@ -651,20 +673,20 @@ public sealed class UsnDeltaApplier
     /// </summary>
     private async Task<int> ExcludeSubtreesAsync(int volumeId, ScanPerimeter perimeter, CancellationToken ct)
     {
-        if (perimeter.ExcludedSubtreeRoots.Count == 0)
+        var roots = perimeter.ExcludedSubtreeRoots;
+        if (roots.Count == 0)
         {
             return 0;
         }
 
         var excluded = 0;
 
-        // One stamp for the whole pass: it is one transaction writing one verdict, and rows of the
-        // same subtree differing by a few microseconds would only invite someone to read meaning
-        // into the spread.
+        // One stamp for the whole pass: it is one verdict, however many transactions carry it, and
+        // rows of the same subtree differing by a few microseconds would only invite someone to
+        // read meaning into the spread.
         var now = DateTime.UtcNow;
-        await using var tx = await _db.Database.BeginTransactionAsync(ct);
 
-        foreach (var (path, verdict) in perimeter.ExcludedSubtreeRoots)
+        foreach (var (path, verdict) in roots)
         {
             ct.ThrowIfCancellationRequested();
 
@@ -682,19 +704,29 @@ public sealed class UsnDeltaApplier
 
             foreach (var chunk in directoryIds.Chunk(BatchSize))
             {
+                ct.ThrowIfCancellationRequested();
+
                 var ids = chunk.ToList();
-                var rows = _db.Files.Where(f => ids.Contains(f.DirectoryId));
+                var written = 0;
+
+                await using var tx = await _db.Database.BeginTransactionAsync(ct);
 
                 foreach (var cause in verdict)
                 {
-                    excluded += await ExcludeForCauseAsync(rows, cause, now, ct);
+                    written += await ExcludeForCauseAsync(
+                        _db.Files.Where(f => ids.Contains(f.DirectoryId)), cause, now, ct);
                 }
-            }
 
-            await _ftsIndex.SyncDirectoriesAsync(directoryIds, ct);
+                if (written > 0)
+                {
+                    await _ftsIndex.SyncDirectoriesAsync(ids, ct);
+                }
+
+                await tx.CommitAsync(CancellationToken.None);
+                excluded += written;
+            }
         }
 
-        await tx.CommitAsync(CancellationToken.None);
         return excluded;
     }
 

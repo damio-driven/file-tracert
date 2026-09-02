@@ -469,11 +469,27 @@ public sealed class UsnDeltaConvergenceTests
     /// A replayed delta must write nothing — that is the property "the cursor is written last"
     /// rests on, and the subtree pass is the first thing in this class that touches rows no record
     /// names, so it is the first that could quietly re-write them for ever.
+    ///
+    /// <para><b>Asserted in STATEMENTS as well as in rows</b>, because "writes nothing" was not true
+    /// of the index half and the snapshot could not tell: the pass pruned the subtree from the FTS
+    /// unconditionally, so a DELETE and an INSERT over the whole subtree ran on every replay and
+    /// left exactly the rows that were already there. And the case that matters is not the crash
+    /// replay, it is the RECURRING one — a folder that stays excluded turns up in every tick that
+    /// writes anything inside it, which on a busy folder is every 30 seconds.</para>
+    ///
+    /// <para>The REAL <see cref="FileSearchIndex"/>, for the reason the cost test gives: with the
+    /// fake, the half of this claim that is about the index is not observed at all.</para>
     /// </summary>
     [Fact]
     public async Task Replaying_a_subtree_exclusion_writes_nothing_the_second_time()
     {
-        using var harness = new SqliteInMemoryContext();
+        var connection = new CountingSqliteConnection("Data Source=:memory:");
+        using var harness = new SqliteInMemoryContext(connection: connection);
+        using (var create = harness.CreateContext())
+        {
+            SqliteFts.Create(create);
+        }
+
         var before = SubtreeWorld();
         var reader = ReaderFor(before);
         var volumeId = await SeedAndScanAsync(harness, reader, before);
@@ -485,13 +501,20 @@ public sealed class UsnDeltaConvergenceTests
         reader.Changes = [Change(after, 140, UsnReason.BasicInfoChange | UsnReason.Close)];
         reader.NextUsn = 900;
 
+        int firstCost;
         await using (var ctx = harness.CreateContext())
         {
-            var first = await BuildApplier(ctx, reader, MetadataFor(after)).SyncVolumeAsync(volumeId, default);
-            first.Excluded.Should().Be(2, "both rows under the folder had to learn the cause");
+            connection.Reset();
+            var first = await BuildApplier(ctx, reader, MetadataFor(after), new FileSearchIndex(ctx))
+                .SyncVolumeAsync(volumeId, default);
+            first.Excluded.Should().Be(2, "every row under the folder had to learn the cause");
+            firstCost = connection.Statements;
         }
 
         var once = await SnapshotAsync(harness);
+        var indexOnce = SqliteFts.Rows(harness);
+        indexOnce.Should().NotContain(r => r.Path.StartsWith(@"Photos\Cache"),
+            "the folder left the perimeter, so nothing under it may still answer a search");
 
         // Rewind the cursor by hand: the same delta is offered again, exactly as it would be after
         // a crash between the last write and the checkpoint.
@@ -502,13 +525,24 @@ public sealed class UsnDeltaConvergenceTests
             await ctx.SaveChangesAsync();
         }
 
+        int replayCost;
         await using (var ctx = harness.CreateContext())
         {
-            var again = await BuildApplier(ctx, reader, MetadataFor(after)).SyncVolumeAsync(volumeId, default);
+            connection.Reset();
+            var again = await BuildApplier(ctx, reader, MetadataFor(after), new FileSearchIndex(ctx))
+                .SyncVolumeAsync(volumeId, default);
             again.Excluded.Should().Be(0, "the guard is the cause's own flag: there is nothing left to write");
+            replayCost = connection.Statements;
         }
 
         (await SnapshotAsync(harness)).Should().BeEquivalentTo(once);
+        SqliteFts.Rows(harness).Should().Equal(indexOnce);
+
+        // The two runs execute the same code over the same delta; the only difference the replay is
+        // allowed to have is the pair of statements SyncDirectoriesAsync issues per chunk of
+        // directories — one chunk here — which the guard now skips because no row moved.
+        replayCost.Should().Be(firstCost - 2,
+            "a subtree whose rows did not move must not have its index rebuilt again");
     }
 
     /// <summary>
