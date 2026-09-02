@@ -714,15 +714,27 @@ public sealed class UsnDeltaApplier
     /// of it, to produce the state that was already there. What makes that recur is <b>not</b>
     /// ordinary write traffic inside the folder: NTFS journals the change to the FILE, so writing a
     /// file does not emit a record for its directory, and <see cref="Coalesce"/> plus the cursor
-    /// keep a record already consumed from coming back. The folder turns up again when IT changes,
-    /// and — the real recurring shape — when a NEW subdirectory inside it produces an excluded entry
-    /// of its own, at which point the whole subtree above is re-stamped for nothing. The other half
-    /// is replay: nested and duplicate entries within a single tick already reach the same rows
-    /// twice, and a delta re-offered after a crash reaches all of them again. The guard is sound
+    /// keep a record already consumed from coming back. What does recur reaches DOWNWARD in every
+    /// case, because <see cref="DirectoryQueries.InSubtree"/> matches the rows at or below an
+    /// entry's own path and never anything above it: the folder turning up again when IT changes
+    /// (another attribute write, a rename, a security change) and being re-decided over a subtree
+    /// that is already out; nested or duplicate entries within one tick, where an excluded
+    /// directory under another excluded directory covers the same rows a second time; and replay,
+    /// a delta re-offered after a crash reaching all of them again. The guard is sound
     /// because this pass changes exactly one thing about a row, <c>IsIncluded</c>: if no row
     /// changed, nothing this pass could have made stale is stale — which is a statement about THIS
     /// pass, not a promise that nobody else makes the index stale (see the KNOWN HOLE in
     /// <see cref="ReconcileAsync"/>).</para>
+    ///
+    /// <para><b>Not</b> what an earlier version of this note claimed, and worth leaving written
+    /// down because it is the plausible-sounding one: a NEW subdirectory created inside the
+    /// excluded folder re-stamps nothing. Excluded on its own account, it is asked about ITS path,
+    /// and a directory the catalog has never seen has no rows at or below it — the empty id list
+    /// takes the <c>continue</c> below, before the guard is ever reached. Inside the perimeter on
+    /// its own account, it produces no entry here at all: <c>Classify</c> drops it from
+    /// <c>directories</c> through the C16 second pass without ever recording it as an excluded
+    /// root. Either way nothing ABOVE it is touched, because there is no upward direction in this
+    /// pass.</para>
     ///
     /// <para><b>Each entry carries its OWN causes, not the union with its ancestors'</b>, and that
     /// is complete: an excluded ancestor is itself an entry in this set, and its own pass covers

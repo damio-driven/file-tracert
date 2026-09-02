@@ -781,10 +781,14 @@ public sealed class UsnDeltaConvergenceTests
     /// of the index half and the snapshot could not tell: the pass pruned the subtree from the FTS
     /// unconditionally, so a DELETE and an INSERT over the whole subtree ran on every replay and
     /// left exactly the rows that were already there. The crash replay is the case this test drives;
-    /// the one that recurs on a live volume is a NEW subdirectory inside the excluded folder, which
-    /// produces an excluded entry of its own and re-stamps everything above it. Ordinary write
+    /// on a live volume the same arithmetic is reached whenever the excluded folder turns up in the
+    /// journal again — another attribute write, a rename, a security change — and its whole
+    /// already-excluded subtree is re-decided, and whenever one tick names two nested excluded
+    /// directories, the inner one reaching rows the outer one has just written. Ordinary write
     /// traffic inside the folder does not: NTFS journals the change to the FILE, so writing a file
-    /// emits no record for its directory.</para>
+    /// emits no record for its directory. Nor, contrary to what this note used to say, does a NEW
+    /// subdirectory inside the excluded folder: the pass asks about ITS path and downward, and the
+    /// catalog holds no row under a directory it has never seen.</para>
     ///
     /// <para>The REAL <see cref="FileSearchIndex"/>, for the reason the cost test gives: with the
     /// fake, the half of this claim that is about the index is not observed at all.</para>
