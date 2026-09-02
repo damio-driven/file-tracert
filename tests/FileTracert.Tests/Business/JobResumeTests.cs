@@ -7,6 +7,7 @@ using FileTracert.Platform;
 using FileTracert.Tests.Data;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 
@@ -66,8 +67,16 @@ public sealed class JobResumeTests : IDisposable
 
     private JobExecutionEngine MakeEngine()
     {
-        var ledger = Substitute.For<ISpaceLedger>();
-        ledger.ReleaseAsync(default, default).ReturnsForAnyArgs(Task.CompletedTask);
+        // The REAL ledger. The substitute this replaces answered only ReleaseAsync, which was
+        // enough while a resumed job asked the space question nothing — step 15b made it ask, and
+        // a mock that returns null for ComputeFeasibilityAsync turned a successful resume into a
+        // Failed job. CLAUDE.md: a test that mocks the ledger does not test the ledger.
+        var services = new ServiceCollection();
+        var harness = _harness;
+        services.AddScoped<FileTracertDbContext>(_ => harness.CreateContext());
+        var ledger = new SpaceLedger(
+            services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
+            NullLogger<SpaceLedger>.Instance);
 
         var db = _harness.CreateContext();
         var indexUpdater = TestProjection.Index(db);

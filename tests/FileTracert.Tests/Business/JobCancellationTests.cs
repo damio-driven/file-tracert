@@ -8,6 +8,7 @@ using FileTracert.Platform;
 using FileTracert.Tests.Data;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 
@@ -65,11 +66,24 @@ public sealed class JobCancellationTests : IDisposable
     private string R(params string[] parts) => Path.Combine([_relRoot, .. parts]);
     private string Abs(string rel) => Path.GetFullPath(Path.Combine(_mountPoint, rel));
 
-    private static ISpaceLedger NoopLedger()
+    /// <summary>
+    /// The REAL ledger, over the same database the engine uses. It used to be an NSubstitute
+    /// stand-in that answered only <c>ReleaseAsync</c>, which was enough while the engine asked
+    /// it nothing on the resume path — step 15b made a resumed job re-check its space before
+    /// writing, so the substitute silently answered <c>null</c> to
+    /// <c>ComputeFeasibilityAsync</c> and the engine never reached the copy at all (this test
+    /// then waited for ever on a gate the mover never opened). CLAUDE.md says it plainly: a test
+    /// that mocks the ledger does not test the ledger, and the ledger is now part of what a
+    /// resume does.
+    /// </summary>
+    private ISpaceLedger RealLedger()
     {
-        var ledger = Substitute.For<ISpaceLedger>();
-        ledger.ReleaseAsync(default, default).ReturnsForAnyArgs(Task.CompletedTask);
-        return ledger;
+        var services = new ServiceCollection();
+        var harness = _harness;
+        services.AddScoped<FileTracertDbContext>(_ => harness.CreateContext());
+        return new SpaceLedger(
+            services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
+            NullLogger<SpaceLedger>.Instance);
     }
 
     private JobExecutionEngine MakeEngine(IFileMover mover)
@@ -77,7 +91,7 @@ public sealed class JobCancellationTests : IDisposable
         var db = _harness.CreateContext();
         var indexUpdater = TestProjection.Index(db);
         var notifications = new FileTracert.Business.Notifications.NotificationService(db, TestProjection.Realtime());
-        var ledger = NoopLedger();
+        var ledger = RealLedger();
         return new JobExecutionEngine(db, mover, ledger, TestProjection.Space(db, ledger), indexUpdater, TestProjection.Overlay(db), notifications,
             TimeProvider.System, TestProjection.Realtime(), NullLogger<JobExecutionEngine>.Instance);
     }
@@ -85,7 +99,7 @@ public sealed class JobCancellationTests : IDisposable
     private QueueService MakeQueue()
     {
         var db = _harness.CreateContext();
-        var ledger = NoopLedger();
+        var ledger = RealLedger();
         return new QueueService(db, ledger, TestProjection.Space(db, ledger), _registry, Substitute.For<IFileMover>(),
             new QueueSignal(),
             TestProjection.Index(db), TestProjection.Overlay(db),
