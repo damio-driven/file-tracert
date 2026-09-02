@@ -90,7 +90,9 @@ public sealed class ExclusionCauseTests
         SqliteInMemoryContext harness, string[] extensions, string[] excludedPaths)
     {
         await using var ctx = harness.CreateContext();
-        var service = new FilterSettingsService(ctx, new FilterReconciler(ctx, new FileSearchIndex(ctx)));
+        var service = new FilterSettingsService(
+            ctx, new FilterReconciler(ctx, new FileSearchIndex(ctx)),
+            NullLogger<FilterSettingsService>.Instance);
         return await service.UpdateAsync(
             new FilterSettingsDto(extensions.ToList(), excludedPaths.ToList()), CancellationToken.None);
     }
@@ -462,6 +464,50 @@ public sealed class ExclusionCauseTests
             .Should().BeTrue("the % is a character, not 'anything'");
         (await read.Files.SingleAsync(f => f.Name == "anychar.jpg")).IsIncluded
             .Should().BeTrue("the _ is a character, not 'any single character'");
+    }
+
+    /// <summary>
+    /// A root with a per-root override is reconciled too. That filter substitutes the TYPE half and
+    /// nothing else — <c>ExcludedPaths</c> is global, and <c>EffectiveFilterBuilder.Build</c> applies
+    /// it to every root, override or not. Skipping those roots left the whole defect alive exactly
+    /// where it was, and worse than before: with <c>NeedsScan = false</c> and counts that omit them,
+    /// so the screen reports an exclusion it has not applied.
+    ///
+    /// <para>The <c>.txt</c> is the other half of the proof: reconciling those roots against the
+    /// GLOBAL filter instead of their own would exclude it by type, which is the wrong fix wearing
+    /// the right result.</para>
+    /// </summary>
+    [Fact]
+    public async Task A_root_with_its_own_type_filter_is_reconciled_with_that_filter()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, ["jpg"]);
+
+        await using (var arrange = harness.CreateContext())
+        {
+            var root = await arrange.WatchedRoots.SingleAsync();
+            root.FilterOverrideJson = """{ "extensions": ["jpg", "txt"] }""";
+            await arrange.SaveChangesAsync();
+        }
+
+        await ScanAsync(harness, volumeId,
+            Dir("AppData", "AppData"),
+            File(@"AppData\thumb.jpg", "thumb.jpg"),
+            Dir("Photos", "Photos"),
+            File(@"Photos\note.txt", "note.txt"));
+
+        var result = await SetFilterAsync(harness, ["jpg"], ["AppData"]);
+
+        await using var read = harness.CreateContext();
+        var thumb = await read.Files.SingleAsync(f => f.Name == "thumb.jpg");
+        thumb.IsIncluded.Should().BeFalse("the excluded segment is global and reaches this root too");
+        thumb.ExcludedByPath.Should().BeTrue();
+
+        (await read.Files.SingleAsync(f => f.Name == "note.txt")).IsIncluded.Should().BeTrue(
+            "the root's OWN allow-list governs the type half — the global one never applied here");
+
+        result.IncludedCount.Should().Be(1);
+        result.ExcludedCount.Should().Be(1, "the numbers on the screen have to count this root");
     }
 
     /// <summary>
