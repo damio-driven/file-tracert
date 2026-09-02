@@ -104,24 +104,79 @@ internal sealed class FakeUsnReader(IReadOnlyList<UsnEntry> entries, long nextUs
 /// A journal that can be driven from a test: a full snapshot for the scan, then a scripted delta
 /// for the incremental pass. Records what cursor it was asked to resume from, which is how the
 /// checkpoint assertions can tell "read the delta again" from "read on from where it stopped".
+///
+/// <para><b>Every mutable member is behind one lock, and that is not belt-and-braces.</b> The
+/// worker tests hand this object to a LIVE <c>UsnSyncWorker</c> and then rewrite it from the test
+/// thread — "the journal moved on" is expressed by assigning <c>Changes</c> and <c>NextUsn</c>
+/// while the worker is running. Without a barrier those two writes are independent: the worker can
+/// see the new <c>Changes</c> (a reference write) and the OLD <c>NextUsn</c>, and then checkpoint
+/// the stale cursor. The failure has a signature — <c>LastUsn</c> one increment behind what the
+/// test wrote — and it is a red that appears under load and nowhere else, which is the worst kind
+/// this suite can produce: it looks like the product and it is the fixture. Same for
+/// <c>Resumed</c>, which the worker appends to while the test reads its <c>Count</c>.</para>
+///
+/// <para><c>Snapshot</c> is <c>init</c> and never written after construction, so it stays out.</para>
 /// </summary>
 internal sealed class ScriptedUsnReader : IUsnReader
 {
+    private readonly Lock _sync = new();
+    private readonly List<(long SinceUsn, ulong JournalId)> _resumed = [];
+    private List<UsnChangeRecord> _changes = [];
+    private long _nextUsn = 500;
+    private ulong _journalId = 7;
+    private long _lowestValidUsn;
+
     public List<UsnEntry> Snapshot { get; init; } = [];
-    public List<UsnChangeRecord> Changes { get; set; } = [];
-    public long NextUsn { get; set; } = 500;
-    public ulong JournalId { get; set; } = 7;
-    public long LowestValidUsn { get; set; }
 
-    /// <summary>Cursors this reader was asked to resume from, oldest first.</summary>
-    public List<(long SinceUsn, ulong JournalId)> Resumed { get; } = [];
+    public List<UsnChangeRecord> Changes
+    {
+        get { lock (_sync) { return _changes; } }
+        set { lock (_sync) { _changes = value; } }
+    }
 
-    public int ReadChangesCalls => Resumed.Count;
+    public long NextUsn
+    {
+        get { lock (_sync) { return _nextUsn; } }
+        set { lock (_sync) { _nextUsn = value; } }
+    }
+
+    public ulong JournalId
+    {
+        get { lock (_sync) { return _journalId; } }
+        set { lock (_sync) { _journalId = value; } }
+    }
+
+    public long LowestValidUsn
+    {
+        get { lock (_sync) { return _lowestValidUsn; } }
+        set { lock (_sync) { _lowestValidUsn = value; } }
+    }
+
+    /// <summary>
+    /// Cursors this reader was asked to resume from, oldest first — a COPY, because the worker goes
+    /// on appending to the real list while the assertion walks what it was handed.
+    /// </summary>
+    public IReadOnlyList<(long SinceUsn, ulong JournalId)> Resumed
+    {
+        get { lock (_sync) { return _resumed.ToList(); } }
+    }
+
+    public int ReadChangesCalls
+    {
+        get { lock (_sync) { return _resumed.Count; } }
+    }
 
     public bool SupportsUsn(string volumeGuid) => true;
 
-    public UsnJournalState GetJournalState(string volumeGuid) =>
-        new(JournalId, FirstUsn: 0, NextUsn: NextUsn, LowestValidUsn: LowestValidUsn);
+    public UsnJournalState GetJournalState(string volumeGuid)
+    {
+        // One lock for all three, so the state a caller reads is one the test actually wrote and
+        // not a mix of two of them.
+        lock (_sync)
+        {
+            return new UsnJournalState(_journalId, FirstUsn: 0, NextUsn: _nextUsn, LowestValidUsn: _lowestValidUsn);
+        }
+    }
 
     public void EnsureJournal(string volumeGuid) { }
 
@@ -133,16 +188,22 @@ internal sealed class ScriptedUsnReader : IUsnReader
     /// </summary>
     public UsnChangeResult ReadChanges(string volumeGuid, long sinceUsn, ulong journalId, CancellationToken ct)
     {
-        Resumed.Add((sinceUsn, journalId));
-
-        if (journalId != JournalId || sinceUsn < LowestValidUsn)
+        // The whole answer is composed under the lock: the delta a caller is handed and the NextUsn
+        // it will checkpoint have to come from the same version of this fixture, which is exactly
+        // what the test thread's two assignments can otherwise tear apart.
+        lock (_sync)
         {
-            return new UsnChangeResult([], NextUsn, RequiresFullRescan: true);
-        }
+            _resumed.Add((sinceUsn, journalId));
 
-        // Only what the caller has not consumed yet, so a second pass on the same cursor is empty.
-        var pending = Changes.Where(c => c.Entry.Usn >= sinceUsn).ToList();
-        return new UsnChangeResult(pending, NextUsn, RequiresFullRescan: false);
+            if (journalId != _journalId || sinceUsn < _lowestValidUsn)
+            {
+                return new UsnChangeResult([], _nextUsn, RequiresFullRescan: true);
+            }
+
+            // Only what the caller has not consumed yet, so a second pass on the same cursor is empty.
+            var pending = _changes.Where(c => c.Entry.Usn >= sinceUsn).ToList();
+            return new UsnChangeResult(pending, _nextUsn, RequiresFullRescan: false);
+        }
     }
 }
 
@@ -163,6 +224,15 @@ internal sealed class ThrowingUsnReader : IUsnReader
         throw new NotSupportedException();
 }
 
+/// <summary>
+/// The metadata port over a map the test supplies — and hands straight back, so a test can express
+/// "a file appeared on disk" by adding to it.
+///
+/// <para><b>A caller that mutates the map while a live worker holds this reader MUST pass a
+/// concurrent one</b> (<c>UsnSyncWorkerTests.Disk</c> does, and says so). Reading a plain
+/// <see cref="Dictionary{TKey,TValue}"/> during a write to it is not merely stale: it can throw or
+/// fail to terminate. Every other caller here builds the map once and never touches it again.</para>
+/// </summary>
 internal sealed class FakeFileMetadataReader(IReadOnlyDictionary<string, FileMetadata> map) : IFileMetadataReader
 {
     public Task<IReadOnlyDictionary<string, FileMetadata>> ReadAsync(
