@@ -103,6 +103,52 @@ public class FileFilterTests
     public void An_excluded_segment_matches_between_separators(string segment, string path, bool excluded) =>
         FileFilter.IsPathExcluded(path, Filter(excludedSegments: [segment])).Should().Be(excluded);
 
+    /// <summary>
+    /// E7 territory, and the doc on <see cref="FileFilter.IsPathExcluded"/> claims it outright: a
+    /// scan asks this once per ENUMERATED ITEM — millions on a real volume — so it must not
+    /// allocate. It did. <c>EffectiveFilter.ExcludedPathSegments</c> is typed as an INTERFACE, so
+    /// <c>foreach</c> went through <c>IEnumerable&lt;string&gt;.GetEnumerator()</c> and boxed
+    /// <c>List&lt;string&gt;.Enumerator</c> on every call: 40 bytes a call, ~30 MB of garbage per
+    /// scan of the installed catalog, for a method whose whole point was that it builds nothing.
+    ///
+    /// <para>Measured with <see cref="GC.GetAllocatedBytesForCurrentThread"/> — a counter, not a
+    /// stopwatch, which is the only unit that makes zero a stable assertion on any machine, the
+    /// same argument <c>RootsBySpecificityTests</c> makes.</para>
+    /// </summary>
+    [Fact]
+    public void Deciding_the_path_half_of_a_million_items_allocates_nothing()
+    {
+        var filter = Filter(excludedSegments: ["Windows", "Program Files", "$Recycle.Bin", "AppData"]);
+        var paths = new[]
+        {
+            @"Media\Foto\a.jpg", @"Windows\System32\b.dll", @"Users\Me\AppData\Local\c.tmp",
+            @"Documenti\d.pdf", @"Program Files\App\e.exe", @"Altro\Sotto\f.txt",
+        };
+
+        // Warm-up: first-call JIT is not what is being measured.
+        foreach (var p in paths) FileFilter.IsPathExcluded(p, filter);
+
+        const int iterations = 200_000;
+        var before = GC.GetAllocatedBytesForCurrentThread();
+
+        var excluded = false;
+        for (var i = 0; i < iterations; i++)
+        {
+            excluded = FileFilter.IsPathExcluded(paths[i % paths.Length], filter);
+        }
+
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        // Asserted so the loop cannot be optimised away, and so an allocation-free method that
+        // stopped answering correctly would still be caught here.
+        excluded.Should().Be(
+            FileFilter.IsPathExcluded(paths[(iterations - 1) % paths.Length], filter),
+            "the last iteration still has to give the right answer");
+        allocated.Should().Be(0,
+            "{0} calls must not allocate — the interface-typed foreach boxed a list enumerator " +
+            "on every one of them", iterations);
+    }
+
     [Theory]
     [InlineData(FileAttributes.System)]
     [InlineData(FileAttributes.Hidden)]

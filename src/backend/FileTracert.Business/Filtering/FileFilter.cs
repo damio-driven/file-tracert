@@ -66,9 +66,15 @@ public static class FileFilter
         var normalized = relativePath.Contains('/') ? relativePath.Replace('/', '\\') : relativePath;
         var path = normalized.AsSpan().Trim('\\');
 
-        foreach (var excluded in filter.ExcludedPathSegments)
+        // An INDEXED loop, not foreach. ExcludedPathSegments is typed as IReadOnlyList<string>, so
+        // foreach goes through IEnumerable<string>.GetEnumerator() and BOXES List<string>.Enumerator
+        // — 40 bytes on every call of a method whose doc above promises it builds nothing, i.e. tens
+        // of megabytes of garbage per scan of a real catalog. The indexer is an interface call and
+        // allocates nothing; there is a test that measures it.
+        var segments = filter.ExcludedPathSegments;
+        for (var i = 0; i < segments.Count; i++)
         {
-            if (ContainsFramed(path, excluded))
+            if (ContainsFramed(path, segments[i]))
             {
                 return true;
             }
