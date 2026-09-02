@@ -596,6 +596,15 @@ public sealed class UsnDeltaConvergenceTests
     /// folder's content walked back into the Catalog by dropping a path segment, which is the 11h
     /// regression reached through a new door.</para>
     ///
+    /// <para><b>Which HALF of that this case holds, since it holds only one.</b> The
+    /// <c>ExcludedByPath</c> asserted below was written by the real <c>FilterReconciler</c> in
+    /// <c>between</c>, before the delta ran, so it is not evidence about this pass: dropping the
+    /// path cause inside the pass leaves this test — and the whole suite — green. What is held here
+    /// is the ATTRIBUTE half, the one that matters most because nothing else in the system can
+    /// re-derive it. The other half needs rows that reach the delta carrying neither cause, and
+    /// that is <see cref="The_delta_writes_both_causes_itself_when_the_catalog_carries_neither"/>;
+    /// the asymmetry itself is declared on <see cref="FileFilter.EvaluatePerimeter"/>.</para>
+    ///
     /// <para><b>The guard is the cause's own column, never <c>IsIncluded</c>.</b> These rows are
     /// ALREADY out when the delta runs — the Setup save in <c>between</c> is a real
     /// <c>FilterReconciler</c> pass, so they carry <c>ExcludedByPath = 1, IsIncluded = 0</c> — and
@@ -632,6 +641,73 @@ public sealed class UsnDeltaConvergenceTests
                     row.ExcludedByScan.Should().BeTrue(
                         "the folder is also hidden, and only another scan may ever retract that — dropping "
                         + "the segment must NOT be enough to bring the row back");
+                    row.IsPresent.Should().BeTrue("an exclusion is not an absence (§6)");
+                }
+            });
+    }
+
+    /// <summary>
+    /// The same folder and the same two rules, with the rows reaching the delta carrying NEITHER
+    /// cause — which is the direction the case above cannot hold, and the reason this one exists
+    /// rather than one more assertion over there.
+    ///
+    /// <para><b>What the case above does not prove.</b> Its rows arrive already
+    /// <c>ExcludedByPath = 1</c>, written by the real <see cref="FilterReconciler"/> in
+    /// <c>between</c>; asserting that same column afterwards is therefore satisfied by someone
+    /// else's work. Measured, not supposed: suppressing the PATH cause inside the subtree pass
+    /// whenever the attribute cause also applies leaves the whole suite green. The mirror mutation
+    /// is caught over there and everywhere else, because nothing but a scan can write the attribute
+    /// cause — that asymmetry is declared on <see cref="FileFilter.EvaluatePerimeter"/>, and it is
+    /// exactly why the two directions need different instruments.</para>
+    ///
+    /// <para><b>How the rows get here clean.</b> The segment is added to the settings and
+    /// reconciliation is NOT run — the same shape, and the same justification, as
+    /// <see cref="A_row_under_a_path_excluded_folder_records_the_cause_the_settings_can_undo"/>:
+    /// writing the setting and reconciling a root are two steps, and a row can be sitting INCLUDED
+    /// under a newly excluded segment in between them (a completed <c>MoveFile</c> lands one there
+    /// without the path cause, a declared limit of this round). The premise is asserted inside
+    /// <c>between</c> instead of assumed, so the day someone puts a reconciliation there this test
+    /// says so instead of quietly going back to proving the other direction twice.</para>
+    ///
+    /// <para>Convergence is a real question here and not a tautology: the long road re-decides the
+    /// whole subtree from the perimeter when it closes and writes both causes, so a delta that
+    /// carries only one of them is a divergence in the snapshot, not merely a weaker row.</para>
+    /// </summary>
+    [Fact]
+    public async Task The_delta_writes_both_causes_itself_when_the_catalog_carries_neither()
+    {
+        var before = SubtreeWorld();
+        var after = Replace(before, 140, i => i with
+        {
+            Attributes = FileAttributes.Directory | FileAttributes.Hidden,
+        });
+
+        await AssertConvergesAsync(before, after,
+            [Change(after, 140, UsnReason.BasicInfoChange | UsnReason.Close)],
+            between: async harness =>
+            {
+                await SetExcludedPathsAsync(harness, "Cache");
+
+                await using var read = harness.CreateContext();
+                var rows = await read.Files
+                    .Where(f => f.UsnFileRef == 205 || f.UsnFileRef == 206)
+                    .ToListAsync();
+
+                rows.Should().HaveCount(2).And.OnlyContain(
+                    f => f.IsIncluded && !f.ExcludedByPath && !f.ExcludedByScan,
+                    "the delta must be the only thing that has written either cause when it is judged");
+            },
+            extra: async db =>
+            {
+                foreach (var frn in (long[])[205, 206])
+                {
+                    var row = await db.Files.SingleAsync(f => f.UsnFileRef == frn);
+                    row.IsIncluded.Should().BeFalse();
+                    row.ExcludedByPath.Should().BeTrue(
+                        "the pass has to carry EVERY rule of the verdict, not the first one the enumerator "
+                        + "happens to yield — and here nobody else could have written this column");
+                    row.ExcludedByScan.Should().BeTrue(
+                        "the folder is hidden as well, and the causes sum rather than compete");
                     row.IsPresent.Should().BeTrue("an exclusion is not an absence (§6)");
                 }
             });
