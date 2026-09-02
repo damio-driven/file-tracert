@@ -196,16 +196,25 @@ public static class FileFilter
     /// attribute half is two flag tests, so asking it unconditionally costs nothing measurable.
     /// </para>
     ///
-    /// <para><b>The two halves are not equally guarded, on purpose — stated so a green suite is
-    /// not read as more than it is.</b> Suppressing the ATTRIBUTE cause when the path one applies
-    /// is caught everywhere, including by the integration tests, and it has to be: nothing else in
-    /// the system can re-derive "is that folder still hidden", so a dropped attribute cause is
-    /// permanent and lets a settings change walk a hidden folder's content back into the Catalog.
-    /// The mirror mutation — suppressing the PATH cause when the attribute one applies — survives
-    /// those same integration tests, and that is not a gap in them: <c>FilterReconciler</c>
-    /// recomputes <c>ExcludedByPath</c> from the catalog's own paths in SQL, so the state repairs
-    /// itself at the next Setup save. The unit tests on this method are what pin that direction.
+    /// <para><b>What is asymmetric is the CONSEQUENCE, not the coverage</b> — spelled out because
+    /// this note previously claimed the coverage was asymmetric too, and that stopped being true
+    /// the day the integration case named below was written. A dropped ATTRIBUTE cause is
+    /// permanent: nothing in the system can re-derive "is that folder still hidden", so the row
+    /// waits for the next full scan while a settings change walks a hidden folder's content back
+    /// into the Catalog. A dropped PATH cause repairs itself, because <c>FilterReconciler</c>
+    /// recomputes <c>ExcludedByPath</c> from the catalog's own paths in SQL at the next Setup save.
     /// </para>
+    ///
+    /// <para><b>Both directions are held, and by more than the unit tests.</b> Measured on the
+    /// whole suite rather than argued: suppressing the PATH cause here when the attribute one
+    /// applies reddens two, one of each kind — the unit case
+    /// <c>FileFilterTests.When_both_perimeter_rules_reject_it_both_are_recorded</c> and the
+    /// integration case
+    /// <c>UsnDeltaConvergenceTests.The_delta_writes_both_causes_itself_when_the_catalog_carries_neither</c>,
+    /// whose rows reach the delta carrying neither column, so this method is the only thing that
+    /// can put either one there. The mirror mutation — suppressing the ATTRIBUTE cause when the
+    /// path one applies — reddens six, those two among them, which is the coverage the consequence
+    /// deserves and not a claim that the other direction is unheld.</para>
     /// </summary>
     public static PerimeterVerdict EvaluatePerimeter(
         string relativePath, FileAttributes attributes, EffectiveFilter filter) =>

@@ -599,7 +599,9 @@ public sealed class UsnDeltaConvergenceTests
     /// <para><b>Which HALF of that this case holds, since it holds only one.</b> The
     /// <c>ExcludedByPath</c> asserted below was written by the real <c>FilterReconciler</c> in
     /// <c>between</c>, before the delta ran, so it is not evidence about this pass: dropping the
-    /// path cause inside the pass leaves this test — and the whole suite — green. What is held here
+    /// path cause inside the pass leaves THIS test green. It no longer leaves the whole suite green
+    /// — measured, and the number is the point of saying it: three others redden, all of them in
+    /// this file and none of them this one. What is held here
     /// is the ATTRIBUTE half, the one that matters most because nothing else in the system can
     /// re-derive it. The other half needs rows that reach the delta carrying neither cause, and
     /// that is <see cref="The_delta_writes_both_causes_itself_when_the_catalog_carries_neither"/>;
@@ -655,10 +657,14 @@ public sealed class UsnDeltaConvergenceTests
     /// <c>ExcludedByPath = 1</c>, written by the real <see cref="FilterReconciler"/> in
     /// <c>between</c>; asserting that same column afterwards is therefore satisfied by someone
     /// else's work. Measured, not supposed: suppressing the PATH cause inside the subtree pass
-    /// whenever the attribute cause also applies leaves the whole suite green. The mirror mutation
-    /// is caught over there and everywhere else, because nothing but a scan can write the attribute
-    /// cause — that asymmetry is declared on <see cref="FileFilter.EvaluatePerimeter"/>, and it is
-    /// exactly why the two directions need different instruments.</para>
+    /// whenever the attribute cause also applies leaves the case above green, and it left the whole
+    /// suite green until THIS case existed — today it is the only red that mutation produces, over
+    /// all of them. The mirror — suppressing the ATTRIBUTE cause when the path one applies, taken
+    /// where the verdict is formed — reddens six, this case and the one above among them; that
+    /// count and its own mirror are written down on <see cref="FileFilter.EvaluatePerimeter"/>.
+    /// What separates the two directions is the CONSEQUENCE of each loss, not the coverage of
+    /// either: a lost path cause repairs itself at the next Setup save, a lost attribute cause does
+    /// not repair at all short of a full scan.</para>
     ///
     /// <para><b>How the rows get here clean.</b> The segment is added to the settings and
     /// reconciliation is NOT run — the same shape, and the same justification, as
