@@ -1,4 +1,4 @@
-﻿using System.ComponentModel;
+using System.ComponentModel;
 using FileTracert.Business.Filtering;
 using FileTracert.Business.Volumes;
 using FileTracert.Contracts.Enums;
@@ -518,7 +518,10 @@ public sealed class UsnDeltaApplier
     ///
     /// <para><b>Excluded</b> — the object is still exactly where the row says, but the perimeter
     /// no longer covers it. That is a filter decision, reversible without a re-scan (§4), so the
-    /// cause is recorded and <c>IsPresent</c> is left strictly alone (step 11g/11h).</para>
+    /// cause is recorded and <c>IsPresent</c> is left strictly alone (step 11g/11h). It reaches a
+    /// row two ways, and both are needed: the loop below, for the rows this delta actually names,
+    /// and <see cref="ExcludeSubtreesAsync"/>, for the rows underneath a folder that left the
+    /// perimeter and that no record names at all.</para>
     /// </summary>
     private async Task<(int Absent, int Excluded)> ReconcileAsync(
         int volumeId,
@@ -588,14 +591,111 @@ public sealed class UsnDeltaApplier
             // attributes turned against it — one that just became Hidden — is refused indexing
             // above and then answers "inside" here, and the row keeps IsIncluded = 1 until a full
             // scan passes. The verdict is not wrong, it is missing: nothing recorded the file
-            // itself. Closing it means recording the file's own perimeter verdict at classify
-            // time; it belongs with the subtree pass of A3, not here.
+            // itself. Considered for the A3 round and left: closing it means recording every
+            // FILE's perimeter verdict at classify time, which is a change to what Classify
+            // produces and a defect of its own — this pass is about the folder that leaves the
+            // perimeter, and the rows underneath it that no record names.
         }
+
+        // FIRST, and the ordering is the scan's own trick (see
+        // BulkIndexWriter.ReconcileUnseenFilesAsync): the rows this flags IsIncluded = 0 drop out
+        // of the absence pass by themselves, because that pass's SQL guard is IsIncluded = 1. So a
+        // file deleted from a folder this same delta excluded ends up EXCLUDED and not ABSENT —
+        // which is exactly what a full scan of the same world produces, since it never looks inside
+        // that folder and its absence pass skips what its exclusion pass has just flagged.
+        var excluded = await ExcludeSubtreesAsync(volumeId, perimeter, ct);
 
         var absent = await MarkFilesAbsentAsync(goneFileIds, ct);
         absent += await MarkDirectoriesAbsentAsync(goneDirectoryIds, ct);
 
-        return (absent, await ExcludeFilesAsync(excludedByCause, ct));
+        return (absent, excluded + await ExcludeFilesAsync(excludedByCause, ct));
+    }
+
+    /// <summary>
+    /// Carries a subtree exclusion this delta decided to the rows the catalog ALREADY holds under
+    /// it — the hole A3 names, and a hole only the delta has.
+    ///
+    /// <para>A full scan does not need this: it asks the perimeter about EVERY directory of the
+    /// catalog when it closes, so each descendant of a folder that just turned Hidden produces its
+    /// own skipped area. A delta cannot — it sees what CHANGED, and the rows under that folder did
+    /// not change, so no journal record names them. Without this pass they keep
+    /// <c>IsIncluded = 1</c> until the next full scan: navigable in the Catalog and findable in
+    /// Search, inside a folder the user's perimeter excludes. An exclusion silently not applied is
+    /// the worst shape of failure here, because the user believes they decided something.</para>
+    ///
+    /// <para><b>Set-based, and addressed by DIRECTORY on both halves.</b> One SELECT of the
+    /// subtree's directory ids through <see cref="DirectoryQueries.InSubtree"/> (K5 — the single
+    /// spelling of that predicate), one UPDATE per cause per chunk of them, and the index pruned
+    /// through <see cref="IFileSearchIndex.SyncDirectoriesAsync"/> rather than the per-file
+    /// <c>RemoveAsync</c> loop the rest of this class uses. That loop is the right shape for the
+    /// handful of files a delta names by hand; a subtree can hold thousands and none of them is
+    /// named anywhere. The ids are read ONCE and handed to both halves, so the flags and the index
+    /// cannot be written for two different sets of directories.</para>
+    ///
+    /// <para><b>The cost is per excluded DIRECTORY of this delta, never per file behind them.</b>
+    /// Each one pays a seek on <c>IX_Directories_MaterializedPath</c> (C4) plus its updates; the
+    /// rows underneath cost nothing extra, however many there are. That is the right axis: on a
+    /// system volume a tick can name a few directories the filter refuses and each of them can
+    /// stand over thousands of rows. A directory the catalog never held returns an empty id list
+    /// and stops there, which is the common case for journal traffic in places this index has never
+    /// been.</para>
+    ///
+    /// <para><b>Each entry carries its OWN causes, not the union with its ancestors'</b>, and that
+    /// is complete: an excluded ancestor is itself an entry in this set, and its own pass covers
+    /// the very same subtree — so a row under two excluded folders is reached twice and ends up
+    /// with both causes, which is what "the causes sum" means here.</para>
+    ///
+    /// <para>Only <c>Files</c>. <c>Directories</c> have no inclusion flag and a folder that exists
+    /// on disk exists (11g), and <c>IsPresent</c> is never touched: an exclusion is not an absence
+    /// (§6).</para>
+    /// </summary>
+    private async Task<int> ExcludeSubtreesAsync(int volumeId, ScanPerimeter perimeter, CancellationToken ct)
+    {
+        if (perimeter.ExcludedSubtreeRoots.Count == 0)
+        {
+            return 0;
+        }
+
+        var excluded = 0;
+
+        // One stamp for the whole pass: it is one transaction writing one verdict, and rows of the
+        // same subtree differing by a few microseconds would only invite someone to read meaning
+        // into the spread.
+        var now = DateTime.UtcNow;
+        await using var tx = await _db.Database.BeginTransactionAsync(ct);
+
+        foreach (var (path, verdict) in perimeter.ExcludedSubtreeRoots)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var directoryIds = await _db.Directories.AsNoTracking()
+                .InSubtree(volumeId, path)
+                .Select(d => d.Id)
+                .ToListAsync(ct);
+
+            if (directoryIds.Count == 0)
+            {
+                // An excluded folder the catalog never held — the normal case on a system volume,
+                // where most of the journal's traffic happens in places this index has never been.
+                continue;
+            }
+
+            foreach (var chunk in directoryIds.Chunk(BatchSize))
+            {
+                var ids = chunk.ToList();
+                var rows = _db.Files.Where(f => ids.Contains(f.DirectoryId));
+
+                foreach (var cause in verdict)
+                {
+                    excluded += await ExcludeForCauseAsync(rows, cause, DateTime.UtcNow, ct);
+                }
+            }
+
+            await _ftsIndex.SyncDirectoriesAsync(directoryIds, ct);
+        }
+
+        await tx.CommitAsync(CancellationToken.None);
+        return excluded;
     }
 
     private async Task<int> MarkFilesAbsentAsync(List<int> fileIds, CancellationToken ct)
@@ -684,27 +784,8 @@ public sealed class UsnDeltaApplier
                 var ids = chunk.ToList();
                 var now = DateTime.UtcNow;
 
-                // The invariant of §6: IsIncluded is the derived column, the cause flag is the fact.
-                // Only the causes this pass can prove are written — the others are left as they
-                // are, because each is undone by a different owner (step 11h, step 16).
-                var rows = _db.Files.Where(f => ids.Contains(f.Id));
-                excluded += cause switch
-                {
-                    ScanSkipCause.InactiveRoot => await rows.ExecuteUpdateAsync(s => s
-                        .SetProperty(f => f.ExcludedByRoot, true)
-                        .SetProperty(f => f.IsIncluded, false)
-                        .SetProperty(f => f.UpdatedUtc, now), ct),
-                    ScanSkipCause.ExcludedPath => await rows.ExecuteUpdateAsync(s => s
-                        .SetProperty(f => f.ExcludedByPath, true)
-                        .SetProperty(f => f.IsIncluded, false)
-                        .SetProperty(f => f.UpdatedUtc, now), ct),
-                    ScanSkipCause.ExcludedAttributes => await rows.ExecuteUpdateAsync(s => s
-                        .SetProperty(f => f.ExcludedByScan, true)
-                        .SetProperty(f => f.IsIncluded, false)
-                        .SetProperty(f => f.UpdatedUtc, now), ct),
-                    _ => throw new ArgumentOutOfRangeException(
-                        nameof(fileIdsByCause), cause, "Unknown scan skip cause."),
-                };
+                excluded += await ExcludeForCauseAsync(
+                    _db.Files.Where(f => ids.Contains(f.Id)), cause, now, ct);
 
                 foreach (var id in ids)
                 {
@@ -716,6 +797,48 @@ public sealed class UsnDeltaApplier
         await tx.CommitAsync(CancellationToken.None);
         return excluded;
     }
+
+    /// <summary>
+    /// One cause, one column, one statement — the delta's spelling of
+    /// <c>BulkIndexWriter.ExcludeForCauseAsync</c>, guard included, so the two roads write a row
+    /// out the same way.
+    ///
+    /// <para>The invariant of §6: <c>IsIncluded</c> is the derived column, the cause flag is the
+    /// fact. Only the cause being proved is written; the other three are left exactly as they are,
+    /// because each is undone by a different owner (11h, and step 16 for the path half).</para>
+    ///
+    /// <para><b>The guard is the cause's OWN flag, never <c>IsIncluded</c> alone</b>: a row already
+    /// excluded for a different reason still has to learn this one, or undoing that other reason
+    /// lets it back in. The <c>OR IsIncluded = 1</c> half is the repair net under a broken
+    /// invariant, for the same reason the writer's version carries it. Together they make a replay
+    /// write nothing at all — which is the property "the cursor is written LAST" rests on, and it
+    /// stopped being a formality the moment the subtree pass began touching rows that no journal
+    /// record names.</para>
+    /// </summary>
+    private static Task<int> ExcludeForCauseAsync(
+        IQueryable<FileEntry> rows, ScanSkipCause cause, DateTime now, CancellationToken ct) =>
+        cause switch
+        {
+            ScanSkipCause.InactiveRoot => rows
+                .Where(f => !f.ExcludedByRoot || f.IsIncluded)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(f => f.ExcludedByRoot, true)
+                    .SetProperty(f => f.IsIncluded, false)
+                    .SetProperty(f => f.UpdatedUtc, now), ct),
+            ScanSkipCause.ExcludedPath => rows
+                .Where(f => !f.ExcludedByPath || f.IsIncluded)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(f => f.ExcludedByPath, true)
+                    .SetProperty(f => f.IsIncluded, false)
+                    .SetProperty(f => f.UpdatedUtc, now), ct),
+            ScanSkipCause.ExcludedAttributes => rows
+                .Where(f => !f.ExcludedByScan || f.IsIncluded)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(f => f.ExcludedByScan, true)
+                    .SetProperty(f => f.IsIncluded, false)
+                    .SetProperty(f => f.UpdatedUtc, now), ct),
+            _ => throw new ArgumentOutOfRangeException(nameof(cause), cause, "Unknown scan skip cause."),
+        };
 
     // ── cursor ────────────────────────────────────────────────────────────────
 

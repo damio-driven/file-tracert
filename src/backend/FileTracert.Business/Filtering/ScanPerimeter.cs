@@ -56,6 +56,15 @@ public sealed class ScanPerimeter
 
     public int ExcludedSubtreeCount => _excluded.Count;
 
+    /// <summary>
+    /// The excluded directories themselves, each with the rules that rejected it — for the caller
+    /// that has to carry those exclusions to rows nobody named. The full scan does not need this
+    /// (it asks <see cref="SkipVerdict"/> about every catalog directory when it closes, so every
+    /// descendant answers for itself); the USN delta does, because it only ever sees what changed
+    /// and the rows under a folder that just went hidden did not change (step 16, A3).
+    /// </summary>
+    public IReadOnlyDictionary<string, PerimeterVerdict> ExcludedSubtreeRoots => _excluded.Roots;
+
     /// <summary>True when the path is, or lives under, a directory the filter excluded.</summary>
     public bool IsExcluded(string relativePath) => _excluded.Covers(relativePath);
 

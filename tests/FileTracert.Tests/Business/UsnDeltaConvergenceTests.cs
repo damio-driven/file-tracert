@@ -1,10 +1,12 @@
-﻿using FileTracert.Business.Scanning;
+using FileTracert.Business.Scanning;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Platform;
 using FileTracert.Contracts.Scanning;
+using FileTracert.Contracts.Search;
 using FileTracert.Data;
 using FileTracert.Data.Entities;
 using FileTracert.Data.Indexing;
+using FileTracert.Data.Search;
 using FileTracert.Tests.Data;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
@@ -322,6 +324,256 @@ public sealed class UsnDeltaConvergenceTests
         await ctx.SaveChangesAsync();
     }
 
+    // ── the subtree that leaves the perimeter (A3) ────────────────────────────
+
+    /// <summary>
+    /// Photos/Cache/Sub with a file at each level under Cache, plus one OUTSIDE Cache. Nothing here
+    /// is excluded to begin with: every row is indexed by the starting scan, which is the whole
+    /// point — the rows this case is about are rows the catalog ALREADY holds.
+    /// </summary>
+    private static List<Item> SubtreeWorld() =>
+    [
+        Dir(100, RootFrn, "Photos"),
+        Dir(140, 100, @"Photos\Cache"),
+        Dir(150, 140, @"Photos\Cache\Sub"),
+        File(200, 100, @"Photos\keep.jpg", 10),
+        File(205, 140, @"Photos\Cache\b.jpg", 12),
+        File(206, 150, @"Photos\Cache\Sub\c.jpg", 13),
+    ];
+
+    /// <summary>
+    /// The defect A3 names, put to the only instrument that settles it. A folder in the catalog
+    /// turns HIDDEN and <b>nothing else happens</b>: not one of the files under it is renamed,
+    /// written or deleted, so not one of them appears in the journal.
+    ///
+    /// <para>The long road excludes them anyway, because a scan asks the perimeter about every
+    /// directory of the catalog when it closes and each descendant produces its own skipped area.
+    /// The short road cannot: it sees what changed. Before the subtree pass the two databases
+    /// disagreed on every row under that folder — the exclusion was silently not applied, which is
+    /// the worst shape of failure this project recognises, because the user believes they decided
+    /// something.</para>
+    /// </summary>
+    [Fact]
+    public async Task A_folder_that_becomes_hidden_takes_the_rows_already_in_the_catalog_with_it()
+    {
+        var before = SubtreeWorld();
+        var after = Replace(before, 140, i => i with
+        {
+            Attributes = FileAttributes.Directory | FileAttributes.Hidden,
+        });
+
+        await AssertConvergesAsync(before, after,
+            [Change(after, 140, UsnReason.BasicInfoChange | UsnReason.Close)],
+            extra: async db =>
+            {
+                // Named, not left to the equivalence: both roads reach these rows through code
+                // that writes a COLUMN, and two roads can agree on the wrong column as happily as
+                // on the right one (the correction 14d had to make to its own hidden-folder case).
+                foreach (var frn in (long[])[205, 206])
+                {
+                    var row = await db.Files.SingleAsync(f => f.UsnFileRef == frn);
+                    row.IsIncluded.Should().BeFalse("the folder above it left the perimeter");
+                    row.ExcludedByScan.Should().BeTrue(
+                        "no setting says whether that folder is still hidden — only another scan may retract it");
+                    row.ExcludedByPath.Should().BeFalse(
+                        "nothing in this row's path says so; recording it here would let a settings change " +
+                        "walk the content of a hidden folder back into the Catalog");
+                    row.IsPresent.Should().BeTrue("an exclusion is not an absence (§6)");
+                }
+
+                var outside = await db.Files.SingleAsync(f => f.UsnFileRef == 200);
+                outside.IsIncluded.Should().BeTrue("it does not live under the folder that went hidden");
+            });
+    }
+
+    /// <summary>
+    /// The other cause on the same mechanism: the folder is not hidden, it is under a segment the
+    /// user has just excluded. Deliberately NOT a convergence case — reaching it needs the setting
+    /// to change between the two scans, and a re-scan reaches those rows through the directory area
+    /// it skipped rather than through this pass, so the column would be asserted twice by the same
+    /// kind of code. Here the rows are named directly, and the pair with the case above is what
+    /// makes either column swapped a red.
+    /// </summary>
+    [Fact]
+    public async Task A_folder_that_falls_under_a_newly_excluded_segment_takes_its_catalogued_rows_with_it()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var world = SubtreeWorld();
+        var reader = ReaderFor(world);
+        var volumeId = await SeedAndScanAsync(harness, reader, world);
+
+        await SetExcludedPathsAsync(harness, "Cache");
+
+        // Only the FOLDER is in this delta. Neither file under it is named by any record, which is
+        // what separates this from the per-file loop of ReconcileAsync.
+        reader.Changes = [Change(world, 140, UsnReason.BasicInfoChange | UsnReason.Close)];
+        reader.NextUsn = 900;
+
+        await using (var ctx = harness.CreateContext())
+        {
+            var result = await BuildApplier(ctx, reader, MetadataFor(world)).SyncVolumeAsync(volumeId, default);
+            result.Status.Should().Be(UsnSyncStatus.Applied);
+        }
+
+        await using var read = harness.CreateContext();
+        foreach (var frn in (long[])[205, 206])
+        {
+            var row = await read.Files.SingleAsync(f => f.UsnFileRef == frn);
+            row.IsIncluded.Should().BeFalse("a segment of its path is on the excluded list");
+            row.ExcludedByPath.Should().BeTrue(
+                "the cause is a fact of the SETTINGS: dropping the segment must re-admit the row with no scan");
+            row.ExcludedByScan.Should().BeFalse(
+                "writing the attribute cause here would put the row behind a column reconciliation never " +
+                "touches, and only a full scan could ever bring it back");
+            row.IsPresent.Should().BeTrue("an exclusion is not an absence (§6)");
+        }
+    }
+
+    /// <summary>
+    /// The reason the subtree pass runs BEFORE the absence passes, made into a case: a file that is
+    /// genuinely deleted from a folder that goes hidden in the same delta.
+    ///
+    /// <para>A full scan calls that EXCLUDED, not ABSENT — it never looks inside the folder, and its
+    /// absence pass is guarded on <c>IsIncluded = 1</c>, so the exclusion it wrote a moment earlier
+    /// takes the row out of reach. The delta only agrees because the two passes are in that same
+    /// order; put the subtree pass after, and the row comes out <c>IsPresent = 0</c> on the short
+    /// road and <c>IsPresent = 1</c> on the long one.</para>
+    /// </summary>
+    [Fact]
+    public async Task A_file_deleted_from_a_folder_that_goes_hidden_in_the_same_delta_converges()
+    {
+        var before = SubtreeWorld();
+        var after = Replace(before, 140, i => i with
+            {
+                Attributes = FileAttributes.Directory | FileAttributes.Hidden,
+            })
+            .Where(i => i.Frn != 205)
+            .ToList();
+
+        await AssertConvergesAsync(before, after,
+        [
+            Change(after, 140, UsnReason.BasicInfoChange | UsnReason.Close),
+            Change(before, 205, UsnReason.FileDelete | UsnReason.Close),
+        ],
+        extra: async db =>
+        {
+            var deleted = await db.Files.SingleAsync(f => f.UsnFileRef == 205);
+            deleted.IsIncluded.Should().BeFalse();
+            deleted.IsPresent.Should().BeTrue(
+                "a scan never looked inside that folder, so it has nothing to say about the file being gone " +
+                "— and the delta must not say it either");
+        });
+    }
+
+    /// <summary>
+    /// A replayed delta must write nothing — that is the property "the cursor is written last"
+    /// rests on, and the subtree pass is the first thing in this class that touches rows no record
+    /// names, so it is the first that could quietly re-write them for ever.
+    /// </summary>
+    [Fact]
+    public async Task Replaying_a_subtree_exclusion_writes_nothing_the_second_time()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var before = SubtreeWorld();
+        var reader = ReaderFor(before);
+        var volumeId = await SeedAndScanAsync(harness, reader, before);
+
+        var after = Replace(before, 140, i => i with
+        {
+            Attributes = FileAttributes.Directory | FileAttributes.Hidden,
+        });
+        reader.Changes = [Change(after, 140, UsnReason.BasicInfoChange | UsnReason.Close)];
+        reader.NextUsn = 900;
+
+        await using (var ctx = harness.CreateContext())
+        {
+            var first = await BuildApplier(ctx, reader, MetadataFor(after)).SyncVolumeAsync(volumeId, default);
+            first.Excluded.Should().Be(2, "both rows under the folder had to learn the cause");
+        }
+
+        var once = await SnapshotAsync(harness);
+
+        // Rewind the cursor by hand: the same delta is offered again, exactly as it would be after
+        // a crash between the last write and the checkpoint.
+        await using (var ctx = harness.CreateContext())
+        {
+            var volume = await ctx.Volumes.SingleAsync();
+            volume.LastUsn = 500;
+            await ctx.SaveChangesAsync();
+        }
+
+        await using (var ctx = harness.CreateContext())
+        {
+            var again = await BuildApplier(ctx, reader, MetadataFor(after)).SyncVolumeAsync(volumeId, default);
+            again.Excluded.Should().Be(0, "the guard is the cause's own flag: there is nothing left to write");
+        }
+
+        (await SnapshotAsync(harness)).Should().BeEquivalentTo(once);
+    }
+
+    /// <summary>
+    /// The measure the shape of this pass exists for, in STATEMENTS and not milliseconds: the same
+    /// delta, the same excluded folder, ten times the rows behind it — and the same number of
+    /// statements. It costs one SELECT of the subtree's directory ids, one UPDATE per cause per
+    /// chunk of them, and one pair of statements per chunk for the index. Not one per file, which
+    /// is what the per-file <c>RemoveAsync</c> loop the rest of this class uses would have cost.
+    ///
+    /// <para>Measured with the REAL <c>FileSearchIndex</c> on purpose: with the fake, the half of
+    /// the claim that is about the index would not be observed at all, and a per-file loop there
+    /// would leave this test green.</para>
+    /// </summary>
+    [Fact]
+    public async Task The_subtree_pass_costs_the_same_whatever_the_number_of_files_behind_it()
+    {
+        var few = await SubtreeExclusionCostAsync(files: 5);
+        var many = await SubtreeExclusionCostAsync(files: 50);
+
+        many.Should().Be(few,
+            "the rows are addressed through their DIRECTORIES, in SQL, and never named one by one");
+    }
+
+    private static async Task<int> SubtreeExclusionCostAsync(int files)
+    {
+        var connection = new CountingSqliteConnection("Data Source=:memory:");
+        using var harness = new SqliteInMemoryContext(connection: connection);
+
+        // EnsureCreated builds the EF tables and not the FTS5 virtual one, and half of what this
+        // test measures happens inside it.
+        using (var create = harness.CreateContext())
+        {
+            SqliteFts.Create(create);
+        }
+
+        List<Item> before =
+        [
+            Dir(100, RootFrn, "Photos"),
+            Dir(140, 100, @"Photos\Cache"),
+            Dir(150, 140, @"Photos\Cache\Sub"),
+            .. Enumerable.Range(0, files)
+                .Select(i => File(1000UL + (ulong)i, 150, $@"Photos\Cache\Sub\f{i:D4}.jpg", 10)),
+        ];
+
+        var reader = ReaderFor(before);
+        var volumeId = await SeedAndScanAsync(harness, reader, before);
+
+        var after = Replace(before, 140, i => i with
+        {
+            Attributes = FileAttributes.Directory | FileAttributes.Hidden,
+        });
+        reader.Changes = [Change(after, 140, UsnReason.BasicInfoChange | UsnReason.Close)];
+        reader.NextUsn = 900;
+
+        await using var ctx = harness.CreateContext();
+        var applier = BuildApplier(ctx, reader, MetadataFor(after), new FileSearchIndex(ctx));
+
+        // Counted from here: one delta, nothing else.
+        connection.Reset();
+        var result = await applier.SyncVolumeAsync(volumeId, default);
+        result.Excluded.Should().Be(files, "every row behind the folder is out, however many there are");
+
+        return connection.Statements;
+    }
+
     // ── the cursor ────────────────────────────────────────────────────────────
 
     [Fact]
@@ -618,15 +870,20 @@ public sealed class UsnDeltaConvergenceTests
         await scan.ScanVolumeAsync(volumeId, CancellationToken.None);
     }
 
+    /// <param name="searchIndex">The real <see cref="FileSearchIndex"/> where what the pass does to
+    /// the index is part of what is being measured; the fake everywhere else.</param>
     private static UsnDeltaApplier BuildApplier(
-        FileTracertDbContext ctx, ScriptedUsnReader reader, FakeFileMetadataReader metadata) =>
+        FileTracertDbContext ctx,
+        ScriptedUsnReader reader,
+        FakeFileMetadataReader metadata,
+        IFileSearchIndex? searchIndex = null) =>
         new(ctx,
             new FakeVolumeProbe(Probed),
             reader,
             metadata,
             new BulkIndexWriter(ctx),
             new DirectoryMerger(ctx, new BulkIndexWriter(ctx), NullLogger<DirectoryMerger>.Instance),
-            new FakeFileSearchIndex(),
+            searchIndex ?? new FakeFileSearchIndex(),
             NullLogger<UsnDeltaApplier>.Instance);
 
     private static List<Item> Replace(List<Item> world, ulong frn, Func<Item, Item> change) =>

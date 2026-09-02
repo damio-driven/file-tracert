@@ -74,6 +74,18 @@ public sealed class ExcludedSubtrees
     }
 
     /// <summary>
+    /// Every excluded directory with the rules that rejected IT — its own verdict, not the union
+    /// with its ancestors', which is what <see cref="VerdictFor"/> answers.
+    ///
+    /// <para>Its own is the right thing for a caller that walks the whole set: an excluded ancestor
+    /// is itself an entry here, and whatever it carries it applies to its entire subtree, so the
+    /// union is reached by processing the entries rather than by pre-computing it into each one.
+    /// <see cref="VerdictFor"/> exists for the opposite shape of question — one path, asked in
+    /// isolation, whose ancestors will never be visited.</para>
+    /// </summary>
+    public IReadOnlyDictionary<string, PerimeterVerdict> Roots => _roots;
+
+    /// <summary>
     /// True when <paramref name="relativePath"/> is, or lives under, an excluded directory. Its own
     /// walk rather than <c>!VerdictFor(...).IsInside</c>, because a yes/no can stop at the first
     /// excluded ancestor while the verdict may not (see below).
