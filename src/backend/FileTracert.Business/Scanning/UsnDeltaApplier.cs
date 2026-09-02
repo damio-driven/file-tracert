@@ -595,6 +595,35 @@ public sealed class UsnDeltaApplier
             // FILE's perimeter verdict at classify time, which is a change to what Classify
             // produces and a defect of its own — this pass is about the folder that leaves the
             // perimeter, and the rows underneath it that no record names.
+            //
+            // THE SAME BOUNDARY FROM THE OTHER SIDE, and it is the more useful way round, because
+            // it UNDOES what ExcludeSubtreesAsync just wrote. `perimeter` knows only the subtrees
+            // THIS delta excluded. So a file inside a hidden folder, in a later tick that does not
+            // name the folder, is judged on its own clean attributes and its own clean path,
+            // passes the `insidePerimeter` test above, lands in `indexable`, and the merge writes
+            // it back IsIncluded = 1 with all four causes cleared — because the merge has, quite
+            // correctly, just seen the file on disk. Measured, not assumed (throwaway probe, two
+            // ticks on one hidden folder):
+            //
+            //     tick 1 (the folder turns Hidden)  -> inc=False scan=True  path=False
+            //     tick 2 (only the FILE is written) -> inc=True  scan=False path=False
+            //
+            // It loses the ATTRIBUTE half only. The path half survives the same sequence, because
+            // FileFilter.IsPathExcluded reads the FILE's own relative path and the excluded
+            // segment is in it — the same probe gives inc=False, path=True after both ticks. That
+            // asymmetry is the one PerimeterVerdict is built around: a fact of the settings can be
+            // re-derived from the catalog, a fact of the disk cannot.
+            //
+            // Not a regression of the subtree pass: a row a FULL SCAN excluded for attributes has
+            // always come back this way, so the installed service has it too. What changed is that
+            // it now MATTERS — before, the delta never excluded those rows, so there was nothing
+            // for ordinary write traffic to undo. The catalog can now hold a state neither road
+            // produces on its own: the subtree excluded, and the rows that happened to be written
+            // since back inside it.
+            //
+            // Closing it needs a fact the catalog does not have. No row says "that folder is
+            // hidden" — Directories carry no inclusion flag, which is the product decision of 11g
+            // — and the alternative is a disk read per file per delta. Both are outside this step.
         }
 
         // FIRST, and the ordering is the scan's own trick (see

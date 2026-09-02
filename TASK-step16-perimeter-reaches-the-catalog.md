@@ -292,6 +292,38 @@ Se un file porta più preoccupazioni, staging a livello di hunk (`git add -p`).
   rilevabile dal delta — un record di cartella che passa il filtro e non ha riga è indistinguibile
   da una cartella nuova, e i file che contiene non generano record propri. Serve una scansione,
   come 11g già scrive. Va detto nella roadmap invece di far credere che A3 sia chiusa intera.
+- **E il traffico di scrittura normale disfa l'esclusione che il delta ha appena scritto** — lo
+  stesso confine visto dall'altro capo, ed è la metà che *toglie* invece di non aggiungere.
+  `ScanPerimeter` conosce solo i sottoalberi esclusi da **questo** delta. Un file dentro la cartella
+  nascosta, toccato in un tick **successivo** che non nomina la cartella, viene giudicato sui propri
+  attributi puliti e sul proprio path pulito, passa `insidePerimeter`, finisce in `indexable`, e il
+  merge lo riscrive `IsIncluded = 1` **azzerando tutte e quattro le cause** — perché ha appena visto
+  il file sul disco, il che è corretto di per sé. Misurato con una sonda usa-e-getta (non
+  committata), due tick su una sola cartella nascosta:
+
+  | tick | esito sulla riga già a catalogo |
+  |---|---|
+  | 1 — la cartella diventa nascosta | `IsIncluded = 0`, `ExcludedByScan = 1` |
+  | 2 — solo il FILE viene scritto | `IsIncluded = 1`, tutte le cause a 0 |
+
+  **Perde solo la metà attributi.** Con l'esclusione per **segmento di path** la stessa sequenza
+  lascia la riga fuori (`IsIncluded = 0`, `ExcludedByPath = 1`, verificato con la stessa sonda),
+  perché `FileFilter.IsPathExcluded` legge il path relativo **del file** e il segmento è lì dentro.
+  È esattamente l'asimmetria su cui `PerimeterVerdict` è costruito: un fatto delle impostazioni si
+  ri-deriva dal catalogo, un fatto del disco no.
+
+  **Non è una regressione di questo giro, ma il cambiamento di stato va detto per intero.** Una riga
+  che una **scansione completa** aveva escluso per attributi rientrava già così — quindi il difetto
+  è anche sul servizio installato. Ciò che cambia è che **prima non contava**: il delta quelle righe
+  non le escludeva, quindi non c'era niente da disfare. Da adesso il catalogo può trovarsi in uno
+  stato **misto** che *nessuna delle due strade produce da sola* — il sottoalbero escluso, e dentro
+  di esso le righe che nel frattempo qualcuno ha scritto, rientrate.
+
+  **Chiuderlo richiede un fatto che il catalogo non ha**: nessuna riga dice «questa cartella è
+  nascosta» — le `Directories` non hanno un flag di inclusione, ed è la decisione di prodotto di
+  11g — e l'alternativa è leggere gli attributi dal disco per ogni file di ogni delta. Entrambe
+  fuori da questo task. Il confine è scritto **anche nel codice**, accanto al «KNOWN HOLE» di
+  `UsnDeltaApplier.ReconcileAsync`: i due lati vanno letti insieme.
 - **Il backfill pessimista lascia indietro le righe legacy**: una riga oggi esclusa solo da un
   segmento di path porta `ExcludedByScan = 1` e non rientrerà togliendo il segmento, finché una
   scansione non la riguarda. Prezzo scelto, non svista.
