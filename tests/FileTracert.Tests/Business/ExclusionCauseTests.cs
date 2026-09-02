@@ -707,15 +707,20 @@ public sealed class ExclusionCauseTests
     }
 
     /// <summary>
-    /// Two watched roots may overlap, and an INACTIVE one stamps <c>ExcludedByRoot</c> over its whole
-    /// subtree. Reconciling them in the order the rows happen to come back therefore let a later
-    /// inactive root overwrite the <c>IsIncluded = 1</c> an earlier active one had just written — the
-    /// files simply disappear from the Catalog. The risk pre-dates this round for roots on the
-    /// default filter; reconciling ALL roots opened it to the overridden ones too.
+    /// An INACTIVE root stamps <c>ExcludedByRoot</c> over its whole subtree, so if one overlapped an
+    /// ACTIVE root, reconciling them in the order the rows happen to come back would let the
+    /// inactive one overwrite the <c>IsIncluded = 1</c> the active one had just written — the files
+    /// simply disappear from the Catalog. Fixed by making the ORDER irrelevant: inactive first,
+    /// active last.
     ///
-    /// <para>Fixed by making the ORDER irrelevant: inactive first, active last. The proper answer is
-    /// to decide every row against the union of the active roots once, which is a round of its own.
-    /// </para>
+    /// <para><b>The state this test builds is not reachable through the API, and it is written
+    /// straight into the database on purpose.</b> <c>WatchedRootsService.CreateAsync</c> rejects any
+    /// root equal to, inside, or containing an existing one on the same volume (active or not), and
+    /// <c>UpdateAsync</c> cannot change a <c>RelativePath</c> — so no database this application
+    /// produced holds overlapping roots. What is under test is the behaviour on a database edited
+    /// from outside, which is why the arrange bypasses the guard rather than going through the
+    /// service. Whoever reads this next should not design against a constraint that does not exist:
+    /// the ordering is defence, not the enforcement of an invariant.</para>
     /// </summary>
     [Fact]
     public async Task An_inactive_root_does_not_overwrite_an_active_one_that_overlaps_it()
@@ -723,6 +728,7 @@ public sealed class ExclusionCauseTests
         using var harness = new SqliteInMemoryContext();
 
         // Root 1: the whole volume, ACTIVE. Root 2: a subtree of it, INACTIVE, and later by Id.
+        // Added through the DbContext because WatchedRootsService would refuse it (see above).
         var volumeId = Seed(harness, ["jpg"]);
         await using (var arrange = harness.CreateContext())
         {

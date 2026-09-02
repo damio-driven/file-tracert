@@ -23,10 +23,11 @@ namespace FileTracert.Business.Setup;
 /// had not carried out. Each root is reconciled against its OWN effective filter, which makes the
 /// type half a no-op for an overridden root, and that is the correct no-op.</para>
 ///
-/// <para>Reaching all of them brings two consequences with it, both handled below: the pass is
-/// ordered so that an INACTIVE root can never overwrite an overlapping active one, and a root whose
+/// <para>Reaching all of them brings two consequences with it, both handled below: a root whose
 /// override does not parse — which now falls back to the DEFAULT filter and can therefore exclude in
-/// bulk — raises a Notification rather than only a log line.</para>
+/// bulk — raises a Notification rather than only a log line, and the pass is ordered so that its
+/// outcome cannot depend on the order the rows come back in, which matters only for a database no
+/// longer producible through this application (see the comment on the query).</para>
 /// </summary>
 public sealed class FilterSettingsService
 {
@@ -67,12 +68,20 @@ public sealed class FilterSettingsService
         var newFilter = EffectiveFilterBuilder.Build(settings, filterOverrideJson: null);
 
         // INACTIVE roots first, ACTIVE ones after — so the order the rows come back in cannot decide
-        // the outcome. An inactive root stamps ExcludedByRoot over its whole subtree, and two roots
-        // are free to overlap: with a single pass in Id order, an inactive root that happened to sit
-        // later would overwrite the IsIncluded = 1 an active one had just written, and its files
-        // would vanish from the Catalog. Sorting is the cheap half of the fix; the correct one is to
-        // compute the union of the ACTIVE roots once and decide every row against it, which is a
-        // round of its own — this makes the result order-independent in the meantime.
+        // the outcome. An inactive root stamps ExcludedByRoot over its whole subtree, so with a
+        // single pass in Id order an inactive root sitting later would overwrite the IsIncluded = 1
+        // an active one that OVERLAPS it had just written, and its files would vanish from the
+        // Catalog.
+        //
+        // Two roots on one volume cannot overlap in a database this application produced:
+        // WatchedRootsService.CreateAsync rejects any path equal to, inside, or containing an
+        // existing one (WatchedRootPath.Conflicts, active or not) and UpdateAsync cannot change a
+        // RelativePath. So this ordering is defence against a database edited from outside — which
+        // is worth two words in a query, because the failure it prevents is files silently gone from
+        // the Catalog, and because reconciling ALL roots (which is what makes the global excluded
+        // segments reach the overridden ones) is what would put such a database on this path at all.
+        // The order-independent answer for real overlaps would be to decide every row against the
+        // union of the ACTIVE roots once; nothing today can produce the input that needs it.
         var roots = await _db.WatchedRoots.OrderBy(r => r.IsActive).ThenBy(r => r.Id).ToListAsync(ct);
 
         var included = 0;
