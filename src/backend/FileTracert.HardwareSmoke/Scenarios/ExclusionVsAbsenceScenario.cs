@@ -26,6 +26,20 @@ namespace FileTracert.HardwareSmoke.Scenarios;
 /// once (the attribute path — nothing in Setup could know), and switching the watched root off and
 /// on through the real <see cref="WatchedRootsService"/> with NO scan in between (§4 — re-widening
 /// the perimeter must not cost a re-scan).</para>
+///
+/// <para>Then step 16, the half A2 names, on the same real files: a segment added to
+/// <c>ExcludedPaths</c> has to exclude the rows the catalog ALREADY holds under it — with
+/// <c>IsPresent</c> untouched, because a perimeter decision is not an absence (§6) — and dropping
+/// it has to re-admit them, both with no scan at all. Before this step neither happened: adding a
+/// segment excluded nothing, the screen reported a reconciliation and <c>NeedsScan = false</c>, and
+/// the rows stayed navigable and findable until some full scan happened to pass. That is an
+/// exclusion silently not applied, which is the worst shape of failure available here, because the
+/// user believes they decided something.</para>
+///
+/// <para>Deliberately the LAST act of the scenario, and on a folder of its own: it is the only one
+/// that writes a GLOBAL setting whose scope is every root on every volume, so running it last keeps
+/// the earlier assertions reading a perimeter narrowed only by the things they are about, and
+/// dropping the segment again leaves the throwaway catalog in the state it started in.</para>
 /// </summary>
 public sealed class ExclusionVsAbsenceScenario : Scenario
 {
@@ -36,6 +50,24 @@ public sealed class ExclusionVsAbsenceScenario : Scenario
 
     /// <summary>The type-filtered one: excluded by the allow-list, so reconciliation owns it.</summary>
     private const string TypedFile = @"perimeter\keep\ledger.log";
+
+    /// <summary>
+    /// The path-segment one (step 16): it sits under a folder whose NAME the user excludes, so the
+    /// reconciler owns it too — the segment is in the row's own <c>MaterializedPath</c> and no disk
+    /// read is involved. Its own folder, not <c>keep</c>, so excluding the segment cannot be
+    /// confused with excluding the rest of the fixture.
+    /// </summary>
+    private const string SegmentFile = @"perimeter\vault\books.dat";
+
+    private const string SegmentFolder = @"perimeter\vault";
+
+    /// <summary>
+    /// The segment itself. It must not appear anywhere in the volume-relative path ABOVE the
+    /// fixture either — <c>FileFilter.IsPathExcluded</c> splits the file's whole volume-relative
+    /// path, so a segment matching one of the harness's own scratch folders would exclude the
+    /// entire area and make every assertion below pass for the wrong reason.
+    /// </summary>
+    private const string ExcludedSegment = "vault";
 
     public override string Name => "exclusion-vs-absence";
 
@@ -50,6 +82,7 @@ public sealed class ExclusionVsAbsenceScenario : Scenario
         ctx.Source.CreateFile(KeptFile, 16 * 1024);
         ctx.Source.CreateFile(HiddenFile, 16 * 1024);
         ctx.Source.CreateFile(TypedFile, 4 * 1024);
+        ctx.Source.CreateFile(SegmentFile, 4 * 1024);
         var deletedFullPath = ctx.Source.CreateFile(DeletedFile, 8 * 1024);
 
         await EnsureWatchedRootAsync(ctx, ctx.Source, ctx.SourceVolumeId);
@@ -163,6 +196,101 @@ public sealed class ExclusionVsAbsenceScenario : Scenario
         ctx.Assert.True(afterOn is { IsIncluded: true, IsPresent: true },
             "switching it back on must re-include them, again without a scan; " +
             $"got IsIncluded={afterOn?.IsIncluded}, IsPresent={afterOn?.IsPresent}");
+
+        // ── assert: an excluded path SEGMENT reaches the rows already catalogued (step 16 / A2) ──
+        var segmentPath = ctx.Source.RelativePath(SegmentFile);
+        var segmentFolderPath = ctx.Source.RelativePath(SegmentFolder);
+
+        var beforeSegment = await AssertCatalogHasFileAsync(
+            ctx, ctx.SourceVolumeId, segmentPath, "before the segment is excluded");
+        if (beforeSegment is not null)
+        {
+            ctx.Assert.True(
+                beforeSegment is { IsIncluded: true, IsPresent: true, ExcludedByPath: false },
+                "arrange: the file under 'vault' starts inside the perimeter; got " +
+                $"IsIncluded={beforeSegment.IsIncluded}, IsPresent={beforeSegment.IsPresent}, " +
+                $"ExcludedByPath={beforeSegment.ExcludedByPath}");
+            ctx.Assert.True(
+                (await SearchByNameAsync(ctx, "books")).Contains(beforeSegment.Id),
+                "arrange: …and is findable in Search, which is what makes its disappearance below mean something");
+        }
+
+        var segmentNarrowed = await SetExcludedPathsAsync(ctx, ExcludedSegment);
+        ctx.Log(
+            $"excluded segment '{ExcludedSegment}' added: included={segmentNarrowed.IncludedCount} " +
+            $"excluded={segmentNarrowed.ExcludedCount} needsScan={segmentNarrowed.NeedsScan}");
+
+        var excludedBySegment = await FindFileRowAsync(ctx, ctx.SourceVolumeId, segmentPath);
+        ctx.Assert.True(
+            excludedBySegment is { IsIncluded: false, ExcludedByPath: true },
+            "a segment added to ExcludedPaths must exclude the rows the catalog ALREADY holds under " +
+            "it, with no scan — this is the defect step 16 exists to close, and until it the answer " +
+            "here was 'nothing happened while the screen said it had'. Got " +
+            $"IsIncluded={excludedBySegment?.IsIncluded}, ExcludedByPath={excludedBySegment?.ExcludedByPath}");
+        ctx.Assert.True(
+            excludedBySegment is { IsPresent: true },
+            "…and IsPresent must be left strictly alone: the file is on disk and nobody looked for it, " +
+            "which is the whole distinction this scenario is named after (§6). On disk right now: " +
+            $"{File.Exists(ctx.Source.FullPath(SegmentFile))}");
+        ctx.Assert.True(
+            excludedBySegment is { ExcludedByScan: false },
+            "…and the cause recorded must be the one the SETTINGS own. ExcludedByScan is undone by " +
+            "nothing short of another scan, so writing it for a segment would pin the row out past " +
+            $"the moment the user drops that segment. Got ExcludedByScan={excludedBySegment?.ExcludedByScan}");
+        ctx.Assert.True(
+            (await SearchByNameAsync(ctx, "books")).Count == 0,
+            "…and Search must stop answering with a row the perimeter now excludes: Catalogo and " +
+            "Ricerca disagreeing is the shape 11h left behind, and it is the half a user actually sees");
+
+        ctx.Assert.True(
+            !segmentNarrowed.NeedsScan,
+            "adding a segment is a NARROWING, applied here in full, so the screen must not ask for a " +
+            $"scan. Got needsScan={segmentNarrowed.NeedsScan}");
+        ctx.Assert.True(
+            segmentNarrowed.ExcludedCount >= 1,
+            "…and 'no scan needed' is only honest because something was actually excluded; the " +
+            $"reconciliation reported {segmentNarrowed.ExcludedCount}. Reporting a clean no-op while " +
+            "excluding nothing was the defect, not the fix");
+
+        var sibling = await FindFileRowAsync(ctx, ctx.SourceVolumeId, keptPath);
+        ctx.Assert.True(
+            sibling is { IsIncluded: true, IsPresent: true },
+            "the exclusion must be scoped to the segment and not swallow the rest of the root — a " +
+            "pass that excluded everything would satisfy every assertion above. Got " +
+            $"IsIncluded={sibling?.IsIncluded}, IsPresent={sibling?.IsPresent}");
+
+        var segmentDir = await FindDirectoryRowAsync(ctx, ctx.SourceVolumeId, segmentFolderPath);
+        ctx.Assert.True(
+            segmentDir is { IsPresent: true },
+            "and the excluded FOLDER exists on disk, so it stays present: directories carry no " +
+            "inclusion flag and a folder that is there is there (11g)");
+
+        // ── and back out again, still without a single scan ───────────────────
+        var segmentWidened = await SetExcludedPathsAsync(ctx);
+        ctx.Log(
+            $"excluded segment dropped: included={segmentWidened.IncludedCount} " +
+            $"excluded={segmentWidened.ExcludedCount} needsScan={segmentWidened.NeedsScan}");
+
+        var readmitted = await FindFileRowAsync(ctx, ctx.SourceVolumeId, segmentPath);
+        ctx.Assert.True(
+            readmitted is { IsIncluded: true, IsPresent: true, ExcludedByPath: false },
+            "dropping the segment must re-admit those rows with NO scan (§4): every descendant " +
+            "carries the segment in its own path, so the reconciler re-decides it from the catalog " +
+            "without reading a byte of disk. Got " +
+            $"IsIncluded={readmitted?.IsIncluded}, IsPresent={readmitted?.IsPresent}, " +
+            $"ExcludedByPath={readmitted?.ExcludedByPath}");
+
+        var findableAgain = await SearchByNameAsync(ctx, "books");
+        ctx.Assert.True(
+            readmitted is not null && findableAgain.Count == 1 && findableAgain[0] == readmitted.Id,
+            "…and Search must agree with the Catalog again, still without a scan: the reconciliation " +
+            $"has to put the pruned FTS entry back. Got {findableAgain.Count} hit(s).");
+
+        ctx.Assert.True(
+            segmentWidened.NeedsScan,
+            "…while dropping a segment IS a widening for everything under it that was never indexed " +
+            "in the first place, so the screen must still ask for a scan. Nothing can resurrect a row " +
+            $"that does not exist. Got needsScan={segmentWidened.NeedsScan}");
     }
 
     /// <summary>
@@ -176,6 +304,24 @@ public sealed class ExclusionVsAbsenceScenario : Scenario
                 new FilterSettingsDto([.. extensions], []), ctx.Ct);
             return null;
         });
+
+    /// <summary>
+    /// Sets the global excluded path segments through the real <see cref="FilterSettingsService"/>,
+    /// exactly as the Setup screen does, and hands back what it reported — the counts and
+    /// <c>NeedsScan</c> are half of what A2 is about, so they are asserted rather than discarded.
+    /// No arguments = nothing excluded, which is both the harness default and the state this
+    /// scenario has to leave behind.
+    ///
+    /// <para>The allow-list travels in the same DTO because the settings are saved as a whole, and
+    /// it is passed EMPTY (= every type) on purpose: by the time this runs the scenario has already
+    /// segmentWidened the types back, so writing them again changes nothing, and any other value would
+    /// quietly mix a type decision into a test about paths.</para>
+    /// </summary>
+    private static Task<ReconcileResultDto> SetExcludedPathsAsync(
+        ScenarioContext ctx, params string[] segments) =>
+        ctx.Env.WithScopeAsync(sp =>
+            sp.GetRequiredService<FilterSettingsService>().UpdateAsync(
+                new FilterSettingsDto([], [.. segments]), ctx.Ct));
 
     /// <summary>Toggles a watched root through the real service, exactly as the API does.</summary>
     private static Task UpdateRootAsync(ScenarioContext ctx, int rootId, bool isActive) =>

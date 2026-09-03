@@ -29,6 +29,7 @@ public static class ScenarioCatalog
         new RescanPreservesOverlayScenario(),
         new ExclusionVsAbsenceScenario(),
         new UsnIncrementalSyncScenario(),
+        new UsnHiddenSubtreeScenario(),
         new IndexUpdateFailOnceScenario(),
         new PhantomReservationScenario(),
         new InsufficientSpaceScenario(),
