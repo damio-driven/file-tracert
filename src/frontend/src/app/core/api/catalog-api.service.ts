@@ -13,8 +13,13 @@ export class CatalogApi {
     directoryId: number | null,
     skip = 0,
     take = 50,
+    dirSkip = 0,
+    dirTake = 50,
   ): Observable<CatalogChildrenDto> {
-    let params = new HttpParams().set('skip', skip).set('take', take);
+    // Two axes: `skip`/`take` page the files, `dirSkip`/`dirTake` the subfolders (step 17).
+    let params = new HttpParams()
+      .set('skip', skip).set('take', take)
+      .set('dirSkip', dirSkip).set('dirTake', dirTake);
     if (directoryId !== null) params = params.set('directoryId', directoryId);
     return this.http.get<CatalogChildrenDto>(`/api/catalog/${volumeId}/children`, { params });
   }

@@ -146,7 +146,7 @@
         } @else if (store.children(); as children) {
 
           <!-- Empty volume: no data indexed -->
-          @if (children.directories.length === 0 && children.files.totalCount === 0) {
+          @if (children.directories.totalCount === 0 && children.files.totalCount === 0) {
             <div class="empty-state">
               <div class="empty-icon">◎</div>
               <div class="empty-title">Nessun file indicizzato</div>
@@ -190,11 +190,18 @@
             }
 
             <!-- Directories grid -->
-            @if (children.directories.length > 0) {
+            @if (children.directories.totalCount > 0) {
               <div class="dir-section">
-                <div class="section-label">Cartelle</div>
+                <div class="section-label">
+                  Cartelle
+                  @if (store.hasMoreDirectories()) {
+                    <span class="section-count mono txt-faint">
+                      ({{ children.directories.items.length }} di {{ children.directories.totalCount.toLocaleString('it-IT') }})
+                    </span>
+                  }
+                </div>
                 <div class="dir-grid">
-                  @for (dir of children.directories; track dir.id) {
+                  @for (dir of children.directories.items; track dir.id) {
                     <div class="dir-card" [class.dir-card--selected]="isDirSelected(dir.id)">
                       <input
                         type="checkbox"
@@ -236,6 +243,23 @@
                     </div>
                   }
                 </div>
+                <!-- Step 17: the next page is appended under the grid; the folders already on
+                     screen never move. The count says how many the catalog still holds. -->
+                @if (store.hasMoreDirectories()) {
+                  <div class="dir-more">
+                    <button
+                      type="button"
+                      class="ft-btn ft-btn--ghost"
+                      [disabled]="store.loadingMoreDirs()"
+                      (click)="loadMoreDirs()"
+                    >
+                      {{ store.loadingMoreDirs() ? 'Caricamento…' : 'Mostra altre ' + store.nextDirBatch() + ' cartelle' }}
+                    </button>
+                    <span class="dir-more-hint mono txt-faint">
+                      {{ store.remainingDirectories().toLocaleString('it-IT') }} non ancora elencate
+                    </span>
+                  </div>
+                }
               </div>
             }
 

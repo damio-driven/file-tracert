@@ -17,6 +17,10 @@ interface Breadcrumb {
   path: string;
 }
 
+/** One page of subfolders, and the server's cap (PagedRequest.MaxTake) on a single request. */
+const DIR_PAGE = 50;
+const DIR_PAGE_MAX = 200;
+
 interface CatalogState {
   selectedVolume: VolumeDto | null;
   breadcrumbs: Breadcrumb[];
@@ -25,6 +29,8 @@ interface CatalogState {
   error: string | null;
   fileSkip: number;
   fileTake: number;
+  /** A further page of subfolders is on its way; the ones on screen stay where they are. */
+  loadingMoreDirs: boolean;
   /**
    * Full SelectedItem objects (files AND folders), not bare ids: the selection
    * survives folder/page navigation and the picker always has name/size/volume/path
@@ -41,8 +47,18 @@ const initial: CatalogState = {
   error: null,
   fileSkip: 0,
   fileTake: 50,
+  loadingMoreDirs: false,
   selectedItems: [],
 };
+
+/**
+ * How many subfolders a reload must ask for to keep what the user has already scrolled
+ * into view: at least one page, never more than the server hands out in one answer.
+ */
+function shownDirTake(children: CatalogChildrenDto | null): number {
+  const shown = children?.directories.items.length ?? 0;
+  return Math.min(DIR_PAGE_MAX, Math.max(DIR_PAGE, shown));
+}
 
 function toFileItem(file: CatalogFileDto, volumeId: number, dirPath: string): SelectedItem {
   return {
@@ -69,6 +85,20 @@ export const CatalogStore = signalStore(
     }),
     volumeIsOnline: computed(() => store.children()?.volumeIsOnline ?? false),
     totalFiles: computed(() => store.children()?.files.totalCount ?? 0),
+    /** Subfolders the server holds beyond the ones on screen (step 17). */
+    remainingDirectories: computed(() => {
+      const dirs = store.children()?.directories;
+      return dirs ? Math.max(0, dirs.totalCount - dirs.items.length) : 0;
+    }),
+    hasMoreDirectories: computed(() => {
+      const dirs = store.children()?.directories;
+      return dirs ? dirs.items.length < dirs.totalCount : false;
+    }),
+    /** Size of the next batch the "show more" button will fetch, for its label. */
+    nextDirBatch: computed(() => {
+      const dirs = store.children()?.directories;
+      return dirs ? Math.min(DIR_PAGE, Math.max(0, dirs.totalCount - dirs.items.length)) : 0;
+    }),
     canGoUp: computed(() => store.breadcrumbs().length > 0),
     currentDirPath: computed(() => store.children()?.currentDirectoryPath ?? ''),
     /** Keys of every selected item (File:id / Folder:id) for O(1) row-state lookup. */
@@ -86,12 +116,13 @@ export const CatalogStore = signalStore(
         store.selectedItems())),
   })),
   withMethods((store, api = inject(CatalogApi)) => {
-    async function loadChildren(dirId: number | null, fileSkip: number): Promise<void> {
+    async function loadChildren(dirId: number | null, fileSkip: number, dirTake = DIR_PAGE): Promise<void> {
       const vol = store.selectedVolume();
       if (!vol) return;
       patchState(store, { loading: true, error: null });
       try {
-        const children = await firstValueFrom(api.children(vol.id, dirId, fileSkip, store.fileTake()));
+        const children = await firstValueFrom(
+          api.children(vol.id, dirId, fileSkip, store.fileTake(), 0, dirTake));
         patchState(store, { children, fileSkip, loading: false });
       } catch (e) {
         patchState(store, { error: httpErrorMessage(e), loading: false });
@@ -129,7 +160,42 @@ export const CatalogStore = signalStore(
       },
 
       async loadFilePage(skip: number): Promise<void> {
-        await loadChildren(store.currentDirId(), skip);
+        // Turning a file page must not fold the subfolders back to their first page.
+        await loadChildren(store.currentDirId(), skip, shownDirTake(store.children()));
+      },
+
+      /**
+       * Step 17: the next page of subfolders, APPENDED. A tree browser that dropped the folders
+       * already on screen to show the next fifty would lose the user their place; the file list
+       * keeps its previous/next pager because a table reads differently from a grid of folders.
+       * A page that lands after the user has moved on belongs to a folder no longer open, and is
+       * dropped (the 15b rule: the last request wins, not the last answer).
+       */
+      async loadMoreDirectories(): Promise<void> {
+        const vol = store.selectedVolume();
+        const opened = store.children();
+        if (!vol || !opened || store.loadingMoreDirs()) return;
+        const shown = opened.directories.items.length;
+        if (shown >= opened.directories.totalCount) return;
+
+        patchState(store, { loadingMoreDirs: true, error: null });
+        try {
+          const page = await firstValueFrom(
+            api.children(vol.id, store.currentDirId(), store.fileSkip(), store.fileTake(), shown, DIR_PAGE));
+          const latest = store.children();
+          if (latest === null || latest.currentDirectoryId !== opened.currentDirectoryId) return;
+          const items = [...latest.directories.items, ...page.directories.items];
+          patchState(store, {
+            children: {
+              ...latest,
+              directories: { items, totalCount: page.directories.totalCount, skip: 0, take: items.length },
+            },
+          });
+        } catch (e) {
+          patchState(store, { error: httpErrorMessage(e) });
+        } finally {
+          patchState(store, { loadingMoreDirs: false });
+        }
       },
 
       /**
@@ -142,7 +208,8 @@ export const CatalogStore = signalStore(
         const vol = store.selectedVolume();
         if (!vol || store.children() === null) return;
         if (volumeId !== null && volumeId !== vol.id) return;
-        void loadChildren(store.currentDirId(), store.fileSkip());
+        // Re-read what is on screen, folders the user has scrolled into view included.
+        void loadChildren(store.currentDirId(), store.fileSkip(), shownDirTake(store.children()));
       },
 
       clear(): void {

@@ -59,7 +59,12 @@ export class OperationPicker implements OnInit {
   protected readonly crumbs = signal<FolderCrumb[]>([]);
   protected readonly newFolderSegments = signal<string[]>([]);
   protected readonly dirChildren = signal<CatalogDirDto[]>([]);
+  /** Subfolders the open folder holds in the catalog; more than shown means a further page (step 17). */
+  protected readonly dirTotal = signal(0);
   protected readonly loadingDirs = signal(false);
+  protected readonly loadingMoreDirs = signal(false);
+  /** The folder whose page `dirChildren` shows, so a late page for another folder is dropped. */
+  private openDirId: number | null = null;
   protected readonly newFolderInputOpen = signal(false);
   protected readonly newFolderError = signal<string | null>(null);
   protected newFolderName = '';
@@ -246,14 +251,38 @@ export class OperationPicker implements OnInit {
     }
     this.loadingDirs.set(true);
     this.error.set(null);
+    this.openDirId = dirId;
     try {
       const result = await firstValueFrom(this.catalogApi.children(this.targetVolumeId, dirId));
-      this.dirChildren.set(result.directories);
+      if (this.openDirId !== dirId) return;
+      this.dirChildren.set(result.directories.items);
+      this.dirTotal.set(result.directories.totalCount);
     } catch (e) {
       this.error.set(httpErrorMessage(e));
       this.dirChildren.set([]);
+      this.dirTotal.set(0);
     } finally {
       this.loadingDirs.set(false);
+    }
+  }
+
+  /** Step 17: the next page of subfolders, appended under the ones already listed. */
+  protected async loadMoreChildren(): Promise<void> {
+    if (this.targetVolumeId === null || this.loadingMoreDirs()) return;
+    const dirId = this.openDirId;
+    const shown = this.dirChildren().length;
+    if (shown >= this.dirTotal()) return;
+    this.loadingMoreDirs.set(true);
+    try {
+      const page = await firstValueFrom(
+        this.catalogApi.children(this.targetVolumeId, dirId, 0, 50, shown, 50));
+      if (this.openDirId !== dirId) return;
+      this.dirChildren.update(dirs => [...dirs, ...page.directories.items]);
+      this.dirTotal.set(page.directories.totalCount);
+    } catch (e) {
+      this.error.set(httpErrorMessage(e));
+    } finally {
+      this.loadingMoreDirs.set(false);
     }
   }
 

@@ -226,6 +226,19 @@
   }
 }
 
+// The "more" row is a control, not a folder: quieter icon and name, same hit area.
+.folder-row--more {
+  .folder-row-icon,
+  .folder-row-name {
+    color: var(--txt-faint);
+  }
+
+  &:disabled {
+    cursor: default;
+    background: transparent;
+  }
+}
+
 .folder-row-icon {
   font-size: 15px;
   color: var(--amber);

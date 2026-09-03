@@ -59,7 +59,7 @@ export interface CatalogFile {
 }
 
 export interface CatalogChildren {
-  readonly directories: readonly CatalogDir[];
+  readonly directories: { readonly items: readonly CatalogDir[]; readonly totalCount: number };
   readonly files: { readonly items: readonly CatalogFile[]; readonly totalCount: number };
 }
 
@@ -176,9 +176,14 @@ export class Api {
     expect(response.status(), 'POST rescan').toBe(202);
   }
 
-  async catalogChildren(volumeId: number, directoryId: number | null): Promise<CatalogChildren> {
-    const query = directoryId === null ? '' : `?directoryId=${directoryId}`;
-    const response = await this.ctx.get(`/api/catalog/${volumeId}/children${query}`);
+  async catalogChildren(
+    volumeId: number,
+    directoryId: number | null,
+    dirSkip = 0,
+  ): Promise<CatalogChildren> {
+    const params = new URLSearchParams({ dirSkip: String(dirSkip) });
+    if (directoryId !== null) params.set('directoryId', String(directoryId));
+    const response = await this.ctx.get(`/api/catalog/${volumeId}/children?${params}`);
     expect(response.ok(), `GET catalog children → ${response.status()}`).toBeTruthy();
     return response.json();
   }
@@ -202,7 +207,15 @@ export class Api {
       for (const file of children.files.items) {
         files.push({ id: file.id, name: file.name, relativePath: join(prefix, file.name) });
       }
-      for (const dir of children.directories) {
+      // Subfolders are paged since step 17: the walk asks for every page, so the fence's
+      // perimeter check (which relies on this walk) cannot stop at the first fifty.
+      const subfolders = [...children.directories.items];
+      while (subfolders.length < children.directories.totalCount) {
+        const next = await this.catalogChildren(volumeId, directoryId, subfolders.length);
+        if (next.directories.items.length === 0) break;
+        subfolders.push(...next.directories.items);
+      }
+      for (const dir of subfolders) {
         directories.push({ id: dir.id, name: dir.name, relativePath: dir.materializedPath });
         await visit(dir.id, dir.materializedPath);
       }

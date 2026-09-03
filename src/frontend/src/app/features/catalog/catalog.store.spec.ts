@@ -1,11 +1,11 @@
 import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { of, throwError } from 'rxjs';
+import { Subject, of, throwError } from 'rxjs';
 import { vi } from 'vitest';
 
 import { CatalogApi } from '../../core/api/catalog-api.service';
 import { VolumesApi } from '../../core/api/volumes-api.service';
-import { CatalogChildrenDto, VolumeDto } from '../../core/models/catalog.models';
+import { CatalogChildrenDto, CatalogDirDto, VolumeDto } from '../../core/models/catalog.models';
 import { CatalogStore } from './catalog.store';
 
 const mockVolume: VolumeDto = {
@@ -16,10 +16,13 @@ const mockVolume: VolumeDto = {
 };
 
 const rootChildren: CatalogChildrenDto = {
-  directories: [
-    { id: 10, name: 'Photos', materializedPath: 'Photos', childDirectoryCount: 2, fileCount: 50,
-      projectedState: 'None', pendingJobId: null },
-  ],
+  directories: {
+    items: [
+      { id: 10, name: 'Photos', materializedPath: 'Photos', childDirectoryCount: 2, fileCount: 50,
+        projectedState: 'None', pendingJobId: null },
+    ],
+    totalCount: 1, skip: 0, take: 50,
+  },
   files: { items: [], totalCount: 0, skip: 0, take: 50 },
   volumeIsOnline: true,
   volumeLabel: 'SSD',
@@ -29,7 +32,7 @@ const rootChildren: CatalogChildrenDto = {
 };
 
 const photoChildren: CatalogChildrenDto = {
-  directories: [],
+  directories: { items: [], totalCount: 0, skip: 0, take: 50 },
   files: {
     items: [{
       id: 1, name: 'beach.jpg', sizeBytes: 2048, modifiedUtc: '2026-01-01T00:00:00Z',
@@ -71,9 +74,9 @@ describe('CatalogStore', () => {
     await store.selectVolume(mockVolume);
 
     expect(store.selectedVolume()?.id).toBe(1);
-    expect(store.children()?.directories).toHaveLength(1);
+    expect(store.children()?.directories.items).toHaveLength(1);
     expect(store.breadcrumbs()).toHaveLength(0);
-    expect(childrenSpy).toHaveBeenCalledWith(1, null, 0, 50);
+    expect(childrenSpy).toHaveBeenCalledWith(1, null, 0, 50, 0, 50);
   });
 
   it('openDirectory pushes breadcrumb and loads children', async () => {
@@ -94,7 +97,7 @@ describe('CatalogStore', () => {
     await store.navigateTo(-1);
 
     expect(store.breadcrumbs()).toHaveLength(0);
-    expect(store.children()?.directories).toHaveLength(1);
+    expect(store.children()?.directories.items).toHaveLength(1);
   });
 
   it('currentDirId reflects last breadcrumb', async () => {
@@ -138,7 +141,7 @@ describe('CatalogStore', () => {
   // ── mixed file + folder selection ───────────────────────────────────────────
 
   const beachFile = photoChildren.files.items[0];
-  const photosDir = rootChildren.directories[0]; // { id: 10, name: 'Photos', materializedPath: 'Photos' }
+  const photosDir = rootChildren.directories.items[0]; // { id: 10, name: 'Photos', materializedPath: 'Photos' }
 
   it('toggleSelection adds the full file (kind File, path from current dir) to selectedItems', async () => {
     const { store } = setup((_v, dirId) => dirId === 10 ? photoChildren : rootChildren);
@@ -280,5 +283,109 @@ describe('CatalogStore', () => {
     store.deselectPage();
 
     expect(store.selectionCount()).toBe(1);
+  });
+});
+
+// ── Step 17: subfolders are paged on their own axis and APPENDED on screen ─────────────────────
+
+describe('CatalogStore subfolder paging (step 17)', () => {
+  function dirsFrom(from: number, count: number): CatalogDirDto[] {
+    return Array.from({ length: count }, (_, i) => ({
+      id: from + i, name: `d${String(from + i).padStart(3, '0')}`, materializedPath: `d${from + i}`,
+      childDirectoryCount: 0, fileCount: 0, projectedState: 'None' as const, pendingJobId: null,
+    }));
+  }
+
+  function paged(items: CatalogDirDto[], totalCount: number, dirId: number | null): CatalogChildrenDto {
+    return {
+      directories: { items, totalCount, skip: 0, take: items.length },
+      files: { items: [], totalCount: 0, skip: 0, take: 50 },
+      volumeIsOnline: true, volumeLabel: 'SSD', volumeLetter: 'D:',
+      currentDirectoryId: dirId, currentDirectoryPath: dirId === null ? null : `d${dirId}`,
+    };
+  }
+
+  /** A root with `total` subfolders; the spy answers exactly the slice the store asked for. */
+  function setupWide(total: number, late?: Subject<CatalogChildrenDto>) {
+    const childrenSpy = vi.fn(
+      (_v: number, dirId: number | null, _skip: number, _take: number, dirSkip: number, dirTake: number) => {
+        if (late && dirSkip > 0) return late.asObservable();
+        if (dirId !== null) return of(paged(dirsFrom(0, 3), 3, dirId));
+        return of(paged(dirsFrom(dirSkip, Math.max(0, Math.min(dirTake, total - dirSkip))), total, null));
+      });
+    TestBed.configureTestingModule({
+      providers: [
+        provideZonelessChangeDetection(),
+        { provide: CatalogApi, useValue: { children: childrenSpy } },
+        { provide: VolumesApi, useValue: { list: () => of([mockVolume]), detail: () => of(null), rescan: () => of(null), setCatalogable: () => of(null) } },
+      ],
+    });
+    return { store: TestBed.inject(CatalogStore), childrenSpy };
+  }
+
+  it('the first page shows 50 of 120 and says how many are still unlisted', async () => {
+    const { store } = setupWide(120);
+    await store.selectVolume(mockVolume);
+
+    expect(store.children()?.directories.items).toHaveLength(50);
+    expect(store.hasMoreDirectories()).toBe(true);
+    expect(store.remainingDirectories()).toBe(70);
+    expect(store.nextDirBatch()).toBe(50);
+  });
+
+  it('loadMoreDirectories appends the next page after the folders already shown', async () => {
+    const { store, childrenSpy } = setupWide(120);
+    await store.selectVolume(mockVolume);
+
+    await store.loadMoreDirectories();
+    expect(childrenSpy).toHaveBeenLastCalledWith(1, null, 0, 50, 50, 50);
+    const names = store.children()!.directories.items.map(d => d.name);
+    expect(names).toHaveLength(100);
+    expect(names[0]).toBe('d000');
+    expect(names[99]).toBe('d099');
+    expect(store.nextDirBatch()).toBe(20);
+
+    await store.loadMoreDirectories();
+    expect(store.children()?.directories.items).toHaveLength(120);
+    expect(store.hasMoreDirectories()).toBe(false);
+    expect(store.loadingMoreDirs()).toBe(false);
+  });
+
+  it('a projection push re-reads the folders already on screen, not just the first page', async () => {
+    const { store, childrenSpy } = setupWide(120);
+    await store.selectVolume(mockVolume);
+    await store.loadMoreDirectories();
+
+    store.invalidate(1);
+    await new Promise(resolve => setTimeout(resolve));
+
+    expect(childrenSpy).toHaveBeenLastCalledWith(1, null, 0, 50, 0, 100);
+    expect(store.children()?.directories.items).toHaveLength(100);
+  });
+
+  it('turning a file page keeps the subfolders already shown', async () => {
+    const { store, childrenSpy } = setupWide(120);
+    await store.selectVolume(mockVolume);
+    await store.loadMoreDirectories();
+
+    await store.loadFilePage(50);
+
+    expect(childrenSpy).toHaveBeenLastCalledWith(1, null, 50, 50, 0, 100);
+  });
+
+  it('a page that lands after the user opened another folder is dropped (last request wins)', async () => {
+    const late = new Subject<CatalogChildrenDto>();
+    const { store } = setupWide(120, late);
+    await store.selectVolume(mockVolume);
+
+    const pending = store.loadMoreDirectories();
+    await store.openDirectory(7, 'd7', 'd7');
+    late.next(paged(dirsFrom(50, 50), 120, null));
+    late.complete();
+    await pending;
+
+    expect(store.currentDirId()).toBe(7);
+    expect(store.children()?.directories.items).toHaveLength(3);
+    expect(store.loadingMoreDirs()).toBe(false);
   });
 });

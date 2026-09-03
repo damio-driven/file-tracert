@@ -31,9 +31,9 @@ function dir(id: number, name: string): CatalogDirDto {
   };
 }
 
-function childrenResult(directories: CatalogDirDto[]): CatalogChildrenDto {
+function childrenResult(directories: CatalogDirDto[], totalCount = directories.length): CatalogChildrenDto {
   return {
-    directories,
+    directories: { items: directories, totalCount, skip: 0, take: 50 },
     files: { items: [], totalCount: 0, skip: 0, take: 50 },
     volumeIsOnline: true,
     volumeLabel: 'Dati',
@@ -48,7 +48,7 @@ function setup(volumes: VolumeDto[] = [], mode: 'move' | 'copy' = 'move') {
     of(reqs.map((_, i) => ({ id: i + 1, blockReason: 'None' })) as never));
   const previewBatch = vi.fn((_reqs: CreateJobRequest[]) => of(feasibility));
   const volumeList = vi.fn(() => of(volumes));
-  const children = vi.fn((_volumeId: number, dirId: number | null) => {
+  const children = vi.fn((_volumeId: number, dirId: number | null, _skip?: number, _take?: number, _dirSkip?: number, _dirTake?: number) => {
     if (dirId === null) return of(childrenResult([dir(10, 'Documenti'), dir(11, 'Archivio')]));
     if (dirId === 10) return of(childrenResult([dir(20, 'Foto')]));
     return of(childrenResult([]));
@@ -75,6 +75,8 @@ function setup(volumes: VolumeDto[] = [], mode: 'move' | 'copy' = 'move') {
     crumbs: { (): { id: number; name: string }[]; set(v: { id: number; name: string }[]): void };
     newFolderSegments: { (): string[] };
     dirChildren: { (): CatalogDirDto[] };
+    dirTotal: { (): number };
+    loadMoreChildren(): Promise<void>;
     error: { (): string | null };
     enqueuedCount: { (): number };
     waitingCount: { (): number };
@@ -526,5 +528,49 @@ describe('OperationPicker mode', () => {
 
     expect(title).toContain('Copia');
     expect(title).toContain('2');
+  });
+});
+
+// ── Step 17: the folder list is paged; a "more" row appends the next page ───────────────────────
+
+describe('OperationPicker subfolder paging', () => {
+  function wide(children: ReturnType<typeof setup>['children']): void {
+    children.mockImplementation((_v: number, dirId: number | null, _s?: number, _t?: number, dirSkip = 0) => {
+      if (dirId !== null) return of(childrenResult([]));
+      return of(dirSkip === 0
+        ? childrenResult([dir(10, 'Documenti'), dir(11, 'Archivio')], 3)
+        : childrenResult([dir(12, 'Zeta')], 3));
+    });
+  }
+
+  it('offers the folders beyond the first page and appends them under the listed ones', async () => {
+    const { children, cmp } = setup();
+    wide(children);
+
+    await cmp.navigateToRoot();
+    expect(cmp.dirChildren().map(d => d.name)).toEqual(['Documenti', 'Archivio']);
+    expect(cmp.dirTotal()).toBe(3);
+
+    await cmp.loadMoreChildren();
+    expect(children).toHaveBeenLastCalledWith(1, null, 0, 50, 2, 50);
+    expect(cmp.dirChildren().map(d => d.name)).toEqual(['Documenti', 'Archivio', 'Zeta']);
+  });
+
+  it('renders the "more" row only while the catalog holds folders beyond the page', async () => {
+    const { children, cmp, fixture } = setup();
+    wide(children);
+
+    await cmp.navigateToRoot();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    const more = fixture.nativeElement.querySelector('.folder-row--more') as HTMLButtonElement | null;
+    expect(more).not.toBeNull();
+    expect(more!.textContent).toContain('Mostra altre cartelle');
+    expect(more!.textContent).toContain('2 di 3');
+
+    await cmp.loadMoreChildren();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.folder-row--more')).toBeNull();
   });
 });

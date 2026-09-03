@@ -192,7 +192,7 @@ describe('Projection invalidation fed by realtime', () => {
   afterEach(() => TestBed.resetTestingModule());
 
   const children: CatalogChildrenDto = {
-    directories: [],
+    directories: page([]),
     files: page([]),
     volumeIsOnline: true,
     volumeLabel: 'SSD',

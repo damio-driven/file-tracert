@@ -247,7 +247,8 @@ export interface CatalogFileDto {
 }
 
 export interface CatalogChildrenDto {
-  directories: CatalogDirDto[];
+  /** Step 17: paged on its own axis, appended on screen ("Mostra altre"), never re-paged. */
+  directories: PagedResult<CatalogDirDto>;
   files: PagedResult<CatalogFileDto>;
   volumeIsOnline: boolean;
   volumeLabel: string | null;

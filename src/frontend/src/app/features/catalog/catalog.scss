@@ -285,6 +285,17 @@
   }
 }
 
+.dir-more {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-top: var(--sp-1);
+}
+
+.dir-more-hint {
+  font-size: 11px;
+}
+
 // The whole card body opens the folder; the checkbox (top-right) selects it.
 .dir-card-open {
   display: flex;

@@ -61,6 +61,10 @@ export class Catalog implements OnInit {
     void this.store.loadFilePage(skip);
   }
 
+  protected loadMoreDirs(): void {
+    void this.store.loadMoreDirectories();
+  }
+
   protected catLabel(cat: FileCategory): string {
     return fileCategoryLabel(cat);
   }

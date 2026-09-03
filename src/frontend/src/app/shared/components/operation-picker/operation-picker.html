@@ -182,6 +182,22 @@
                     </span>
                   </button>
                 }
+                @if (dirTotal() > dirChildren().length) {
+                  <button
+                    type="button"
+                    class="folder-row folder-row--more"
+                    [disabled]="loadingMoreDirs()"
+                    (click)="loadMoreChildren()"
+                  >
+                    <span class="folder-row-icon" aria-hidden="true">…</span>
+                    <span class="folder-row-name">
+                      {{ loadingMoreDirs() ? 'Caricamento…' : 'Mostra altre cartelle' }}
+                    </span>
+                    <span class="folder-row-meta mono txt-faint">
+                      <span>{{ dirChildren().length }} di {{ dirTotal() }}</span>
+                    </span>
+                  </button>
+                }
               }
             </div>
 
