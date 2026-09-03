@@ -27,6 +27,18 @@ nascondi → ri-mostra → cancella · la ricognizione di A4 (sotto). Dettagli n
 
 ---
 
+## Da fare per primo, nella prossima sessione elevata
+**Rieseguire l'harness completo a macchina sana** e chiudere la firma di A4 (step 19). I due
+scenari USN devono uscire **PASS**, non SKIP: il loro gate ora chiede il cursore e non il motore,
+che è esattamente ciò che l'ibrido cambia. E **rieseguire la suite intera**: gli ultimi due ritocchi
+(gate dell'harness, controllo di limiti sul parsing unsafe) hanno build pulita e i 17 test mirati
+verdi, ma non una passata completa.
+
+**Prima di misurare qualsiasi cosa, controllare lo stato della macchina**: `cmd /c exit` deve
+costare ~25 ms. Se costa secondi, nessun numero vale — e la prima cosa da guardare sono i processi
+`dotnet` orfani lasciati da build interrotte (13 vivi contemporaneamente, in questa sessione:
+ucciderli ha riportato lo spawn da 3 000 ms a ~600).
+
 ## Cosa resta, in ordine di valore
 
 ### ~~1. A4 — il motore ibrido~~ — **fatto (step 19)**

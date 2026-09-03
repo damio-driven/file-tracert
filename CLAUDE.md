@@ -1063,7 +1063,30 @@ cursore → **2**; e ogni volta il resto della suite resta verde. *(Una mutazion
 compila sotto warnings-as-errors e fa girare i test sulla DLL vecchia — falso rosso, visto: la
 condizione va resa opaca a compile time.)*
 
+#### Il ferro, e perché la firma manca
+**L'harness non ha prodotto una verifica utilizzabile, e va detto invece che presentato come tale.**
+La passata è finita **3 FAIL / 4 SKIP**, ma i tre FAIL sono **timeout di budget** (360 s) su una
+macchina entrata nello stato degradato che 12b e 13 documentano: creare un processo costava
+**1,6–15 s** invece di ~25 ms, con Defender in cima alla CPU. La prova che non è A4: scenari che
+**non scansionano affatto** — `create-folder`, `intra-collision-blocked` — sono passati da 0,7 s a
+65 s e 44 s nella stessa passata. La radice era anche auto-inflitta: le build andate in timeout
+avevano lasciato **13 processi `dotnet`** vivi a contendersi la macchina; ucciderli ha riportato lo
+spawn da 3 000 ms a ~600.
+
+**Un dato dal ferro però c'è, ed è quello che conta di più**: le note di SKIP riportano
+*«indexed by the Enumeration engine (cursor=35242760744)»*. Sul giornale **vero**, con l'ibrido, la
+camminata è per enumerazione **e il cursore viene scritto**. Gli SKIP nascono dal gate vecchio degli
+scenari, che chiedeva «quale motore» — cioè, dopo A4, avrebbero saltato proprio il caso nuovo
+chiamandolo un fatto della macchina («SKIP travestiti da passata pulita»). Il gate ora chiede il
+**cursore**, come il prodotto; è la modifica che la prossima passata deve provare.
+
 #### Limiti noti e accettati
+- **Nessuna firma sul ferro per A4**: l'harness va rieseguito a macchina sana, e i due scenari USN
+  devono uscire **PASS** invece che SKIP.
+- **La suite intera non è stata rieseguita verde dopo gli ultimi due ritocchi** (gate dell'harness e
+  controllo di limiti sul parsing unsafe): la build è pulita e i **17** test dell'enumeratore e del
+  motore ibrido sono verdi, ma il tentativo di passata completa è caduto nella degradazione. I due
+  rossi visti nell'ultima passata completa sono i due test temporali noti, **verdi in isolamento**.
 - **Il servizio installato non è aggiornato** con questo giro.
 - **Nessuna migration**: distribuirlo è una copia di file.
 
