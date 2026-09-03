@@ -11,8 +11,8 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace FileTracert.Data.Migrations
 {
     [DbContext(typeof(FileTracertDbContext))]
-    [Migration("20260903140421_AddDirectoryExclusionCauses")]
-    partial class AddDirectoryExclusionCauses
+    [Migration("20260903141004_AddDirectoryExcludedByScan")]
+    partial class AddDirectoryExcludedByScan
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -77,9 +77,6 @@ namespace FileTracert.Data.Migrations
 
                     b.Property<DateTime>("CreatedUtc")
                         .HasColumnType("TEXT");
-
-                    b.Property<bool>("ExcludedByPath")
-                        .HasColumnType("INTEGER");
 
                     b.Property<bool>("ExcludedByScan")
                         .HasColumnType("INTEGER");

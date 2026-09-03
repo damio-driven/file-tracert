@@ -33,15 +33,11 @@ public class DirectoryNode : IAuditable
     /// attributes of its own). Only a scan that WALKS the folder clears it (<c>DirectoryMerger</c>);
     /// no setting can, because no setting knows whether the folder is still hidden.
     /// Not an inclusion flag: a folder that exists on disk exists (11g), visibility is unchanged.
+    /// <para>The only cause a directory row carries. The PATH cause needs no column: the delta
+    /// evaluates <c>IsPathExcluded</c> on every segment of an item's own path, so that one is
+    /// inherited by construction; the attribute is the fact only the disk knows.</para>
     /// </summary>
     public bool ExcludedByScan { get; set; }
-
-    /// <summary>
-    /// Step 18: a segment of <see cref="MaterializedPath"/> is in <c>ExcludedPaths</c>. Effective
-    /// like <see cref="ExcludedByScan"/>, but derivable from the path, so <c>FilterReconciler</c>
-    /// writes it in both directions without reading the disk.
-    /// </summary>
-    public bool ExcludedByPath { get; set; }
 
     public string? PendingName { get; set; }
     public int? PendingParentId { get; set; }

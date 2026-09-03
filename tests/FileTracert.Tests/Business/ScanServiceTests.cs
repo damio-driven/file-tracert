@@ -745,7 +745,6 @@ public sealed class ScanServiceTests
             var secret = await probe.Directories.SingleAsync(d => d.MaterializedPath == "Secret");
             secret.IsPresent.Should().BeTrue();
             secret.ExcludedByScan.Should().BeTrue("the scan saw the folder hidden");
-            secret.ExcludedByPath.Should().BeFalse();
         }
 
         // …and un-hiding it costs one scan, not a rebuild: the merge sees the file again and the

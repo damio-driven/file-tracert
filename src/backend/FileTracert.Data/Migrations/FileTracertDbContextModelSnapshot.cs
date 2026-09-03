@@ -75,9 +75,6 @@ namespace FileTracert.Data.Migrations
                     b.Property<DateTime>("CreatedUtc")
                         .HasColumnType("TEXT");
 
-                    b.Property<bool>("ExcludedByPath")
-                        .HasColumnType("INTEGER");
-
                     b.Property<bool>("ExcludedByScan")
                         .HasColumnType("INTEGER");
 

@@ -336,9 +336,10 @@ public sealed class ScanMergeTests
 
     /// <summary>
     /// Step 18: the closing pass stamps the cause on the skipped DIRECTORY row too, so the USN
-    /// delta can inherit it later. Only whole-directory areas (no file name), and only the two
-    /// causes a directory row carries: a skipped FILE says nothing about its folder, and an
-    /// inactive root is a setting the delta re-derives.
+    /// delta can inherit it later. Only whole-directory areas (no file name), and only the one
+    /// cause a directory row carries (attributes): a skipped FILE says nothing about its folder,
+    /// an inactive root is a setting the delta re-derives, a path segment is re-derived from the
+    /// item's own path.
     /// </summary>
     [Fact]
     public async Task Closing_a_scan_stamps_the_cause_on_the_skipped_directory_row_too()
@@ -361,12 +362,10 @@ public sealed class ScanMergeTests
         await using var read = harness.CreateContext();
         var sub = await read.Directories.SingleAsync(d => d.Id == fx.SubDirId);
         sub.ExcludedByScan.Should().BeTrue("the whole folder was skipped for its attributes");
-        sub.ExcludedByPath.Should().BeFalse();
         sub.IsPresent.Should().BeTrue("a folder that exists exists (11g)");
 
         var root = await read.Directories.SingleAsync(d => d.Id == fx.RootDirId);
-        root.ExcludedByPath.Should().BeFalse("a skipped FILE inside a folder says nothing about the folder");
-        root.ExcludedByScan.Should().BeFalse("an inactive root is a setting, not a directory fact");
+        root.ExcludedByScan.Should().BeFalse("a skipped FILE says nothing about its folder, and an inactive root is a setting, not a directory fact");
     }
 
     /// <summary>

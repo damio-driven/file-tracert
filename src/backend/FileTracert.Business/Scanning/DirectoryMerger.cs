@@ -128,7 +128,8 @@ public sealed class DirectoryMerger
             // let it through on its own attributes and no ancestor excluded it — so whatever cause
             // its row remembered is gone. Only a walk can say so: no setting knows whether the
             // folder is still hidden. Normally an empty list, i.e. zero statements.
-            if (row.ExcludedByScan || row.ExcludedByPath)
+            // (The path cause has no directory column: it is re-derived from the path itself.)
+            if (row.ExcludedByScan)
             {
                 toClear.Add(row.Id);
             }
@@ -158,8 +159,7 @@ public sealed class DirectoryMerger
             .AsNoTracking()
             .Where(d => d.VolumeId == volumeId)
             .Select(d => new ExistingDirectory(
-                d.Id, d.MaterializedPath, d.IsPresent, d.IsMaterialized, d.UsnFileRef,
-                d.ExcludedByScan, d.ExcludedByPath))
+                d.Id, d.MaterializedPath, d.IsPresent, d.IsMaterialized, d.UsnFileRef, d.ExcludedByScan))
             .ToListAsync(ct);
 
         var map = new Dictionary<string, ExistingDirectory>(rows.Count, StringComparer.OrdinalIgnoreCase);
@@ -323,7 +323,6 @@ public sealed class DirectoryMerger
                 .Where(d => batch.Contains(d.Id))
                 .ExecuteUpdateAsync(s => s
                     .SetProperty(d => d.ExcludedByScan, false)
-                    .SetProperty(d => d.ExcludedByPath, false)
                     .SetProperty(d => d.UpdatedUtc, now), ct);
         }
     }
@@ -331,6 +330,5 @@ public sealed class DirectoryMerger
     private static int Depth(string path) => path.Length == 0 ? 0 : path.Count(c => c == '\\') + 1;
 
     private sealed record ExistingDirectory(
-        int Id, string Path, bool IsPresent, bool IsMaterialized, long? UsnFileRef,
-        bool ExcludedByScan, bool ExcludedByPath);
+        int Id, string Path, bool IsPresent, bool IsMaterialized, long? UsnFileRef, bool ExcludedByScan);
 }
