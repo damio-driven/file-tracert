@@ -739,10 +739,13 @@ public sealed class ScanServiceTests
             row.IsIncluded.Should().BeFalse("the perimeter decided, and that is what IsIncluded records");
             row.IsPresent.Should().BeTrue("the file never left the disk — the scan simply did not look");
 
-            // No column of its own on Directories: a folder that exists on disk exists, whether or
-            // not its content is indexed. What it must NOT be is "no longer on disk".
-            (await probe.Directories.SingleAsync(d => d.MaterializedPath == "Secret"))
-                .IsPresent.Should().BeTrue();
+            // A folder that exists on disk exists, whether or not its content is indexed (11g).
+            // What it must NOT be is "no longer on disk". Since step 18 the row also REMEMBERS
+            // why its content is out, so the USN delta can inherit it.
+            var secret = await probe.Directories.SingleAsync(d => d.MaterializedPath == "Secret");
+            secret.IsPresent.Should().BeTrue();
+            secret.ExcludedByScan.Should().BeTrue("the scan saw the folder hidden");
+            secret.ExcludedByPath.Should().BeFalse();
         }
 
         // …and un-hiding it costs one scan, not a rebuild: the merge sees the file again and the
@@ -753,6 +756,9 @@ public sealed class ScanServiceTests
         var back = await after.Files.SingleAsync();
         back.IsIncluded.Should().BeTrue();
         back.IsPresent.Should().BeTrue();
+        // Only a scan that walks the folder can say it is no longer hidden — and this one did.
+        (await after.Directories.SingleAsync(d => d.MaterializedPath == "Secret"))
+            .ExcludedByScan.Should().BeFalse("the scan walked the folder again");
     }
 
     /// <summary>

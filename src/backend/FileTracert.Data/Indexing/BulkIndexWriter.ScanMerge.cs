@@ -1,4 +1,4 @@
-using FileTracert.Contracts.Scanning;
+﻿using FileTracert.Contracts.Scanning;
 using FileTracert.Data.Entities;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -164,8 +164,48 @@ public sealed partial class BulkIndexWriter
             excluded += await ExcludeForCauseAsync(conn, tx, volumeId, scanStartedUtc, now, cause, ct);
         }
 
+        // Step 18: the skipped DIRECTORY rows remember the cause too, so the USN delta can inherit
+        // it off the parent row. Whole-directory areas only (a skipped file says nothing about its
+        // folder), and only the causes a directory row carries. One statement per such cause; the
+        // tally above is files, this writes no number anybody decides on.
+        foreach (var cause in causes)
+        {
+            if (DirectoryColumnFor(cause) is { } column)
+            {
+                await StampDirectoriesAsync(conn, tx, volumeId, now, cause, column, ct);
+            }
+        }
+
         return excluded;
     }
+
+    private static Task<int> StampDirectoriesAsync(
+        SqliteConnection conn, SqliteTransaction? tx, int volumeId,
+        DateTime now, ScanSkipCause cause, string column, CancellationToken ct)
+    {
+        return ExecuteAsync(conn, tx,
+            $"""
+            UPDATE Directories
+               SET {column} = 1, UpdatedUtc = $now
+             WHERE VolumeId = $vol AND {column} = 0
+               AND EXISTS (SELECT 1 FROM ScanSkipAreas s
+                            WHERE s.DirectoryId = Directories.Id
+                              AND s.Cause = $cause
+                              AND s.Name IS NULL);
+            """, ct,
+            ("$vol", volumeId), ("$now", now), ("$cause", cause.ToString()));
+    }
+
+    /// <summary>
+    /// The directory-row column for a cause, or null for a cause a directory does not carry: an
+    /// inactive root is a setting the delta re-derives from the roots, and type is a file's.
+    /// </summary>
+    private static string? DirectoryColumnFor(ScanSkipCause cause) => cause switch
+    {
+        ScanSkipCause.ExcludedPath => "ExcludedByPath",
+        ScanSkipCause.ExcludedAttributes => "ExcludedByScan",
+        _ => null,
+    };
 
     /// <summary>
     /// One cause, one statement. The guard is the cause's OWN flag, not <c>IsIncluded</c>: a row

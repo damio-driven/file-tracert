@@ -1,4 +1,4 @@
-using FileTracert.Contracts.Scanning;
+﻿using FileTracert.Contracts.Scanning;
 using FileTracert.Contracts.Enums;
 using FileTracert.Data.Entities;
 using FileTracert.Data.Indexing;
@@ -335,6 +335,41 @@ public sealed class ScanMergeTests
     }
 
     /// <summary>
+    /// Step 18: the closing pass stamps the cause on the skipped DIRECTORY row too, so the USN
+    /// delta can inherit it later. Only whole-directory areas (no file name), and only the two
+    /// causes a directory row carries: a skipped FILE says nothing about its folder, and an
+    /// inactive root is a setting the delta re-derives.
+    /// </summary>
+    [Fact]
+    public async Task Closing_a_scan_stamps_the_cause_on_the_skipped_directory_row_too()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var fx = await SeedAsync(harness);
+
+        SkippedScanArea[] areas =
+        [
+            new(fx.SubDirId, null, ScanSkipCause.ExcludedAttributes),
+            new(fx.RootDirId, "named.jpg", ScanSkipCause.ExcludedPath),
+            new(fx.RootDirId, null, ScanSkipCause.InactiveRoot),
+        ];
+
+        await using (var ctx = harness.CreateContext())
+        {
+            await new BulkIndexWriter(ctx).ReconcileUnseenFilesAsync(fx.VolumeId, T0.AddHours(1), areas, CancellationToken.None);
+        }
+
+        await using var read = harness.CreateContext();
+        var sub = await read.Directories.SingleAsync(d => d.Id == fx.SubDirId);
+        sub.ExcludedByScan.Should().BeTrue("the whole folder was skipped for its attributes");
+        sub.ExcludedByPath.Should().BeFalse();
+        sub.IsPresent.Should().BeTrue("a folder that exists exists (11g)");
+
+        var root = await read.Directories.SingleAsync(d => d.Id == fx.RootDirId);
+        root.ExcludedByPath.Should().BeFalse("a skipped FILE inside a folder says nothing about the folder");
+        root.ExcludedByScan.Should().BeFalse("an inactive root is a setting, not a directory fact");
+    }
+
+    /// <summary>
     /// Step 11h moved the exclusion guard from <c>IsIncluded</c> to the cause's own column, so
     /// running the pass twice must not move anything the second time — a scan that changes nothing
     /// must write nothing.
@@ -502,15 +537,17 @@ public sealed class ScanMergeTests
         // And with nothing skipped it is exactly one statement — the absence UPDATE, unchanged.
         var (baseline, _) = await ClosureCostAsync(rowsInSkippedDirectory: 500, skipTheDirectory: false);
         baseline.Should().Be(1);
-        fewStatements.Should().Be(6,
+        fewStatements.Should().Be(7,
             "one skipped area costs the staging table, its index, the DELETE that empties it, one " +
-            "INSERT, the exclusion UPDATE and the absence UPDATE — and nothing per row");
+            "INSERT, the exclusion UPDATE on Files, the cause stamp on Directories (step 18) and " +
+            "the absence UPDATE — and nothing per row");
 
         // Step 11h: a second CAUSE among the areas costs one more UPDATE, and only one — the flag
         // each cause writes is different, so they cannot share a statement, but the cost still
-        // follows the number of causes (two) and never the rows.
+        // follows the number of causes (two) and never the rows. Step 18: an inactive root is a
+        // setting, not a directory fact, so the second cause here adds no Directories statement.
         var (twoCauses, _) = await ClosureCostAsync(rowsInSkippedDirectory: 500, secondCause: true);
-        twoCauses.Should().Be(7);
+        twoCauses.Should().Be(8);
     }
 
     private static async Task<(int Statements, int Excluded)> ClosureCostAsync(

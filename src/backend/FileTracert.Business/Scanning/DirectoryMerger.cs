@@ -112,6 +112,7 @@ public sealed class DirectoryMerger
         var seen = new HashSet<string>(scanned.Count, StringComparer.OrdinalIgnoreCase);
         var toInsert = new List<ScannedDirectory>();
         var toRevive = new List<(int Id, long? Frn)>();
+        var toClear = new List<int>();
 
         foreach (var dir in scanned)
         {
@@ -121,6 +122,15 @@ public sealed class DirectoryMerger
             {
                 toInsert.Add(dir);
                 continue;
+            }
+
+            // Step 18: a directory handed to the merge is one the walk went INTO, i.e. the filter
+            // let it through on its own attributes and no ancestor excluded it — so whatever cause
+            // its row remembered is gone. Only a walk can say so: no setting knows whether the
+            // folder is still hidden. Normally an empty list, i.e. zero statements.
+            if (row.ExcludedByScan || row.ExcludedByPath)
+            {
+                toClear.Add(row.Id);
             }
 
             // Found again on disk: it is present and materialized, and it may have gained a
@@ -135,6 +145,7 @@ public sealed class DirectoryMerger
 
         var inserted = await InsertMissingAsync(volumeId, toInsert, idByPath, batchSize, ct);
         var revived = await ReviveAsync(toRevive, batchSize, ct);
+        await ClearCausesAsync(toClear, batchSize, ct);
 
         return (existing, seen, new DirectoryEnsureResult(idByPath, inserted, revived));
     }
@@ -146,7 +157,9 @@ public sealed class DirectoryMerger
         var rows = await _db.Directories
             .AsNoTracking()
             .Where(d => d.VolumeId == volumeId)
-            .Select(d => new ExistingDirectory(d.Id, d.MaterializedPath, d.IsPresent, d.IsMaterialized, d.UsnFileRef))
+            .Select(d => new ExistingDirectory(
+                d.Id, d.MaterializedPath, d.IsPresent, d.IsMaterialized, d.UsnFileRef,
+                d.ExcludedByScan, d.ExcludedByPath))
             .ToListAsync(ct);
 
         var map = new Dictionary<string, ExistingDirectory>(rows.Count, StringComparer.OrdinalIgnoreCase);
@@ -298,7 +311,26 @@ public sealed class DirectoryMerger
         return marked;
     }
 
+    /// <summary>Step 18: the rows the walk went into no longer carry an exclusion cause.</summary>
+    private async Task ClearCausesAsync(List<int> ids, int batchSize, CancellationToken ct)
+    {
+        if (ids.Count == 0) return;
+        var now = DateTime.UtcNow;
+        foreach (var chunk in ids.Chunk(batchSize))
+        {
+            var batch = chunk.ToList();
+            await _db.Directories
+                .Where(d => batch.Contains(d.Id))
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(d => d.ExcludedByScan, false)
+                    .SetProperty(d => d.ExcludedByPath, false)
+                    .SetProperty(d => d.UpdatedUtc, now), ct);
+        }
+    }
+
     private static int Depth(string path) => path.Length == 0 ? 0 : path.Count(c => c == '\\') + 1;
 
-    private sealed record ExistingDirectory(int Id, string Path, bool IsPresent, bool IsMaterialized, long? UsnFileRef);
+    private sealed record ExistingDirectory(
+        int Id, string Path, bool IsPresent, bool IsMaterialized, long? UsnFileRef,
+        bool ExcludedByScan, bool ExcludedByPath);
 }
