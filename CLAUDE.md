@@ -777,12 +777,11 @@ girare dopo otto step; il **18** l'esclusione che si eredita alle cartelle (i re
 **Non c'è lavoro obbligatorio aperto**: tutto ciò che segue è debito datato,
 decisione di prodotto o fase 2.
 
-Lo step 16 è **completo, harness elevato incluso**: 59/59 PASS sul giornale USN vero, quindi anche
-A3 è firmata sul ferro e non solo in-process.
+Gli step 16 e **18** sono **completi, harness elevato incluso**: 59/59 PASS sul giornale USN vero,
+quindi A3 e l'eredità alle cartelle sono firmate sul ferro e non solo in-process.
 
-**Il servizio installato è aggiornato a 16** (2026-09-03) — vedi «Deploy di 16» qui sotto. Il
-**17** non è distribuito: nessuna migration, quindi è una copia di file, e resta una decisione
-dell'utente.
+**Il servizio installato è aggiornato a 18** (2026-09-03) — 17 e 18 distribuiti insieme, vedi
+«Deploy di 17 e 18» qui sotto. Non resta nulla di non distribuito.
 
 **Decisioni di prodotto prese il 2026-09-03**, da eseguire nei prossimi step:
 - **A4 → motore ibrido.** Prima scansione per **enumerazione** dei soli root (veloce, limitata al
@@ -791,6 +790,10 @@ dell'utente.
   riporta il primo delta (il merge è idempotente). Niente euristica «più veloce oggi»: la
   domanda vera era «quel volume avrà i delta?», e la risposta è sì per costruzione. Prova sul
   giornale vero in sessione elevata.
+  **Il disegno è incompleto, e la misura lo dice** *(sonda del 2026-09-03, vedi la voce A4 della
+  lista qui sotto)*: preso alla lettera produce un incrementale che non colloca **niente**, perché
+  l'enumerazione non porta il **FRN** e il delta risale dal FRN del padre. Chi lo esegue deve
+  cominciare da lì — `ScanEntry` guadagna il FRN e l'enumeratore lo legge — non dal cursore.
 - ~~**L'esclusione si eredita alle cartelle figlie.**~~ — **fatta allo step 18**, lo stesso giorno:
   una colonna sola, `Directories.ExcludedByScan` (la causa path si eredita già dal path dell'item).
   Vedi il paragrafo dello step.
@@ -818,6 +821,21 @@ dell'utente.
    (enumerazione dei root per la prima scansione, cursore USN preso prima della camminata), vedi
    «Decisioni di prodotto» in cima alla roadmap. Un'euristica per rapporto sotto-albero/MFT
    avrebbe spento l'incrementale su `D:`, l'unico volume che ce l'ha.
+   **Il prerequisito, misurato il 2026-09-03 e non previsto dalla decisione**: la camminata a
+   enumerazione deve portare il **FRN**, altrimenti l'ibrido è un incrementale cieco. Il delta
+   colloca ogni record risalendo dal FRN del **padre** alle righe `Directories.UsnFileRef`, e
+   quella colonna la scrive solo il ramo USN (`ScanService` la prende da `item.Frn`, nullo per
+   costruzione sull'altro ramo). Sonda usa-e-getta: scansione a enumerazione, cursore scritto a
+   mano (lo stato esatto che l'ibrido lascerebbe), delta che crea un file **dentro una cartella già
+   indicizzata** → `status=Applied indexed=0 unresolved=1`, cursore avanzato, **niente
+   indicizzato**. Il modo di fallire peggiore: sembra funzionare. Oggi il prodotto è protetto
+   dal gate di `UsnDeltaApplier.Ineligible`, che porta la frase giusta fin dal 14d — *«the last
+   full scan used enumeration, so the directory rows carry no file references»* — e l'ibrido
+   quella riga la toglie. Quindi il lavoro comincia da `Platform`: `ScanEntry` guadagna il FRN e
+   `ManagedDirectoryEnumerator` lo legge (`GetFileInformationByHandleEx` /
+   `FileIdBothDirectoryInfo` restituisce nome, attributi, dimensione, date **e** FileId per handle
+   di directory, quindi si porta via anche la `FileInfo` per voce che l'enumeratore paga oggi).
+   Solo dopo ha senso separare il motore del **cursore** da quello della **camminata**.
 5. **Classificazione Cloud non affidabile** (§11, debito datato allo step 6.7). Coperto
    dall'esclusione manuale, che funziona.
 6. ~~**Un job ripreso da un checkpoint non ri-controlla lo spazio**~~ — **chiuso allo step 15b**
@@ -972,7 +990,71 @@ lasciato aperte (H e C nello stesso tick; H smascherata sotto G nascosta): entra
 - **Righe legacy**: le cartelle nascoste prima del deploy hanno la colonna a 0 finché una
   scansione completa non le guarda; fino ad allora il delta si comporta come oggi su di esse.
 - **Nessuna UI**: il Catalogo non mostra la causa sulle cartelle.
-- **Il servizio installato non è aggiornato**: c'è una migration.
+- ~~**Il servizio installato non è aggiornato**~~ — **distribuito lo stesso giorno**, vedi «Deploy
+  di 17 e 18» qui sotto; e l'harness elevato ha firmato `usn-hidden-subtree` su tutte e tre le
+  coppie.
+
+### Deploy di 17 e 18 sul catalogo reale (2026-09-03)
+**Il servizio installato eredita l'esclusione alle cartelle, e pagina dove §7 lo prometteva.**
+Distribuiti insieme su richiesta dell'utente, in una sessione elevata che ha prima firmato
+l'harness.
+
+#### Prima: l'harness completo, elevato
+**59 scenari, 59 PASS, 0 FAIL, 0 SKIP.** È la firma che allo step 18 mancava: `usn-hidden-subtree`
+col secondo tick passa su **tutte e tre** le coppie invece di fare SKIP. La prova che il motore sia
+quello giusto resta il contrasto — **0 occorrenze** di `falling back to enumeration` nel log.
+`appsettings.json` rimesso byte-identico (sha256 `653f5990…`).
+
+#### Il deploy
+Stato di partenza, la solita unica domanda che conta: `GET /api/dashboard` a **0 job in coda, 0
+bloccati, 0 in corso**. Publish col servizio ancora attivo (**10,9 s**, 29 file SPA), `sc stop`
+pulito in **0,3 s** (nessun `-wal`/`-shm` residuo), backup `filetracert.db.pre18` con **sha256
+identico** all'originale (`FC41060D…`), `install-service.ps1` in **4,1 s**.
+
+**Una migration, additiva**: `AddDirectoryExcludedByScan`, in cima a `__EFMigrationsHistory`,
+colonna `INTEGER NOT NULL DEFAULT 0`. **Nessun rebuild dell'FTS**, ed era la cosa da controllare:
+le uniche righe «Search index» nel DB dei log sono ancora quelle del 24/08. La migration è girata
+in **1,8 s**.
+
+| controllo | esito |
+|---|---|
+| catalogo | 742 675 file · 114 212 directory · 742 669 righe FTS · 30 volumi |
+| `foreign_key_check` | nessuna violazione |
+| **invariante di §6 a quattro termini** | **vera su tutte e 742 675 le righe** |
+| righe `Directories.ExcludedByScan = 1` | **0** — nessuna scansione ha ancora guardato, cioè il backfill pessimista |
+| log dall'avvio | **zero Error/Critical**; i 6 Warning sono gli `EntityFrameworkCore.Query` pre-esistenti |
+| rete | `Running`/`Automatic`, UI 200 col token, **401** senza, in ascolto solo su `127.0.0.1` e `::1` |
+
+#### La ri-scansione di `D:`, e la prova che la colonna vive
+La ri-scansione esplicita (**2,2 s**, motore USN) ha scritto **zero** righe, ed è la risposta
+giusta: su `D:` non c'è niente di escluso — 3 246 file con tutte e quattro le cause a zero, 376
+directory nessuna nascosta. Zero però non prova il meccanismo, quindi lo si è provato con una
+cartella usa-e-getta sotto `D:\Test spostamento` (lo stesso root che il deploy di 14e usò per la
+prova end-to-end), nel ciclo completo:
+
+| stato sul disco | riga `Directories` | riga `Files` | FTS |
+|---|---|---|---|
+| visibile | `IsPresent=1` · `ExcludedByScan=0` | `IsIncluded=1` · `IsPresent=1` | presente |
+| **nascosta** | `IsPresent=1` · **`ExcludedByScan=1`** | **`IsIncluded=0`** · `ExcludedByScan=1` · **`IsPresent=1`** | **potata** |
+| ri-mostrata | `ExcludedByScan=0` | `IsIncluded=1` | ripristinata |
+| cancellata | `IsPresent=0` | `IsPresent=0` · `IsIncluded=1` | potata |
+
+È lo step 18 sul ferro vero, con le due proprietà che lo definiscono: la cartella **esiste** anche
+mentre è esclusa (11g), e l'esclusione **non tocca** la presenza. L'azzeramento lo fa solo una
+scansione che *entra* nella cartella. Invariante §6 vera dopo ogni passaggio.
+
+**Residuo dichiarato**: due righe assenti in più su `D:` (la cartella di prova e il suo file),
+esattamente come per qualunque file che l'utente cancelli — `IsPresent=0`, `IsIncluded=1`, mai un
+delete. Assenti su `D:` da 6 a 7.
+
+#### Limiti dichiarati
+- **Le cartelle già nascoste degli altri volumi hanno ancora la colonna a 0**: `C:` non ha
+  l'incrementale acceso e non è stato ri-scansionato (sarebbe una camminata completa dell'MFT per
+  tre sottoalberi, il caso che 14d ha misurato come perdente).
+- **Nessuna misura A/B degli endpoint in questo giro**: né 17 né 18 toccano le query che i deploy
+  precedenti cronometravano.
+- **E2E non eseguiti**: la sessione era elevata, e il loro `globalSetup` si rifiuta di partire da
+  lì (12a). Girano il giorno stesso, non elevati: 25/25.
 
 ### Fatto nello step 17 (2026-09-03, commit `4166760`…`f7c0cf7`)
 **Il paging arriva dove §7 lo prometteva, e la passata E2E torna a girare.** Decisione di prodotto
