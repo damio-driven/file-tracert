@@ -1,4 +1,4 @@
-using FileTracert.Business.Scanning;
+﻿using FileTracert.Business.Scanning;
 using FileTracert.Contracts.Enums;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -35,6 +35,11 @@ namespace FileTracert.HardwareSmoke.Scenarios;
 /// later Setup save walk the content of a hidden folder back into the Catalog — the regression 11h
 /// exists to prevent, reached through step 16's new door.</para>
 ///
+/// <para><b>Step 18 adds a second tick</b>: a file written inside the hidden folder and a folder
+/// created there. Both records carry clean attributes of their own; what excludes them is the
+/// parent's row, which the first tick stamped (<c>Directories.ExcludedByScan</c>). Before step 18
+/// the first came back <c>IsIncluded = 1</c> and the second was catalogued.</para>
+///
 /// <para>Skipped rather than failed when the volume did not get the journal engine, for the reason
 /// <see cref="UsnIncrementalSyncScenario"/> gives: unelevated, the scan falls back to enumeration,
 /// and a scenario that then reported PASS would be asserting about a road it never took.</para>
@@ -44,6 +49,10 @@ public sealed class UsnHiddenSubtreeScenario : Scenario
     private const string HiddenFolder = @"usnhidden\cache";
     private const string InsideOne = @"usnhidden\cache\cachedone.dat";
     private const string InsideTwo = @"usnhidden\cache\cachedtwo.dat";
+
+    /// <summary>Step 18, second tick: born INSIDE the hidden folder, after it went hidden.</summary>
+    private const string LateFolder = @"usnhidden\cache\newsub";
+    private const string LateFile = @"usnhidden\cache\newsub\fresh.dat";
 
     /// <summary>A sibling OUTSIDE the folder: the exclusion has to be a subtree, not a sweep.</summary>
     private const string Outside = @"usnhidden\openroom.dat";
@@ -166,8 +175,11 @@ public sealed class UsnHiddenSubtreeScenario : Scenario
         var folderRow = await FindDirectoryRowAsync(ctx, ctx.SourceVolumeId, folderPath);
         ctx.Assert.True(
             folderRow is { IsPresent: true },
-            "the hidden FOLDER exists on disk, so it stays present — directories carry no inclusion " +
-            "flag and A3 does not touch them (11g)");
+            "the hidden FOLDER exists on disk, so it stays present — a folder that exists exists (11g)");
+        ctx.Assert.True(
+            folderRow is { ExcludedByScan: true },
+            "step 18: …and its row must REMEMBER why its content is out, so the next tick can inherit " +
+            $"it. Got ExcludedByScan={folderRow?.ExcludedByScan}");
 
         // The index has to follow the rows, and by directory: the Catalog hiding a row that Search
         // still answers with is the disagreement the user actually sees.
@@ -193,6 +205,59 @@ public sealed class UsnHiddenSubtreeScenario : Scenario
         ctx.Assert.True(
             replayedOne is not null && afterOne is not null && replayedOne.Id == afterOne.Id,
             "…on the same row, not a second one");
+
+        // ── step 18: the NEXT tick, with ordinary traffic inside the hidden folder ────────────
+        // The two residuals of step 16, on the real journal. A file inside the hidden folder is
+        // written (its own attributes are clean, its own path has no excluded segment), and a new
+        // subfolder with a file is created there. Before step 18 the delta re-admitted the first
+        // and catalogued the second: it judged each record on its own, and nothing it could read
+        // said the folder above was hidden. Now the folder's row says so.
+        File.WriteAllBytes(ctx.Source.FullPath(InsideOne), new byte[9 * 1024]);
+        ctx.Source.CreateFile(LateFile, 4 * 1024);
+
+        var second = await SyncVolumeAsync(ctx, ctx.SourceVolumeId);
+        ctx.Log(
+            $"second tick: {second.Status} ({second.Reason}) — indexed={second.Indexed} " +
+            $"excluded={second.Excluded} dirs={second.DirectoriesTouched} unplaced={second.Unresolved}");
+        ctx.Assert.True(
+            second.Status == UsnSyncStatus.Applied,
+            $"the second delta must have been applied, not '{second.Status}' ({second.Reason})");
+
+        var (_, scannedAfterSecond, _, _) = await ReadVolumeStateAsync(ctx);
+        ctx.Assert.True(
+            scannedAfterSecond == scannedAt,
+            "still no full scan: the second tick is the delta's own answer");
+
+        var writtenInside = await FindFileRowAsync(ctx, ctx.SourceVolumeId, insideOnePath);
+        ctx.Assert.True(
+            writtenInside is { IsIncluded: false, IsPresent: true, ExcludedByScan: true },
+            "a file WRITTEN inside the hidden folder must stay excluded — its record carries clean " +
+            "attributes, the exclusion comes off the parent row (step 18). Got " +
+            $"IsIncluded={writtenInside?.IsIncluded}, IsPresent={writtenInside?.IsPresent}, " +
+            $"ExcludedByScan={writtenInside?.ExcludedByScan}");
+        ctx.Assert.True(
+            writtenInside is not null && afterOne is not null && writtenInside.Id == afterOne.Id,
+            "…on the same row: the merge matches by FRN");
+
+        var lateFolderRow = await FindDirectoryRowAsync(ctx, ctx.SourceVolumeId, ctx.Source.RelativePath(LateFolder));
+        ctx.Assert.True(
+            lateFolderRow is null,
+            "a folder CREATED inside the hidden one must never enter the catalog — as after a full " +
+            "scan, which drops the whole subtree (step 18). Got a row with " +
+            $"IsPresent={lateFolderRow?.IsPresent}");
+        ctx.Assert.True(
+            await FindFileRowAsync(ctx, ctx.SourceVolumeId, ctx.Source.RelativePath(LateFile)) is null,
+            "…and neither must the file created under it");
+
+        ctx.Assert.True(
+            (await SearchByNameAsync(ctx, "cached")).Count == 0 &&
+            (await SearchByNameAsync(ctx, "fresh")).Count == 0,
+            "Search must answer with nothing from inside the hidden folder after the second tick either");
+
+        var stillOutside = await FindFileRowAsync(ctx, ctx.SourceVolumeId, outsidePath);
+        ctx.Assert.True(
+            stillOutside is { IsIncluded: true, IsPresent: true },
+            "the sibling outside the hidden folder is still untouched after the second tick");
     }
 
     private static Task<UsnSyncResult> SyncVolumeAsync(ScenarioContext ctx, int volumeId) =>
