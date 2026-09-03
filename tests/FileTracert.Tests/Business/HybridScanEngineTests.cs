@@ -233,6 +233,72 @@ public sealed class HybridScanEngineTests
         result.Reason.Should().Contain("checkpoint");
         reader.ReadChangesCalls.Should().Be(0);
     }
+
+    /// <summary>
+    /// Two paths, one file. NTFS hard links are not exotic — Git for Windows ships every
+    /// <c>libexec\git-core</c> tool as a link to its twin in <c>bin</c>, the Python launcher does
+    /// the same, and the enumeration walk reports BOTH, because both are paths and a Files row is
+    /// a path. The MFT snapshot never produced this shape (it keeps one path per FRN, review item
+    /// P1), so until the hybrid gave the enumeration walk the file reference number the merge's
+    /// stated invariant — "a duplicate FRN is impossible" — held by accident.
+    ///
+    /// <para>The identity is a claim at most one path per volume holds: the first path walked
+    /// keeps it, the others are tracked by path, which is exactly how EVERY enumeration-indexed
+    /// row behaved before the hybrid. So no path is ever dropped, and no row loses anything it
+    /// used to have.</para>
+    /// </summary>
+    [Fact]
+    public async Task Two_hard_linked_paths_are_both_indexed_and_only_one_claims_the_identity()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, "Photos");
+
+        await ScanAsync(harness, volumeId, new SnapshotCountingUsnReader(), HardLinkEnumerator());
+
+        await using var read = harness.CreateContext();
+        var files = await read.Files.OrderBy(f => f.Name).ToListAsync();
+
+        files.Select(f => f.Name).Should().BeEquivalentTo(["a.jpg", "c.jpg", "link.jpg"],
+            "a Files row is a PATH, and both hard-linked paths exist on disk");
+        files.Where(f => f.UsnFileRef == 200).Should().ContainSingle(
+            "the two hard-linked paths share one file reference, and the unique index says one row may hold it");
+        files.Single(f => f.Name == "a.jpg").UsnFileRef.Should().Be(200, "the first path walked keeps the identity");
+        files.Single(f => f.Name == "link.jpg").UsnFileRef.Should().BeNull("the other path is tracked by path, as before the hybrid");
+    }
+
+    /// <summary>
+    /// And a re-scan converges instead of flapping: the same path keeps the identity, neither row
+    /// is dropped, and nothing is marked absent — the walk saw both.
+    /// </summary>
+    [Fact]
+    public async Task A_rescan_over_hard_links_keeps_both_rows_and_the_same_claim()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, "Photos");
+
+        await ScanAsync(harness, volumeId, new SnapshotCountingUsnReader(), HardLinkEnumerator());
+        await ScanAsync(harness, volumeId, new SnapshotCountingUsnReader(), HardLinkEnumerator());
+
+        await using var read = harness.CreateContext();
+        var files = await read.Files.OrderBy(f => f.Name).ToListAsync();
+
+        files.Should().HaveCount(3);
+        files.Should().OnlyContain(f => f.IsPresent);
+        files.Single(f => f.Name == "a.jpg").UsnFileRef.Should().Be(200);
+        files.Single(f => f.Name == "link.jpg").UsnFileRef.Should().BeNull();
+    }
+
+    /// <summary>Photos/ with a.jpg and link.jpg as two names for the SAME file (one FRN).</summary>
+    private static FakeDirectoryEnumerator HardLinkEnumerator() =>
+        new([
+            new(@"Photos\Raw", "Raw", true, 0, T, T, FileAttributes.Directory, 110UL),
+            new(@"Photos\a.jpg", "a.jpg", false, 10, T, T, FileAttributes.Normal, 200UL),
+            new(@"Photos\link.jpg", "link.jpg", false, 10, T, T, FileAttributes.Normal, 200UL),
+            new(@"Photos\Raw\c.jpg", "c.jpg", false, 30, T, T, FileAttributes.Normal, 202UL),
+        ])
+        {
+            FileIdsByPath = new Dictionary<string, ulong> { ["Photos"] = 100UL },
+        };
 }
 
 /// <summary>A journal that answers, and counts how many times the MFT was actually walked.</summary>

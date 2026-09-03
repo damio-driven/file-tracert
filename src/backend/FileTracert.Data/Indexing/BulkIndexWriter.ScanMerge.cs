@@ -27,9 +27,18 @@ namespace FileTracert.Data.Indexing;
 /// <c>NOCASE</c> folds ASCII only; a non-ASCII file whose case changed on disk is matched as
 /// a new row instead of an update. That path only applies to the enumeration engine (on NTFS
 /// the FRN answers first) and it degrades to an extra row, never to a lost overlay.</para>
-/// <para><b>No duplicate-FRN hazard.</b> The unique index on <c>(VolumeId, UsnFileRef)</c>
-/// could be violated only if a row matched by path carried an FRN already held by a different
-/// row — impossible, because that staged row would have been matched by the FRN pass first.</para>
+/// <para><b>The duplicate-FRN hazard is real, and it is kept out UPSTREAM.</b> This used to say
+/// the unique index on <c>(VolumeId, UsnFileRef)</c> could be violated only if a row matched by
+/// path carried an FRN already held by a different row — "impossible, the FRN pass would have
+/// matched it first". That compares each staged row against the CATALOG and never staged against
+/// staged: two staged rows carrying the SAME reference both miss the FRN pass, both miss the path
+/// pass, and both get inserted. NTFS makes that shape ordinary — a hard link is two paths for one
+/// file, and a row here is a PATH — and it only stayed hypothetical while the MFT snapshot was the
+/// sole source of file references, because that engine keeps one path per FRN (review item P1).
+/// The hybrid engine (A4) gave the enumeration walk the reference too, and a full scan of a real
+/// system volume died on this index. The guarantee now has an owner: <c>ScanService.EnumerateRaw</c>
+/// makes the reference a claim at most one path per volume holds, for every engine. Nothing in
+/// this file may assume it for any other reason.</para>
 /// </remarks>
 public sealed partial class BulkIndexWriter
 {

@@ -352,7 +352,54 @@ public sealed class ScanService
         }
     }
 
+    /// <summary>
+    /// Every scanned item, from whichever engine walked — and the one place that makes the file
+    /// reference number a claim <b>at most one path per volume</b> holds.
+    ///
+    /// <para><b>Why this exists.</b> A <c>Files</c> row is a PATH, and NTFS lets many paths name
+    /// one file: Git for Windows hard-links every <c>libexec\git-core</c> tool to its twin in
+    /// <c>bin</c>, the Python launcher does the same. But <c>(VolumeId, UsnFileRef)</c> is UNIQUE
+    /// (§6), so two rows may not both carry the identity. The merge states that as an invariant
+    /// ("a duplicate FRN is impossible, the FRN pass would have matched first") and that reasoning
+    /// only compares staged rows against the CATALOG — never staged against staged. It held by
+    /// accident while only the MFT snapshot produced FRNs, because that engine keeps one path per
+    /// FRN (review item P1). The hybrid gave the enumeration walk the identity too, and the walk
+    /// reports every path: a real system volume answered with 153 file references claimed by more
+    /// than one path, up to seven paths for one file.</para>
+    ///
+    /// <para><b>The rule.</b> The first path walked keeps the identity; the others are indexed as
+    /// rows that carry none — which is exactly how EVERY enumeration-indexed row behaved before
+    /// the hybrid, so no path is dropped and no row loses anything it had. Deliberately NOT solved
+    /// by collapsing the paths (that is P1, and it loses a file the user has) nor by relaxing the
+    /// index (the delta and the merge both resolve identity through it).</para>
+    ///
+    /// <para>The set is volume-wide on purpose: two hard links land in different merge batches as
+    /// easily as in one, so a per-batch guard would leave the crash in place. It costs one
+    /// <c>ulong</c> per distinct file next to the <c>List&lt;ScanItem&gt;</c> of every entry that
+    /// the caller already holds. Applied to both engines, so the guarantee is made here rather
+    /// than borrowed from what a reader happens to do upstream.</para>
+    /// </summary>
     private IEnumerable<ScanItem> EnumerateRaw(
+        Volume volume, string mountRoot, List<WatchedRoot> roots, CancellationToken ct)
+    {
+        // Files only: the unique index is on Files, and a directory's FRN is what the USN delta
+        // resolves parents by — NTFS has no directory hard links, so nulling one would be a loss
+        // with nothing bought.
+        var claimed = new HashSet<ulong>();
+
+        foreach (var item in WalkRaw(volume, mountRoot, roots, ct))
+        {
+            if (item.IsDirectory || item.Frn is not { } frn)
+            {
+                yield return item;
+                continue;
+            }
+
+            yield return claimed.Add(frn) ? item : item with { Frn = null };
+        }
+    }
+
+    private IEnumerable<ScanItem> WalkRaw(
         Volume volume, string mountRoot, List<WatchedRoot> roots, CancellationToken ct)
     {
         if (volume.ScanEngine == VolumeScanEngine.UsnJournal)
