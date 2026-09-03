@@ -344,7 +344,9 @@ stato fisico (ultima scansione) **+ overlay delle operazioni in coda**.
     disco ed è **reversibile senza ri-scansione** (§4).
   - Quindi: una decisione di perimetro non tocca `IsPresent`, un'assenza non tocca
     `IsIncluded`. **Ciò che la scansione non ha guardato non è assente.**
-  - Le **directory** non hanno `IsIncluded`: una cartella che esiste sul disco
+  - Le **directory** non hanno `IsIncluded` (ma dallo step 18 **ricordano** l'attributo:
+    `Directories.ExcludedByScan`, effettivo, è ciò da cui il delta USN eredita l'esclusione di
+    un antenato nascosto — vedi lo schema): una cartella che esiste sul disco
     esiste, anche se non se ne indicizza il contenuto. Una cartella fuori
     perimetro resta quindi `IsPresent = true` e visibile nel Catalogo, con dentro
     solo ciò che è incluso.
@@ -397,6 +399,11 @@ aggiornato in cascata sui rename) · `UsnFileRef?` · `IsMaterialized` · `IsPre
 (default `true`; stessa semantica di `Files.IsPresent` — la scansione l'ha cercata e
 non l'ha trovata sul disco, mai un delete; una cartella **fuori perimetro** non viene
 mai marcata così, e non esiste un `IsIncluded` sulle directory — step 11g) ·
+`ExcludedByScan` (**step 18**: lei o un antenato è Hidden/System come l'ha visto l'ultima
+scansione o l'ultimo delta — **effettiva**, non propria; la scrivono la chiusura dello scan e il
+pass di sottoalbero del delta, la azzera **solo** una scansione o un delta che *entra* nella
+cartella; non è un flag di inclusione e non tocca la visibilità. L'unica causa che una cartella
+porta: il segmento di path si ri-deriva dal path dell'item, il root inattivo dalle impostazioni) ·
 `PendingName?` · `PendingParentId?` ·
 `PendingState` · `PendingJobId?` + audit.
 
@@ -766,7 +773,7 @@ visibili. Lo step **15a** è il primo lavoro di **fase 2**: l'operazione **Copy*
 due difetti che l'utente ha scelto per primi (voci A1 e A6); il **16** le voci **A2 e A3**, cioè le
 decisioni di perimetro che non raggiungevano le righe già a catalogo; il **17** il paging dove §7
 lo prometteva (sottocartelle del Catalogo, picker, albero del Setup), con la passata E2E tornata a
-girare dopo otto step.
+girare dopo otto step; il **18** l'esclusione che si eredita alle cartelle (i residui 1 e 2 del 16).
 **Non c'è lavoro obbligatorio aperto**: tutto ciò che segue è debito datato,
 decisione di prodotto o fase 2.
 
@@ -784,11 +791,9 @@ dell'utente.
   riporta il primo delta (il merge è idempotente). Niente euristica «più veloce oggi»: la
   domanda vera era «quel volume avrà i delta?», e la risposta è sì per costruzione. Prova sul
   giornale vero in sessione elevata.
-- **L'esclusione si eredita alle cartelle figlie.** I residui 1 e 2 dello step 16 (il traffico di
-  scrittura che disfa l'esclusione per attributi, il delta che fa crescere il catalogo dentro un
-  sottoalbero escluso) si chiudono con **flag di causa su `Directories`**, scritti da scan e delta
-  e letti dal delta sul padre. Non tocca `IsPresent` né la visibilità, quindi «una cartella che
-  esiste esiste» (11g) resta vero. Migration additiva, passo a sé.
+- ~~**L'esclusione si eredita alle cartelle figlie.**~~ — **fatta allo step 18**, lo stesso giorno:
+  una colonna sola, `Directories.ExcludedByScan` (la causa path si eredita già dal path dell'item).
+  Vedi il paragrafo dello step.
 
 ### A. Difetti veri, in ordine di fastidio *(nessuno è MVP)*
 1. ~~**La corsa dell'auto-selezione su Volumi**~~ — **chiusa allo step 15b** (2026-08-27): lo
@@ -802,7 +807,9 @@ dell'utente.
    catalogo**~~ — **chiusa allo step 16 per il sottoalbero**, con tre residui dichiarati che
    vanno letti insieme (il traffico di scrittura che disfa l'esclusione, la crescita dentro il
    sottoalbero, e il caso stesso-tick): stanno nei limiti di `TASK-step16` e accanto al
-   `KNOWN HOLE` di `UsnDeltaApplier`. **Il verso opposto resta aperto e non è chiudibile qui**:
+   `KNOWN HOLE` di `UsnDeltaApplier`. **I primi due sono chiusi allo step 18** (2026-09-03): la
+   cartella ricorda l'attributo e il delta lo eredita dal padre. **Resta il terzo**, lo stesso-tick,
+   che si chiude dentro `Classify`. **Il verso opposto resta aperto e non è chiudibile qui**:
    una cartella che *smette* di essere nascosta non è rilevabile dal delta (14d) — un record di
    cartella che passa il filtro e non ha riga è indistinguibile da una cartella nuova, e i file
    dentro non generano record propri. Serve una scansione.
@@ -873,8 +880,78 @@ vero · **14a** filtro categoria della Ricerca · **14b** annullabilità delle q
 **14c** le due schermate Volumi · **14d** l'USN incrementale · **14e** l'allineamento del
 brief · **15a** l'operazione Copy · **15b** la ripresa che ricontrolla lo spazio e la corsa di
 Volumi · **16** le decisioni di perimetro che raggiungono le righe già a catalogo (la quarta causa
-di esclusione, e il sottoalbero che il delta esclude) · **17** il paging dove §7 lo prometteva. I finding della review del 2026-07-12 stanno in
+di esclusione, e il sottoalbero che il delta esclude) · **17** il paging dove §7 lo prometteva ·
+**18** l'esclusione che si eredita alle cartelle. I finding della review del 2026-07-12 stanno in
 `CODE-REVIEW-HANDOFF.md`, che porta in cima il proprio stato aggiornato.
+
+### Fatto nello step 18 (2026-09-03, commit `0ba920a`…`e16920b`)
+**L'esclusione si eredita alle cartelle.** Decisione di prodotto dell'utente («sì, falla ereditare
+alle cartelle figlie»), presa e chiusa lo stesso giorno. Chiude i residui **1 e 2** dello step 16;
+il terzo (stesso-tick) resta, e si chiude in `Classify`.
+
+#### Il fatto che mancava, e dove sta
+Il delta risolve il padre di ogni record dalle righe `Directories` per FRN e giudica ogni item sui
+**propri** attributi. Una cartella diventata nascosta **dopo** essere stata indicizzata ha una riga,
+e quella riga non diceva niente: al tick successivo un file scritto lì dentro (attributi puliti)
+veniva ri-fuso `IsIncluded = 1`, e una sottocartella creata lì dentro nasceva a catalogo. Le
+cartelle nascoste **fin dalla prima scansione** non hanno riga (`DropExcludedSubtrees`), e lì
+l'eredità funzionava già per assenza del padre.
+
+**Una colonna, non due.** Il TASK ne prevedeva due (`ExcludedByScan` e `ExcludedByPath`); rileggendo
+il delta prima del lato lettura, la seconda è caduta: `FileFilter.IsPathExcluded` legge **tutti i
+segmenti** del path dell'item, quindi la causa path si eredita per costruzione. Il buco era **solo
+l'attributo**, il fatto che sa solo il disco. `Directories.ExcludedByScan` è **effettiva** (lei o un
+antenato), non un flag di inclusione: «una cartella che esiste esiste» (11g) resta vero, la
+visibilità non cambia. Migration additiva, **nessun backfill** (pessimista come 11h/16): la prima
+scansione completa la scrive per ogni cartella del volume che guarda.
+
+#### Chi scrive, chi legge, chi disfa
+- **Chiusura dello scan**: la stessa `ScanSkipAreas` che timbra i file timbra le righe `Directories`
+  delle aree senza nome, per la sola causa attributi (una UPDATE in più: il conteggio pinnato passa
+  da 6 a 7 con una causa, da 7 a 8 con attributi + root inattivo, e il test dice perché).
+- **Pass di sottoalbero del delta** (`ExcludeSubtreesAsync`): timbra anche le righe `Directories`
+  del sottoalbero, così il tick dopo ha qualcosa da ereditare.
+- **`DirectoryMerger`** azzera la colonna sulle righe **viste** che la portavano: una cartella
+  consegnata al merge è una in cui la camminata è *entrata*. Normalmente lista vuota, zero
+  statement. Nessuna impostazione può farlo: nessuna sa se la cartella è ancora nascosta.
+- **Lettura**: `PlaceAsync` carica la colonna per ogni padre di catalogo su cui il delta risolve;
+  `Classify` semina il `ScanPerimeter` con quei path come esclusioni **ereditate**
+  (`ExcludeSubtree(..., inherited: true)`). Coprono il sottoalbero come le altre — il file scritto
+  finisce in `outside` con la causa, la cartella nuova cade nel secondo passo del C16 — ma
+  `ExcludedSubtreeRoots` **non le restituisce**: le righe sotto le ha già timbrate il tick che ha
+  visto la cartella diventare nascosta, e ricamminarle (31 ms per cartella sul volume di sistema)
+  a ogni record scritto lì dentro scriverebbe niente. Una chiamata **propria** per lo stesso path
+  la promuove: il delta ha nominato la cartella, il verdetto può essere cambiato.
+
+#### Verifica
+xUnit **957 verdi** (+5 su 952), build pulita warnings-as-errors. La convergenza scan-vs-delta è
+estesa a **due tick** (i difetti esistono solo tra un tick e l'altro) e lo snapshot confronta anche
+la colonna nuova: i **24 casi esistenti restano verdi**, cioè le due strade scrivono la stessa
+colonna sulle stesse righe. Due casi nuovi: file scritto dentro la cartella già nascosta (stessa
+riga, `IsIncluded = 0`, `ExcludedByScan`), sottocartella + file creati lì dentro (nessuna riga).
+**RED eseguito, non affermato**: la semina del perimetro tolta → esattamente i 2 casi nuovi rossi,
+27 verdi intorno; il test di chiusura scan e quello di `ScanServiceTests` (hide → un-hide) rossi
+prima del lato scan. Una trappola dell'harness, costata un giro: i record del secondo tick devono
+avere un `Usn` **oltre il cursore** del primo (il reader finto filtra `Usn >= sinceUsn`), altrimenti
+il sync torna `UpToDate` e il caso non prova niente.
+
+**Harness**: `usn-hidden-subtree` guadagna il secondo tick (scrittura dentro la cartella nascosta,
+sottocartella nuova, `Search` muta, fratello intatto, nessuna scansione). Legge il giornale vero,
+quindi **SKIP non elevato**: il PASS è della sessione elevata.
+
+#### Limiti noti e accettati
+- **Il verso opposto continua a costare una scansione**: una cartella che *smette* di essere
+  nascosta e viene nominata dal delta si vede azzerare la propria riga (il merge ci è entrato), ma
+  i file sotto restano esclusi finché una scansione non li rivede — il record di cartella non
+  nomina i file (14d). Coerente con ciò che 11g scriveva.
+- **Il caso stesso-tick** (residuo 3 del 16) resta aperto.
+- **Gli handler di Move/Rename** riscrivono `MaterializedPath` e non la colonna: una cartella
+  spostata sotto una nascosta resta senza causa fino a scansione. Stessa famiglia della nota di
+  11g/16.
+- **Righe legacy**: le cartelle nascoste prima del deploy hanno la colonna a 0 finché una
+  scansione completa non le guarda; fino ad allora il delta si comporta come oggi su di esse.
+- **Nessuna UI**: il Catalogo non mostra la causa sulle cartelle.
+- **Il servizio installato non è aggiornato**: c'è una migration.
 
 ### Fatto nello step 17 (2026-09-03, commit `4166760`…`f7c0cf7`)
 **Il paging arriva dove §7 lo prometteva, e la passata E2E torna a girare.** Decisione di prodotto
