@@ -1,4 +1,4 @@
-using FileTracert.Contracts.Scanning;
+﻿using FileTracert.Contracts.Scanning;
 
 namespace FileTracert.Business.Filtering;
 
@@ -22,6 +22,7 @@ public sealed class ScanPerimeter
 {
     private readonly RootsBySpecificity _roots;
     private readonly ExcludedSubtrees _excluded = new();
+    private readonly HashSet<string> _inherited = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<SkippedFile> _skippedFiles = [];
 
     /// <summary>A file the scan saw and stepped over, with every perimeter rule that rejected it.</summary>
@@ -41,8 +42,33 @@ public sealed class ScanPerimeter
     /// see <see cref="ExcludedSubtrees"/> — and they travel TOGETHER because they sum
     /// (<see cref="PerimeterVerdict"/>).
     /// </summary>
-    public void ExcludeSubtree(string relativePath, PerimeterVerdict verdict) =>
+    /// <param name="inherited">
+    /// Step 18: true when the exclusion was READ off a catalog row (the parent folder's
+    /// <c>ExcludedByScan</c>) rather than found by this walk. It covers its subtree exactly like
+    /// any other — files under it are outside, a new folder under it never enters — but it is not
+    /// handed out by <see cref="ExcludedSubtreeRoots"/>: the rows below were stamped by the tick
+    /// that saw the folder go hidden, and re-walking them for every later record inside would buy
+    /// nothing at the price of a subtree query per folder. A later call for the same path WITHOUT
+    /// the flag promotes it: this delta named the folder, its verdict may have changed.
+    /// </param>
+    public void ExcludeSubtree(string relativePath, PerimeterVerdict verdict, bool inherited = false)
+    {
+        if (string.IsNullOrEmpty(relativePath))
+        {
+            return;
+        }
+
+        var wasOwn = _excluded.Roots.ContainsKey(relativePath) && !_inherited.Contains(relativePath);
         _excluded.Add(relativePath, verdict);
+        if (!inherited)
+        {
+            _inherited.Remove(relativePath);
+        }
+        else if (!wasOwn)
+        {
+            _inherited.Add(relativePath);
+        }
+    }
 
     /// <summary>
     /// Records a file the scan saw and stepped over for a reason of its own — its attributes, or
@@ -63,7 +89,11 @@ public sealed class ScanPerimeter
     /// descendant answers for itself); the USN delta does, because it only ever sees what changed
     /// and the rows under a folder that just went hidden did not change (step 16, A3).
     /// </summary>
-    public IReadOnlyDictionary<string, PerimeterVerdict> ExcludedSubtreeRoots => _excluded.Roots;
+    public IReadOnlyDictionary<string, PerimeterVerdict> ExcludedSubtreeRoots =>
+        _inherited.Count == 0
+            ? _excluded.Roots
+            : _excluded.Roots.Where(kv => !_inherited.Contains(kv.Key))
+                .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>True when the path is, or lives under, a directory the filter excluded.</summary>
     public bool IsExcluded(string relativePath) => _excluded.Covers(relativePath);

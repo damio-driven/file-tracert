@@ -350,7 +350,12 @@ public sealed class UsnDeltaApplier
             items.Add(new PlacedItem(entry, ScanPath.Join(parentPath, entry.Name), parentPath, parentId, existing));
         }
 
-        return new PlacedDelta(items, unresolved);
+        var inherited = catalogDirectories.Values
+            .Where(d => d.ExcludedByScan && d.Path.Length > 0)
+            .Select(d => d.Path)
+            .ToList();
+
+        return new PlacedDelta(items, unresolved, inherited);
     }
 
     /// <summary>
@@ -367,6 +372,15 @@ public sealed class UsnDeltaApplier
         var directories = new List<ScannedDirectory>();
         var indexable = new List<PlacedItem>();
         var outside = new List<PlacedItem>();
+
+        // Step 18: what the catalog remembers about the parents comes first, so the walk below
+        // sees a hidden ancestor the records do not mention. Inherited: the rows under those
+        // folders were stamped by the tick that saw them go hidden (ExcludeSubtreesAsync), and the
+        // subtree pass must not pay that walk again for every file written inside since.
+        foreach (var path in placed.InheritedExclusions)
+        {
+            perimeter.ExcludeSubtree(path, PerimeterVerdict.HiddenAncestor, inherited: true);
+        }
 
         foreach (var item in placed.Items.Where(i => i.Entry.IsDirectory))
         {
@@ -586,6 +600,15 @@ public sealed class UsnDeltaApplier
                 bucket.Add(existing.Id);
             }
 
+            // Step 18 closed the first two of the three shapes below (the third is still open):
+            // Directories now carry ExcludedByScan, EFFECTIVE (the folder or an ancestor), written
+            // by the scan's closing pass and by ExcludeSubtreesAsync, cleared only by a walk that
+            // goes into the folder. PlaceAsync reads it off every catalog parent this delta
+            // resolves against and Classify seeds the perimeter with it (inherited), so a file
+            // written inside a hidden folder in a later tick is outside, and a folder created
+            // there never enters. The text is kept as it was written, because it is the record of
+            // WHY the column exists.
+            //
             // KNOWN HOLE, stated rather than implied by silence: this loop can find no cause at
             // all. The perimeter only records DIRECTORIES it excluded, so a file whose OWN
             // attributes turned against it — one that just became Hidden — is refused indexing
@@ -802,6 +825,18 @@ public sealed class UsnDeltaApplier
                         _db.Files.Where(f => ids.Contains(f.DirectoryId)), cause, now, ct);
                 }
 
+                // Step 18: the DIRECTORY rows remember the attribute cause too, so the next tick
+                // can inherit it off the parent row. Attributes only — a path segment is
+                // re-derived from an item's own path — and only rows that do not carry it yet.
+                if (verdict.ExcludedByAttributes)
+                {
+                    await _db.Directories
+                        .Where(d => ids.Contains(d.Id) && !d.ExcludedByScan)
+                        .ExecuteUpdateAsync(s => s
+                            .SetProperty(d => d.ExcludedByScan, true)
+                            .SetProperty(d => d.UpdatedUtc, now), ct);
+                }
+
                 if (written > 0)
                 {
                     await _ftsIndex.SyncDirectoriesAsync(ids, ct);
@@ -1000,13 +1035,13 @@ public sealed class UsnDeltaApplier
             var signed = chunk.Select(f => unchecked((long)f)).ToList();
             var rows = await _db.Directories.AsNoTracking()
                 .Where(d => d.VolumeId == volumeId && d.UsnFileRef != null && signed.Contains(d.UsnFileRef.Value))
-                .Select(d => new { d.Id, d.UsnFileRef, d.MaterializedPath, d.IsPresent })
+                .Select(d => new { d.Id, d.UsnFileRef, d.MaterializedPath, d.IsPresent, d.ExcludedByScan })
                 .ToListAsync(ct);
 
             foreach (var row in rows)
             {
                 map[unchecked((ulong)row.UsnFileRef!.Value)] =
-                    new CatalogDirectory(row.Id, row.MaterializedPath, row.IsPresent);
+                    new CatalogDirectory(row.Id, row.MaterializedPath, row.IsPresent, row.ExcludedByScan);
             }
         }
 
@@ -1037,7 +1072,7 @@ public sealed class UsnDeltaApplier
 
     // ── shapes ────────────────────────────────────────────────────────────────
 
-    private sealed record CatalogDirectory(int Id, string Path, bool IsPresent);
+    private sealed record CatalogDirectory(int Id, string Path, bool IsPresent, bool ExcludedByScan);
 
     private sealed record CatalogFile(int Id, int DirectoryId, string Name, bool IsIncluded, bool IsPresent);
 
@@ -1055,5 +1090,11 @@ public sealed class UsnDeltaApplier
         string Extension = "",
         FileCategory Category = FileCategory.Other);
 
-    private sealed record PlacedDelta(List<PlacedItem> Items, int Unresolved);
+    /// <param name="InheritedExclusions">
+    /// Step 18: the paths of the catalog parents this delta resolved against whose row says the
+    /// folder (or an ancestor) is hidden. <see cref="Classify"/> seeds the perimeter with them, so
+    /// a record inside such a folder is judged the way the scan would judge it — outside — even
+    /// though its own attributes and its own path say nothing.
+    /// </param>
+    private sealed record PlacedDelta(List<PlacedItem> Items, int Unresolved, List<string> InheritedExclusions);
 }

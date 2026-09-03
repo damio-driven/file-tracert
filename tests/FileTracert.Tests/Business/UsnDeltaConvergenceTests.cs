@@ -395,6 +395,69 @@ public sealed class UsnDeltaConvergenceTests
     }
 
     /// <summary>
+    /// Step 18, the first residual of step 16. The folder went hidden in an earlier tick and its
+    /// rows are excluded; then only a FILE inside it is written. The record names the file, whose
+    /// own attributes are clean and whose own path has no excluded segment — before this step the
+    /// delta judged it on those and the merge wrote it back IsIncluded = 1, undoing the exclusion
+    /// with ordinary write traffic. The scan never did: it asks the perimeter about the folder.
+    /// The fact the delta lacked is now on the parent's row, and it inherits it from there.
+    /// </summary>
+    [Fact]
+    public async Task A_file_written_inside_a_folder_already_hidden_stays_excluded_on_the_next_tick()
+    {
+        var before = SubtreeWorld();
+        var mid = Replace(before, 140, i => i with { Attributes = FileAttributes.Directory | FileAttributes.Hidden });
+        var after = Replace(mid, 205, i => i with { Size = 99 });
+
+        await AssertConvergesAfterTwoTicksAsync(before, mid, after,
+            [Change(mid, 140, UsnReason.BasicInfoChange | UsnReason.Close)],
+            [Change(after, 205, UsnReason.DataOverwrite | UsnReason.Close, usn: 950)],
+            extra: async db =>
+            {
+                var row = await db.Files.SingleAsync(f => f.UsnFileRef == 205);
+                row.IsIncluded.Should().BeFalse("the folder above it is still hidden, and the row above it says so");
+                row.ExcludedByScan.Should().BeTrue();
+                row.IsPresent.Should().BeTrue();
+
+                var cache = await db.Directories.SingleAsync(d => d.MaterializedPath == @"Photos\Cache");
+                cache.ExcludedByScan.Should().BeTrue("the tick that saw it go hidden stamped the row");
+                (await db.Directories.SingleAsync(d => d.MaterializedPath == @"Photos\Cache\Sub"))
+                    .ExcludedByScan.Should().BeTrue("effective, not own: the ancestor's cause reaches it");
+            });
+    }
+
+    /// <summary>
+    /// Step 18, the second residual: the delta must not GROW the catalog inside a hidden folder. A
+    /// new subfolder and a file are created under it in a later tick; both records carry clean
+    /// attributes of their own. The scan never gives them rows (DropExcludedSubtrees); the delta
+    /// used to insert both. With the cause on the parent row, the new folder falls into the C16
+    /// second pass and the file has no folder to land in.
+    /// </summary>
+    [Fact]
+    public async Task A_folder_created_inside_a_folder_already_hidden_does_not_enter_the_catalog()
+    {
+        var before = SubtreeWorld();
+        var mid = Replace(before, 140, i => i with { Attributes = FileAttributes.Directory | FileAttributes.Hidden });
+        var after = new List<Item>(mid)
+        {
+            Dir(160, 140, @"Photos\Cache\New"),
+            File(207, 160, @"Photos\Cache\New\d.jpg", 14),
+        };
+
+        await AssertConvergesAfterTwoTicksAsync(before, mid, after,
+            [Change(mid, 140, UsnReason.BasicInfoChange | UsnReason.Close)],
+            [Change(after, 160, UsnReason.FileCreate | UsnReason.Close, usn: 950),
+             Change(after, 207, UsnReason.FileCreate | UsnReason.Close, usn: 951)],
+            extra: async db =>
+            {
+                (await db.Directories.AnyAsync(d => d.MaterializedPath == @"Photos\Cache\New"))
+                    .Should().BeFalse("a folder created inside a hidden one is never catalogued, as after a scan");
+                (await db.Files.AnyAsync(f => f.UsnFileRef == 207)).Should().BeFalse();
+                (await db.Files.CountAsync(f => f.IsIncluded)).Should().Be(1, "keep.jpg alone");
+            });
+    }
+
+    /// <summary>
     /// The other cause on the same mechanism: the folder is not hidden, it is under a segment the
     /// user has just excluded. Deliberately NOT a convergence case — reaching it needs the setting
     /// to change between the two scans, and a re-scan reaches those rows through the directory area
@@ -1321,6 +1384,50 @@ public sealed class UsnDeltaConvergenceTests
     }
 
     /// <summary>
+    /// Step 18: the same equivalence over TWO ticks. The long road still scans the final world
+    /// once; the short road applies two deltas, because the defects this closes only exist across
+    /// ticks — a folder goes hidden in one, and something happens inside it in the next.
+    /// </summary>
+    private static async Task AssertConvergesAfterTwoTicksAsync(
+        List<Item> before,
+        List<Item> mid,
+        List<Item> after,
+        List<UsnChangeRecord> firstTick,
+        List<UsnChangeRecord> secondTick,
+        Func<FileTracertDbContext, Task>? extra = null)
+    {
+        using var viaScan = new SqliteInMemoryContext();
+        var scanVolumeId = await SeedAndScanAsync(viaScan, ReaderFor(before), before);
+        await ScanAsync(viaScan, scanVolumeId, ReaderFor(after), MetadataFor(after));
+
+        using var viaDelta = new SqliteInMemoryContext();
+        var deltaReader = ReaderFor(before);
+        var deltaVolumeId = await SeedAndScanAsync(viaDelta, deltaReader, before);
+
+        deltaReader.Script(firstTick, nextUsn: 900);
+        await using (var ctx = viaDelta.CreateContext())
+        {
+            (await BuildApplier(ctx, deltaReader, MetadataFor(mid)).SyncVolumeAsync(deltaVolumeId, default))
+                .Status.Should().Be(UsnSyncStatus.Applied);
+        }
+
+        deltaReader.Script(secondTick, nextUsn: 1000);
+        await using (var ctx = viaDelta.CreateContext())
+        {
+            (await BuildApplier(ctx, deltaReader, MetadataFor(after)).SyncVolumeAsync(deltaVolumeId, default))
+                .Status.Should().Be(UsnSyncStatus.Applied);
+        }
+
+        (await SnapshotAsync(viaDelta)).Should().BeEquivalentTo(await SnapshotAsync(viaScan));
+
+        if (extra is not null)
+        {
+            await using var read = viaDelta.CreateContext();
+            await extra(read);
+        }
+    }
+
+    /// <summary>
     /// Everything about the catalog a scan is allowed to decide, and nothing that is merely a
     /// timestamp of when it happened.
     /// </summary>
@@ -1348,7 +1455,7 @@ public sealed class UsnDeltaConvergenceTests
             .ToListAsync();
 
         var directories = await read.Directories.AsNoTracking()
-            .Select(d => new { d.MaterializedPath, d.UsnFileRef, d.IsPresent, d.IsMaterialized })
+            .Select(d => new { d.MaterializedPath, d.UsnFileRef, d.IsPresent, d.IsMaterialized, d.ExcludedByScan })
             .OrderBy(d => d.MaterializedPath)
             .ToListAsync();
 
@@ -1374,13 +1481,15 @@ public sealed class UsnDeltaConvergenceTests
     /// fixture is built the same way: anything that read the full path here would be testing a
     /// field the product deliberately does not trust.
     /// </summary>
+    /// <param name="usn">Where the record sits in the journal. Past the first tick's cursor (900)
+    /// for a record of a SECOND tick, or the reader hands it back as already consumed.</param>
     private static UsnChangeRecord Change(
-        List<Item> world, ulong frn, UsnReason reason, string? oldName = null)
+        List<Item> world, ulong frn, UsnReason reason, string? oldName = null, long usn = 600)
     {
         var item = world.Single(i => i.Frn == frn);
         var entry = new UsnEntry(
             item.Frn, item.ParentFrn, item.Name, item.Name, item.IsDirectory,
-            SizeBytes: null, item.Attributes, Usn: 600);
+            SizeBytes: null, item.Attributes, Usn: usn);
 
         var isRename = (reason & (UsnReason.RenameOldName | UsnReason.RenameNewName)) != 0;
         return new UsnChangeRecord(entry, reason, isRename, oldName);

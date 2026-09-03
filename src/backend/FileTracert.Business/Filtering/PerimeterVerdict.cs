@@ -1,4 +1,4 @@
-using FileTracert.Contracts.Scanning;
+﻿using FileTracert.Contracts.Scanning;
 
 namespace FileTracert.Business.Filtering;
 
@@ -41,6 +41,9 @@ public readonly record struct PerimeterVerdict(
     public static PerimeterVerdict Inside => default;
 
     /// <summary>Outside every active root — the one verdict the roots, not the filter, produce.</summary>
+    /// <summary>Step 18: the verdict a catalog row hands down — an ancestor is hidden, nothing else known.</summary>
+    public static PerimeterVerdict HiddenAncestor => new(InactiveRoot: false, ExcludedByPath: false, ExcludedByAttributes: true);
+
     public static PerimeterVerdict OutsideEveryRoot { get; } =
         new(InactiveRoot: true, ExcludedByPath: false, ExcludedByAttributes: false);
 
