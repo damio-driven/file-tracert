@@ -348,20 +348,31 @@ stato fisico (ultima scansione) **+ overlay delle operazioni in coda**.
     esiste, anche se non se ne indicizza il contenuto. Una cartella fuori
     perimetro resta quindi `IsPresent = true` e visibile nel Catalogo, con dentro
     solo ciò che è incluso.
-  - **Una riga ricorda *perché* è esclusa** *(step 11h)*: tre flag su `Files` —
-    `ExcludedByType` (estensione fuori allow-list), `ExcludedByRoot` (nessun
-    watched root **attivo** la governa), `ExcludedByScan` (la scansione l'ha
-    scavalcata: attributi, segmento di path escluso, o una cartella sopra di lei
-    che ha fallito una di quelle regole). Flag e non un enum: le cause si
-    **sommano** (un `.tmp` dentro una cartella nascosta è escluso due volte) e
-    ognuna deve poter essere spenta dal suo proprietario. Invariante mantenuta da
-    ogni writer: `IsIncluded == !(ExcludedByType || ExcludedByRoot ||
-    ExcludedByScan)`; `IsIncluded` resta una colonna propria perché è quella che
+  - **Una riga ricorda *perché* è esclusa** *(step 11h, quarta causa allo step 16)*:
+    quattro flag su `Files` — `ExcludedByType` (estensione fuori allow-list),
+    `ExcludedByRoot` (nessun watched root **attivo** la governa), `ExcludedByPath`
+    (un segmento del suo path è in `ExcludedPaths`), `ExcludedByScan` (**gli
+    attributi**: Hidden/System, propri o di una cartella sopra di lei). Flag e non
+    un enum: le cause si **sommano** (un `.tmp` in `AppData` dentro una cartella
+    nascosta è escluso tre volte) e ognuna deve poter essere spenta dal suo
+    proprietario. Invariante mantenuta da ogni writer:
+    `IsIncluded == !(ExcludedByType || ExcludedByRoot || ExcludedByScan ||
+    ExcludedByPath)`; `IsIncluded` resta una colonna propria perché è quella che
     leggono Catalogo, FTS e gli indici covering.
-    **Chi disfa cosa:** `FilterReconciler` ricalcola le prime due (sono fatti
-    delle impostazioni, quindi nessuna lettura del disco) e **non nomina mai** la
-    terza — nessuna impostazione sa se quella cartella è ancora nascosta. Solo il
-    merge di una scansione azzera tutte e tre.
+    **Chi disfa cosa:** `FilterReconciler` ricalcola le prime **tre** (sono fatti
+    delle *impostazioni*, e il segmento di path è derivabile dal
+    `MaterializedPath` senza leggere il disco) e **non nomina mai** la quarta —
+    nessuna impostazione sa se quella cartella è ancora nascosta. Solo il merge di
+    una scansione azzera tutte e quattro.
+    **Perché `ExcludedByPath` è una colonna a sé** *(step 16)*: finché stava dentro
+    `ExcludedByScan`, aggiungere un segmento a `ExcludedPaths` **non escludeva
+    nulla** di ciò che era già a catalogo — la riconciliazione non poteva toccare
+    quella colonna senza riammettere anche il contenuto delle cartelle nascoste. La
+    prima causa era ostaggio della seconda. Quando **entrambe** le regole rifiutano
+    lo stesso item si registrano **entrambe**: non c'è una precedenza da scegliere,
+    e sceglierne una qualunque fa rientrare la riga quando l'utente disfa la causa
+    vincente. Il nome `ExcludedByScan` è rimasto per non pagare un rename di colonna
+    su 742 675 righe: oggi significa **soltanto** attributi.
 - Configurazioni EF in classi `IEntityTypeConfiguration` separate. **Nessuna
   data annotation sulle entità.**
 
@@ -398,7 +409,9 @@ sotto `RowCreatedUtc`/`RowUpdatedUtc` — `FileEntry` è l'unica entità con que
 scarto, e serve a non avere due `CreatedUtc` nella stessa classe) ·
 `Attributes` · `UsnFileRef?` · `QuickHash?` (size + primi/ultimi KB)
 · `Hash?` (full, lazy) · `IsIncluded` · `ExcludedByType` · `ExcludedByRoot` ·
-`ExcludedByScan` (le tre cause di §6 «Convenzioni trasversali», step 11h) ·
+`ExcludedByScan` · `ExcludedByPath` (le **quattro** cause di §6 «Convenzioni
+trasversali» — le prime tre da 11h, la quarta da 16, che ha anche ristretto
+`ExcludedByScan` ai soli **attributi**) ·
 `IsMaterialized` (default `true`; **il file esiste sul disco**. Falso solo per la riga che
 una **Copy** in coda proietta alla destinazione — step 15a: una copia è l'unica operazione il
 cui risultato è un'entità *nuova*, quindi non esiste una riga i cui `Pending*` possano
@@ -745,9 +758,15 @@ rilievo è stato lasciato consapevolmente).
 Il prodotto è **installato come servizio** e gira su un catalogo vero da 742 033 file
 (step 13). Gli step **14a–14e** hanno pagato i difetti che quel catalogo ha reso
 visibili. Lo step **15a** è il primo lavoro di **fase 2**: l'operazione **Copy**; il **15b** ha chiuso i
-due difetti che l'utente ha scelto per primi (voci A1 e A6).
+due difetti che l'utente ha scelto per primi (voci A1 e A6); il **16** le voci **A2 e A3**, cioè le
+decisioni di perimetro che non raggiungevano le righe già a catalogo.
 **Non c'è lavoro obbligatorio aperto**: tutto ciò che segue è debito datato,
 decisione di prodotto o fase 2.
+
+**Una cosa sola resta dovuta allo step 16**: una passata **elevata** dell'harness, che trasforma i
+6 SKIP in PASS e firma A3 sul giornale USN vero. Senza elevazione il volume non si apre e la
+scansione ripiega sull'enumerazione, quindi quegli scenari fanno SKIP invece di passare per la
+strada sbagliata.
 
 **Il servizio installato è aggiornato a 15b** (2026-09-02) — vedi «Deploy di 15b» qui sotto.
 
@@ -755,12 +774,18 @@ decisione di prodotto o fase 2.
 1. ~~**La corsa dell'auto-selezione su Volumi**~~ — **chiusa allo step 15b** (2026-08-27): lo
    store registra ciò che è stato *chiesto* (`selectedId`, sincrono) e scarta ogni risposta che
    non è più quella.
-2. **`ExcludedPaths` non ha una riconciliazione propria** — togliere un segmento escluso
-   dice onestamente `NeedsScan` (11g) e non riammette nulla senza scansione: corretto,
-   ma non è una riconciliazione. Terza metà della voce chiusa da 11h.
-3. **Una cartella che *diventa* nascosta non ri-esclude il proprio sottoalbero già a
-   catalogo**, e il verso opposto non è nemmeno rilevabile dal delta (14d). Serve un
-   update ricorsivo dentro un tick di sync, oppure una scansione.
+2. ~~**`ExcludedPaths` non ha una riconciliazione propria**~~ — **chiusa allo step 16**
+   (2026-09-03). E la voce descriveva la metà innocua: quella che mordeva era il verso
+   opposto, **aggiungere** un segmento, che non escludeva **niente** di ciò che era già a
+   catalogo mentre la schermata diceva che era tutto a posto. Vedi il paragrafo dello step.
+3. ~~**Una cartella che *diventa* nascosta non ri-esclude il proprio sottoalbero già a
+   catalogo**~~ — **chiusa allo step 16 per il sottoalbero**, con tre residui dichiarati che
+   vanno letti insieme (il traffico di scrittura che disfa l'esclusione, la crescita dentro il
+   sottoalbero, e il caso stesso-tick): stanno nei limiti di `TASK-step16` e accanto al
+   `KNOWN HOLE` di `UsnDeltaApplier`. **Il verso opposto resta aperto e non è chiudibile qui**:
+   una cartella che *smette* di essere nascosta non è rilevabile dal delta (14d) — un record di
+   cartella che passa il filtro e non ha riga è indistinguibile da una cartella nuova, e i file
+   dentro non generano record propri. Serve una scansione.
 4. **L'USN perde sui sotto-alberi** — `FSCTL_ENUM_USN_DATA` cammina tutta l'MFT
    ignorando il perimetro (misurato in 14d). Scegliere il motore per rapporto fra
    sotto-albero e MFT è il candidato ovvio.
@@ -818,7 +843,8 @@ assenza · **11h** perché una riga è esclusa · **11i** le corse sui pool SQLi
 vero · **14a** filtro categoria della Ricerca · **14b** annullabilità delle query ·
 **14c** le due schermate Volumi · **14d** l'USN incrementale · **14e** l'allineamento del
 brief · **15a** l'operazione Copy · **15b** la ripresa che ricontrolla lo spazio e la corsa di
-Volumi. I finding della review del 2026-07-12 stanno in
+Volumi · **16** le decisioni di perimetro che raggiungono le righe già a catalogo (la quarta causa
+di esclusione, e il sottoalbero che il delta esclude). I finding della review del 2026-07-12 stanno in
 `CODE-REVIEW-HANDOFF.md`, che porta in cima il proprio stato aggiornato.
 
 ### Deploy sul catalogo reale (2026-08-25, build `49619b5`)
@@ -903,6 +929,134 @@ resta provato solo da `sc start`; il `MinimumLogLevel` installato è **`Trace`**
 livello il tetto che lega è `LogMaxRows` = 500 000 righe (≈184 MB, misurato allo step 13) —
 oggi il DB dei log sta a 3,9 MB; e **su `C:` il percorso incrementale non è ancora acceso**,
 cioè i 739 421 file che contano continuano a dipendere da una scansione completa.
+
+### Fatto nello step 16 (2026-09-03, commit `cbfa973`…`f927b0d`)
+**Una decisione di perimetro raggiunge le righe che il catalogo ha già.** Chiude le voci **A2** e
+**A3** della roadmap, che erano lo stesso difetto visto da due lati: A2 il lato *impostazioni*
+(l'utente esclude un segmento di path e non succede niente), A3 il lato *disco* (una cartella
+diventa nascosta e il suo sottoalbero resta incluso). Una migration additiva, nessun cambiamento
+di contratto, frontend non toccato.
+
+#### 1. La quarta causa (A2), e perché il difetto era peggio di come la roadmap lo scriveva
+La roadmap descriveva la metà innocua — togliere un segmento dice onestamente `NeedsScan`. **La
+metà che mordeva era l'altra, e non era scritta da nessuna parte**: `FilterReconciler` non nomina
+mai `ExcludedByScan` (di proposito, 11h), ma quella colonna sommava **due fatti di natura
+diversa** — gli attributi e il segmento di path. Quindi **aggiungere** un segmento a
+`ExcludedPaths` non escludeva **niente** di ciò che era già a catalogo, `FilterWidened` tornava
+`false` e la schermata Setup annunciava un riallineamento: le righe restavano navigabili nel
+Catalogo e **trovabili in Ricerca** fino alla scansione completa successiva. Un'esclusione
+silenziosamente non applicata, cioè l'utente che crede di aver deciso qualcosa.
+
+`Files.ExcludedByPath` separa i due fatti: il segmento è derivabile dal `MaterializedPath` **senza
+leggere il disco**, quindi la riconciliazione può disfarlo; l'attributo no, e resta esclusiva del
+merge di una scansione. Il predicato SQL incornicia path e nome fra separatori, così i quattro
+casi di confine (inizio, fine, in mezzo, path intero) diventano **uno**; l'escape è `!` e non `\`,
+perché `\` è il separatore con cui si incornicia e `ESCAPE '\'` renderebbe letterale la coda del
+pattern — l'esclusione combacerebbe **con niente**, in silenzio.
+
+**La normalizzazione del segmento vive sul valore**, nell'`init` di `EffectiveFilter`: né il
+costruttore né un `with` possono contenere un segmento non normalizzato. Senza, `Windows\` — **la
+grafia che questo stesso brief usa** — combaciava in SQL e non in memoria: la riconciliazione
+escludeva e **la scansione successiva riammetteva tutto**. E il fold è **ASCII-only** in entrambe
+le metà, come `NOCASE` e come 9a/P2: `IndexOf(OrdinalIgnoreCase)` piegava anche il non-ASCII, e
+poiché la riconciliazione scrive `ExcludedByPath` **nei due versi**, la divergenza non era
+un'esclusione mancata ma la scansione **disfatta**, con flip-flop a ogni giro.
+
+**La riconciliazione gira su tutti i root, non solo su quelli senza override**: `ExcludedPaths` è
+globale e l'override sostituisce soltanto le estensioni, quindi saltarli lasciava A2 vivo identico
+lì, per di più con `NeedsScan = false` e conteggi parziali.
+
+#### 2. Il sottoalbero che diventa nascosto (A3)
+`UsnDeltaApplier` escludeva **solo ciò che stava nello stesso delta**: le righe già a catalogo
+sotto quella cartella non sono nominate da alcun record del giornale — non sono cambiate — quindi
+restavano incluse. Il pass completo non ha il buco (chiede il perimetro per **ogni** directory del
+catalogo alla chiusura, quindi ogni discendente produce la propria area saltata); il delta non
+può, e il buco si chiude lì. Ora un `ExecuteUpdate` set-based sulle righe la cui `DirectoryId`
+cade in `DirectoryQueries.InSubtree`, **chunked con una transazione per chunk**, e l'FTS potata
+**per directory** (`SyncDirectoriesAsync`) invece che con un `RemoveAsync` per file.
+
+**Gira prima delle due passate di assenza**, che è il trucco dello scan: le righe che marca
+`IsIncluded = 0` escono da sole dalla passata degli assenti, il cui guard SQL è `IsIncluded = 1`.
+Conseguenza — un file davvero cancellato da una cartella che il delta ha appena escluso esce
+**escluso, non assente**, cioè ciò che produce una ri-scansione completa dello stesso mondo.
+
+#### 3. Le cause si sommano, e questa è stata la lezione del giro
+**Due BLOCKER, che erano la stessa idea sbagliata a due profondità.** Il primo: quando entrambe le
+regole rifiutano un item, la prima stesura ne sceglieva **una** — e disfare la causa vincente
+riammetteva il contenuto di una cartella **nascosta** perché l'utente aveva tolto un segmento di
+path che non c'entrava. Lo scenario di 11h con un innesco nuovo, per di più **dipendente dalla
+storia**: una scansione precedente che avesse visto la cartella hidden-ma-non-ancora-path-esclusa
+lasciava la riga protetta. Stesso disco, due esiti. Il secondo, sopravvissuto al primo fix:
+`VerdictFor` restituiva il **primo** antenato escluso invece dell'unione di tutti — e sulle
+impostazioni che il prodotto **installa di default** (`AppData` è seedato **ed** è Hidden su
+Windows), `AppData\Local` registrava solo la causa path. `Covers()` non ne risentiva, quindi ogni
+test esistente restava verde.
+
+Il baratto che la prima stesura descriveva («o una precedenza, o la riga bloccata a vita») **era
+falso**: `SkippedScanArea` è una lista e `ExcludeForCauseAsync` gira una volta **per causa
+distinta**, non per area. Registrarle entrambe costa **zero statement**.
+
+#### Verifica
+xUnit **949 verdi** (+67 su 882), build pulita warnings-as-errors **Debug e Release**, frontend non
+toccato (Vitest resta a 256, nessun `ng build`). Migration additiva con **backfill pessimista**:
+le righe legacy `ExcludedByScan = 1` restano tali, perché riammettere in silenzio è l'errore
+invisibile e tenere fuori una riga una scansione in più è quello visibile e reversibile.
+
+**Dieci passate di code review indipendente** (quattro sul checkpoint 1 fino a una pulita, sei sul
+checkpoint 2), che hanno trovato **2 BLOCKER, 7 MAJOR, 20 MINOR**. Da metà in poi i rilievi non
+erano più leggibili a occhio: erano **buchi di copertura** trovati per **mutazione** — mutare il
+prodotto e contare i rossi **sull'intera suite**, non sulla classe. Tre volte una mutazione ovvia
+ha lasciato verdi *tutti* i test; una di quelle avrebbe fatto rientrare il contenuto di una
+cartella nascosta.
+
+L'altra metà dei rilievi erano **affermazioni che dicevano il contrario del codice** — e due di
+quelle erano la *correzione* di un'affermazione sbagliata, scritta senza eseguire la mutazione che
+descriveva. Da lì la regola, che vale oltre questo step: **prima di scrivere cosa produce una
+mutazione, eseguila.**
+
+**Sul ferro** (`D:\Collaudo\A` ↔ `C:\Collaudo\B`), due passate identiche: **59 scenari, 53 PASS,
+0 FAIL, 6 SKIP** (86,4 s e 94,5 s). `appsettings.json` rimesso byte-identico (sha256
+`653f5990…`). La metà **A2 è provata su file veri** su tutte e tre le coppie: aggiunto il segmento
+`vault` → `included=4 excluded=1 needsScan=False`; tolto → `included=5 excluded=0 needsScan=True`.
+**RED dimostrato sul ferro** rimettendo il prodotto pre-16: 3 FAIL esattamente sulle tre
+asserzioni A2, mentre presenza, riammissione e fratello restavano verdi.
+
+#### Limiti noti e accettati
+- **A3 non è provata sul giornale VERO**: i 6 SKIP sono `usn-incremental-sync` ×3 e
+  `usn-hidden-subtree` ×3, tutti per **mancata elevazione** — senza privilegi il volume non si apre
+  e ogni scansione ripiega sull'enumerazione. Lo scenario **fa SKIP invece di passare**, che è la
+  cosa giusta: un PASS lì proverebbe la strada sbagliata. **Serve una passata elevata dell'harness
+  per firmare A3.** In-process la convergenza è provata da 24 casi.
+- **Il traffico di scrittura normale disfa l'esclusione degli attributi**: un file dentro una
+  cartella nascosta, toccato da un delta **successivo** che non nomina la cartella, supera il
+  filtro coi **propri** attributi puliti e il merge lo riscrive `IsIncluded = 1` azzerando le
+  quattro cause. Non è una regressione (valeva già per una riga esclusa da una scansione completa,
+  quindi il servizio installato ce l'ha), ma **prima non contava**: il delta non escludeva quelle
+  righe. Ora il catalogo può stare in uno stato **misto** che nessuna delle due strade produce da
+  sola. Chiuderlo richiede un fatto che il catalogo non ha — un flag di inclusione sulle
+  `Directories`, che 11g ha deciso di non avere — oppure una lettura del disco per file per delta.
+- **E il delta *fa crescere* il catalogo dentro il sottoalbero escluso**: una **nuova**
+  sottodirectory creata lì dentro è giudicata sui propri attributi puliti, `DirectoryMerger` ne
+  inserisce la riga, e i file creati sotto vengono indicizzati.
+- **Il caso stesso-tick**: una cartella spostata *dentro* quella che questo delta esclude viene
+  scartata da `RemoveAll` **per path** nell'istante in cui andrebbe portata avanti **per identità**,
+  e da lì nessuno la nomina più. È il terzo della stessa famiglia, ma l'unico che si chiude
+  **dentro `Classify`** invece che nello schema.
+- **Sospetto non verificato**: una cartella nascosta **e rinominata nella stessa finestra di 30 s**
+  — `Coalesce` tiene l'ultimo record per FRN, quindi il pass interroga il path **nuovo**, non trova
+  righe e non esclude nulla. Pre-esistente in famiglia (il merge delle directory matcha per path e
+  non per FRN dal 14d), non riprodotto.
+- **Non verificata**: l'affermazione che `InSubtree` paghi una seek su
+  `IX_Directories_MaterializedPath`. Se EF traducesse `StartsWith` con prefisso parametro in
+  qualcosa di diverso da un `LIKE 'x%'`, sarebbe uno **scan** di 114 132 righe per ogni directory
+  esclusa nominata da un tick. Nessun test pinna quel piano.
+- **Gli handler di Move non scrivono alcuna causa di perimetro** (`MoveFileIndexAsync` e i due di
+  cartella): un move verso un segmento escluso lascia la riga inclusa fino alla scansione
+  successiva. Pre-esistente, stessa famiglia della nota che 11g porta su `IndexUpdater`; questo
+  giro **restringe** la finestra, perché ora un salvataggio di Setup la ripara via SQL.
+- **Il servizio installato non è stato aggiornato**: c'è una migration, quindi distribuirlo è una
+  decisione dell'utente e ha la sua procedura.
+- **E2E non eseguiti**: il loro `globalSetup` si rifiuta di partire da elevato (12a).
 
 ### Deploy di 15b sul catalogo reale (2026-09-02)
 **Il primo deploy senza migration.** Distribuito su richiesta dell'utente; questo giro non tocca
