@@ -85,10 +85,17 @@ public sealed class UsnSyncWorker : BackgroundService
         using var scope = _services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<FileTracertDbContext>();
 
+        // The question is "is there a cursor?", NOT "which engine walked?" — and the difference is
+        // the whole of A4. A watched subfolder is walked by enumeration and checkpoints the
+        // journal anyway, so asking about ScanEngine would skip exactly the volumes the hybrid
+        // exists to serve. It skipped them silently on the real catalog: the system volume got its
+        // cursor and no delta ever read it, so the incremental path looked installed and was
+        // inert. A cursor is only ever written by a scan that captured identities, which is the
+        // property the delta actually needs; UsnDeltaApplier re-checks the rest (the filesystem's
+        // own journal capability, the mount) — this is a cheap pre-filter, not the authority.
         return await db.Volumes
             .Where(v => v.IsOnline
                 && v.IsCatalogable
-                && v.ScanEngine == VolumeScanEngine.UsnJournal
                 && v.LastFullScanUtc != null
                 && v.LastUsn != null
                 && v.UsnJournalId != null

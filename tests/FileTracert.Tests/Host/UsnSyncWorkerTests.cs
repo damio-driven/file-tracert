@@ -313,19 +313,34 @@ public sealed class UsnSyncWorkerTests
     }
 
     /// <summary>
-    /// A volume the incremental path cannot serve must not be touched at all — not even to the
-    /// extent of opening its journal, which on a real machine is a volume handle and a syscall per
-    /// cycle, for ever, for nothing.
+    /// The worker's pre-filter asks the same question the applier asks: <b>is there a cursor?</b>
+    /// Not <em>which engine walked</em> — that question stopped being the right one at A4, when a
+    /// watched subfolder began being walked by enumeration and checkpointing the journal anyway.
     ///
-    /// <para>Two volumes on purpose. "The journal was never opened" is also what a worker that is
-    /// not running looks like, so an eligible sibling sits alongside the ineligible one and its
-    /// cursor is distinct: the assertion then reads "this one was picked up and that one was
-    /// skipped", which only a live worker can produce.</para>
+    /// <para>This test used to assert the opposite, and that is how the miss survived: step 19
+    /// rewrote the gate in <c>UsnDeltaApplier</c> and in the harness scenarios, left the worker's
+    /// SQL pre-filter asking about <c>ScanEngine</c>, and this test pinned the stale rule instead
+    /// of catching it. On the real catalog the consequence was silent and total — the system
+    /// volume got its cursor from the hybrid and no delta ever read it, so the incremental path
+    /// the user asked for was inert while looking installed.</para>
+    ///
+    /// <para>Two volumes on purpose, and only one of them holds a cursor. "The journal was never
+    /// opened" is also what a worker that is not running looks like — but here the enumeration-
+    /// walked volume is the ONLY thing that could have been opened, so a single read proves both
+    /// that the worker is alive and that it served exactly the shape the hybrid produces. The
+    /// other volume has no checkpoint at all: nothing to resume from, and opening its journal
+    /// would be a volume handle and a syscall per cycle, for ever, for nothing.</para>
+    ///
+    /// <para>The two are NOT told apart by the cursor they resume from, which is the trap the
+    /// previous version of this test wrote a warning about and then walked into anyway: an empty
+    /// delta checkpoints <c>NextUsn</c>, so after one cycle every volume resumes from the same
+    /// number the fake reports.</para>
     /// </summary>
     [Fact]
-    public async Task An_enumeration_scanned_volume_is_never_offered_to_the_journal()
+    public async Task A_cursor_is_served_whichever_engine_walked_and_a_volume_without_one_is_not()
     {
         const string eligibleGuid = @"\\?\Volume{56565656-5656-5656-5656-565656565656}\";
+        const string uncheckpointedGuid = @"\\?\Volume{57575757-5757-5757-5757-575757575757}\";
 
         // The journal's tail must sit AT the eligible volume's cursor, not below it: an empty
         // delta checkpoints NextUsn, and a fake whose tail runs backwards would drag the cursor
@@ -342,52 +357,65 @@ public sealed class UsnSyncWorkerTests
                 Probed,
                 new ProbedVolume(eligibleGuid, "SER-6", "Other", "NTFS", IsRemovable: false,
                     MountPoints: [@"Y:\"], CapacityBytes: 1000, FreeBytes: 500, PhysicalDiskId: null),
+                new ProbedVolume(uncheckpointedGuid, "SER-7", "Third", "NTFS", IsRemovable: false,
+                    MountPoints: [@"Z:\"], CapacityBytes: 1000, FreeBytes: 500, PhysicalDiskId: null),
             ]),
             UsnReader = reader,
             MetadataReader = new FakeFileMetadataReader(Disk((@"Media\a.jpg", 11))),
             Seed = async (db, ct) =>
             {
-                // Fully scanned, with a cursor — but by the enumeration engine, so its directory
-                // rows carry no file references and not one path could be placed.
-                var skipped = new Volume
-                {
-                    VolumeGuid = Guid,
-                    FileSystem = "NTFS",
-                    ScanEngine = VolumeScanEngine.Enumeration,
-                    IsOnline = true,
-                    LastFullScanUtc = T,
-                    LastUsn = 500,
-                    UsnJournalId = 7,
-                };
-
-                // Same in every respect except the engine that wrote it — and a cursor of its own,
-                // so the two are told apart by what the reader was asked to resume from.
-                var eligible = new Volume
+                // Walked by ENUMERATION and holding a cursor — the shape the hybrid produces for
+                // every volume whose watched roots are subfolders. A scan writes a cursor only
+                // when the walk captured identities, so this volume has rows the delta can place.
+                var hybrid = new Volume
                 {
                     VolumeGuid = eligibleGuid,
                     FileSystem = "NTFS",
-                    ScanEngine = VolumeScanEngine.UsnJournal,
+                    ScanEngine = VolumeScanEngine.Enumeration,
                     IsOnline = true,
                     LastFullScanUtc = T,
                     LastUsn = 777,
                     UsnJournalId = 7,
                 };
 
-                db.Volumes.AddRange(skipped, eligible);
+                // No cursor at all: nothing to resume from, so its journal must never be opened —
+                // and, being the only other volume, it is what makes the read below unambiguous.
+                var noCursor = new Volume
+                {
+                    VolumeGuid = Guid,
+                    FileSystem = "NTFS",
+                    ScanEngine = VolumeScanEngine.UsnJournal,
+                    IsOnline = true,
+                    LastFullScanUtc = T,
+                    LastUsn = null,
+                    UsnJournalId = null,
+                };
+
+                db.Volumes.AddRange(hybrid, noCursor);
                 await db.SaveChangesAsync(ct);
 
-                db.WatchedRoots.Add(new WatchedRoot { VolumeId = skipped.Id, RelativePath = "", IsActive = true });
-                db.WatchedRoots.Add(new WatchedRoot { VolumeId = eligible.Id, RelativePath = "", IsActive = true });
+                db.WatchedRoots.Add(new WatchedRoot { VolumeId = hybrid.Id, RelativePath = "", IsActive = true });
+                db.WatchedRoots.Add(new WatchedRoot { VolumeId = noCursor.Id, RelativePath = "", IsActive = true });
                 await db.SaveChangesAsync(ct);
             },
         };
 
         using var _ = factory.CreateClient();
 
-        await TestPolling.WaitUntilAsync(() => Task.FromResult(reader.Resumed.Count > 0));
         await Task.Delay(2500);
 
-        reader.Resumed.Should().OnlyContain(r => r.SinceUsn == 777,
-            "the eligible volume is read every cycle and the enumeration-scanned one never");
+        // The premise, asserted rather than assumed: this volume must still be the enumeration-
+        // walked one when the worker looked at it, or the assertion below proves nothing.
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<FileTracertDbContext>();
+            var stored = await db.Volumes.SingleAsync(v => v.VolumeGuid == eligibleGuid);
+            stored.ScanEngine.Should().Be(VolumeScanEngine.Enumeration);
+        }
+
+        reader.Resumed.Should().NotBeEmpty(
+            "a cursor written by the hybrid's enumeration walk is a cursor and must be served — " +
+            "and it is the only volume here that has one, so nothing else could have been read");
+        reader.Resumed.Should().OnlyContain(r => r.JournalId == 7);
     }
 }
