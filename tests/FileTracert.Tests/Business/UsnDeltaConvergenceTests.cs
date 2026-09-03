@@ -1373,7 +1373,7 @@ public sealed class UsnDeltaConvergenceTests
     }
 
     [Fact]
-    public async Task A_volume_last_scanned_by_enumeration_is_not_eligible()
+    public async Task A_volume_without_a_cursor_is_not_eligible()
     {
         using var harness = new SqliteInMemoryContext();
         var reader = ReaderFor(StartingWorld());
@@ -1381,10 +1381,15 @@ public sealed class UsnDeltaConvergenceTests
 
         await using (var ctx = harness.CreateContext())
         {
-            // Its directory rows would carry no file references, so not a single path could be
-            // placed — the delta must decline rather than guess.
+            // Until A4 this case was spelled as "the last scan used enumeration", because only the
+            // MFT dump produced the file references a delta places records by. The enumeration walk
+            // reads them now, so the engine is no longer the question — the cursor is. A scan
+            // records one only when it captured identities, so a volume without one is a volume
+            // whose rows the delta could not place: it must decline rather than guess.
+            // The upstream half of this pairing lives in HybridScanEngineTests.
             var volume = await ctx.Volumes.SingleAsync();
-            volume.ScanEngine = VolumeScanEngine.Enumeration;
+            volume.LastUsn = null;
+            volume.UsnJournalId = null;
             await ctx.SaveChangesAsync();
         }
 
@@ -1393,7 +1398,7 @@ public sealed class UsnDeltaConvergenceTests
             var result = await BuildApplier(ctx, reader, MetadataFor(StartingWorld()))
                 .SyncVolumeAsync(volumeId, default);
             result.Status.Should().Be(UsnSyncStatus.NotEligible);
-            result.Reason.Should().Contain("enumeration");
+            result.Reason.Should().Contain("checkpoint");
         }
 
         reader.ReadChangesCalls.Should().Be(0, "an ineligible volume must not even open the journal");

@@ -189,12 +189,17 @@ public sealed class UsnDeltaApplier
     /// started, and it re-places files by walking directory FRNs that only a USN scan writes. An
     /// enumeration scan leaves those null, so a delta on top of it could not resolve a single path.
     /// </summary>
+    /// <remarks>
+    /// The engine the last scan used is deliberately NOT asked about any more. It used to stand in
+    /// for the real question — "do the directory rows carry file references?" — because only the
+    /// MFT dump produced them. Since A4 the enumeration walk reads them too, and the honest gate is
+    /// the cursor itself: a scan records one only when it captured identities, so a volume that has
+    /// a cursor has rows the delta can place, whichever walk wrote them.
+    /// </remarks>
     private static string? Ineligible(Volume volume) =>
         !volume.IsCatalogable ? "the volume is excluded from cataloguing"
         : VolumeMapper.EngineFor(volume.FileSystem) != VolumeScanEngine.UsnJournal
             ? $"the filesystem ({volume.FileSystem}) has no change journal"
-        : volume.ScanEngine != VolumeScanEngine.UsnJournal
-            ? "the last full scan used enumeration, so the directory rows carry no file references"
         : volume.LastFullScanUtc is null ? "the volume has never been fully scanned"
         : volume.LastUsn is null || volume.UsnJournalId is null ? "the volume has no journal checkpoint"
         : null;

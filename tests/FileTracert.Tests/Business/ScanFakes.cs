@@ -77,18 +77,26 @@ internal sealed class FakeDirectoryEnumerator(IReadOnlyList<ScanEntry> entries) 
         entries.Where(e => ScanPath.IsWithin(e.RelativePath, ScanPath.Normalize(relativeRoot)));
 
     /// <summary>
-    /// Answers from the same list, matched on the tail of the absolute path — the fixture has no
-    /// mount root of its own, and inventing a second source of ids would let a test pass on an
-    /// identity the fixture never actually describes.
+    /// Ids for paths the walk never yields — a watched root is asked about by path precisely
+    /// because the walk starts inside it. Kept as a separate map rather than derived from
+    /// <paramref name="entries"/> so a fixture cannot accidentally describe a root as if the walk
+    /// had handed it over.
     /// </summary>
+    public IReadOnlyDictionary<string, ulong> FileIdsByPath { get; init; } =
+        new Dictionary<string, ulong>();
+
     public ulong? TryGetFileId(string absolutePath)
     {
         var normalized = absolutePath.Replace('/', '\\').TrimEnd('\\');
-        return entries
-            .Where(e => e.Frn is not null && e.RelativePath.Length > 0
-                && normalized.EndsWith("\\" + e.RelativePath, StringComparison.OrdinalIgnoreCase))
-            .OrderByDescending(e => e.RelativePath.Length)
-            .FirstOrDefault()?.Frn;
+        foreach (var (relative, id) in FileIdsByPath)
+        {
+            if (normalized.EndsWith("\\" + relative, StringComparison.OrdinalIgnoreCase))
+            {
+                return id;
+            }
+        }
+
+        return null;
     }
 }
 

@@ -131,6 +131,14 @@ public sealed class ScanService
         // the time) would downgrade the volume to slow enumeration forever, with no
         // way back even after the real problem (elevation, journal state) is fixed.
         // Retrying every scan means the fast path recovers on its own next attempt.
+        //
+        // A4, the hybrid: taking the cursor and choosing the WALK are two decisions, not one.
+        // The cursor is worth having on any NTFS volume; the MFT dump is worth walking only when
+        // the perimeter is the whole volume, because it reads every record on the disk whatever
+        // was asked for (measured in 14d: it wins a whole-volume re-scan by 17% and loses badly on
+        // a subtree). The rule below is structural rather than a "faster today" guess — an
+        // enumeration of the roots and a full MFT dump cover the same set exactly when a root IS
+        // the volume root.
         UsnJournalState? checkpoint = null;
         if (VolumeMapper.EngineFor(volume.FileSystem) == VolumeScanEngine.UsnJournal)
         {
@@ -142,7 +150,9 @@ public sealed class ScanService
                 // AND the journal instance it belongs to. A position without its id cannot be
                 // told apart from a position into a journal that has since been recreated.
                 checkpoint = _usnReader.GetJournalState(volume.VolumeGuid);
-                volume.ScanEngine = VolumeScanEngine.UsnJournal;
+                volume.ScanEngine = WalksTheWholeVolume(roots)
+                    ? VolumeScanEngine.UsnJournal
+                    : VolumeScanEngine.Enumeration;
             }
             catch (Win32Exception ex)
             {
@@ -176,7 +186,7 @@ public sealed class ScanService
         var resolvedFiles = await ResolveFilesAsync(volume, mountRoot, fileItems, categoryMap, ct);
 
         _statusTracker.SetPhase(volumeId, ScanPhase.Writing);
-        await PersistAsync(volume, dirItems, resolvedFiles, perimeter, checkpoint, scanStartedUtc, ct);
+        await PersistAsync(volume, mountRoot, dirItems, resolvedFiles, perimeter, checkpoint, scanStartedUtc, ct);
 
         _logger.LogInformation(
             "Scanned volume {VolumeId}: {Dirs} directories, {Files} files.",
@@ -376,7 +386,7 @@ public sealed class ScanService
                     e.CreatedUtc,
                     e.ModifiedUtc,
                     e.Attributes,
-                    Frn: null);
+                    e.Frn);
             }
         }
     }
@@ -453,6 +463,7 @@ public sealed class ScanService
     /// </remarks>
     private async Task PersistAsync(
         Volume volume,
+        string mountRoot,
         List<ScanItem> dirItems,
         List<ResolvedFile> files,
         ScanPerimeter perimeter,
@@ -460,7 +471,31 @@ public sealed class ScanService
         DateTime scanStartedUtc,
         CancellationToken ct)
     {
-        var scannedDirs = BuildDirectoryTree(dirItems, files);
+        // The walk starts INSIDE a watched root and never yields the root itself, nor the
+        // directories above it — yet those are exactly the rows the incremental path resolves a
+        // record's parent against. Their identity is therefore asked for by path, once each. The
+        // MFT dump has no such gap (it reports every record on the volume), so on that engine this
+        // resolver is never consulted.
+        var scannedDirs = BuildDirectoryTree(
+            dirItems,
+            files,
+            path => _enumerator.TryGetFileId(Path.Combine(mountRoot, path)));
+
+        // A cursor over rows the delta cannot resolve is worse than no cursor: the incremental
+        // pass would advance the position and report "applied" while indexing nothing at all. So
+        // the cursor is only kept when this walk actually captured identities. Individual gaps are
+        // fine — a parent the catalog cannot place is the case the delta already handles by
+        // skipping the record — but a walk that captured NONE means the identity read failed
+        // wholesale, and the volume is better off waiting for the next full scan.
+        if (checkpoint is not null && scannedDirs.Count > 1 && scannedDirs.All(d => d.UsnFileRef is null))
+        {
+            _logger.LogWarning(
+                "Volume {VolumeId}: the walk captured no file reference numbers, so no journal " +
+                "cursor is recorded — the incremental pass would advance over rows it cannot place.",
+                volume.Id);
+            checkpoint = null;
+        }
+
         var merge = await _directoryMerger.MergeAsync(volume.Id, scannedDirs, perimeter, FileBatchSize, ct);
 
         // First scan of a volume = empty table: there is nothing to reconcile against, so the
@@ -667,7 +702,8 @@ public sealed class ScanService
     /// </summary>
     private static List<ScannedDirectory> BuildDirectoryTree(
         List<ScanItem> dirItems,
-        List<ResolvedFile> files)
+        List<ResolvedFile> files,
+        Func<string, ulong?> identityForPath)
     {
         var frnByPath = new Dictionary<string, ulong>(StringComparer.OrdinalIgnoreCase);
         foreach (var dir in dirItems)
@@ -698,11 +734,30 @@ public sealed class ScanService
             Ensure(ScanPath.Parent(file.Item.RelativePath));
         }
 
+        // A synthesised ancestor is a directory nobody handed us — a watched root, or a folder
+        // above one. It still needs an identity, because a record created directly inside it
+        // resolves its parent against exactly that row. Asked by path, once per such directory:
+        // there are a handful of them per root, against the thousands the walk already covers.
         return paths
-            .Select(p => new ScannedDirectory(
-                p, frnByPath.TryGetValue(p, out var frn) ? unchecked((long)frn) : null))
+            .Select(p =>
+            {
+                if (frnByPath.TryGetValue(p, out var frn))
+                {
+                    return new ScannedDirectory(p, unchecked((long)frn));
+                }
+
+                var asked = p.Length == 0 ? null : identityForPath(p);
+                return new ScannedDirectory(p, asked is { } id ? unchecked((long)id) : null);
+            })
             .ToList();
     }
+
+    /// <summary>
+    /// True when an active watched root is the volume root, i.e. the perimeter is the whole
+    /// volume. That is the one shape where a full MFT dump reads nothing it was not asked for.
+    /// </summary>
+    private static bool WalksTheWholeVolume(List<WatchedRoot> roots) =>
+        roots.Any(r => ScanPath.Normalize(r.RelativePath).Length == 0);
 
     private sealed record ResolvedFile(
         ScanItem Item,
