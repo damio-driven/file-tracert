@@ -76,14 +76,18 @@ public sealed class UsnHiddenSubtreeScenario : Scenario
         ctx.Log($"full scan: {firstScan.TotalSeconds:0.00}s");
 
         var (engine, scannedAt, cursor, journalId) = await ReadVolumeStateAsync(ctx);
-        if (engine != VolumeScanEngine.UsnJournal || cursor is null || journalId is null)
+
+        // The cursor is the gate, not the engine that walked — see the note in
+        // UsnIncrementalSyncScenario: since A4 a watched subfolder is walked by enumeration and
+        // still checkpoints the journal, and that is the case worth exercising.
+        if (cursor is null || journalId is null)
         {
             throw new ScenarioSkippedException(
-                $"the volume was indexed by the {engine} engine (cursor={cursor?.ToString() ?? "none"}), " +
-                "so there is no journal to read a delta from — run the harness elevated on NTFS.");
+                $"the volume has no journal cursor (walked by the {engine} engine), " +
+                "so there is no delta to read — run the harness elevated on NTFS.");
         }
 
-        ctx.Log($"journal cursor after the scan: usn={cursor} id={journalId}");
+        ctx.Log($"walked by the {engine} engine; journal cursor after the scan: usn={cursor} id={journalId}");
 
         var insideOnePath = ctx.Source.RelativePath(InsideOne);
         var insideTwoPath = ctx.Source.RelativePath(InsideTwo);

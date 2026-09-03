@@ -78,12 +78,28 @@ internal static class DirectoryFileIds
                 // Only the first call restarts the scan; every later one continues it.
                 infoClass = NativeMethods.FileIdBothDirectoryInfo;
 
-                var entry = (byte*)buffer.ToPointer();
+                var start = (byte*)buffer.ToPointer();
+                var entry = start;
                 while (true)
                 {
+                    // Every read below is bounds-checked against the buffer we allocated. The
+                    // chain is data coming back from a syscall, and pointer arithmetic driven by
+                    // an unexpected value does not throw — it reads someone else's memory. Bailing
+                    // out leaves the map holding what was read so far, which is the same shape as
+                    // a directory we could not open at all: identity missing, never wrong.
+                    if (!Fits(start, entry, NativeMethods.FileIdBothDirInfoFileName))
+                    {
+                        break;
+                    }
+
                     var next = *(uint*)(entry + NativeMethods.FileIdBothDirInfoNextEntryOffset);
                     var nameBytes = *(uint*)(entry + NativeMethods.FileIdBothDirInfoFileNameLength);
                     var fileId = *(ulong*)(entry + NativeMethods.FileIdBothDirInfoFileId);
+
+                    if (!Fits(start, entry, NativeMethods.FileIdBothDirInfoFileName + (long)nameBytes))
+                    {
+                        break;
+                    }
 
                     var name = new string(
                         (char*)(entry + NativeMethods.FileIdBothDirInfoFileName),
@@ -118,6 +134,10 @@ internal static class DirectoryFileIds
             Marshal.FreeHGlobal(buffer);
         }
     }
+
+    /// <summary>True when reading <paramref name="bytesNeeded"/> from this entry stays inside the buffer.</summary>
+    private static unsafe bool Fits(byte* start, byte* entry, long bytesNeeded) =>
+        entry >= start && entry - start + bytesNeeded <= BufferBytes;
 
     /// <summary>
     /// Opens for metadata only. <c>FILE_FLAG_BACKUP_SEMANTICS</c> is what makes a directory

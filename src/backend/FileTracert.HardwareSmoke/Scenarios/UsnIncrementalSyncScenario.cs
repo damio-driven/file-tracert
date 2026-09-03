@@ -59,14 +59,21 @@ public sealed class UsnIncrementalSyncScenario : Scenario
         ctx.Log($"full scan: {firstScan.TotalSeconds:0.00}s");
 
         var (engine, scannedAt, cursor, journalId) = await ReadVolumeStateAsync(ctx);
-        if (engine != VolumeScanEngine.UsnJournal || cursor is null || journalId is null)
+
+        // The gate is the CURSOR, not the engine that walked. Since A4 a watched subfolder is
+        // walked by enumeration and still checkpoints the journal — which is precisely the handover
+        // this scenario should be exercising, so asking "was it the MFT engine?" would skip the
+        // interesting case and call it a machine fact. Without a cursor there is genuinely no
+        // journal to read (unelevated, or a filesystem that has none), and that is still a SKIP:
+        // a vacuous PASS would be the worse answer, which is the trap step 13 found.
+        if (cursor is null || journalId is null)
         {
             throw new ScenarioSkippedException(
-                $"the volume was indexed by the {engine} engine (cursor={cursor?.ToString() ?? "none"}), " +
-                "so there is no journal to read a delta from — run the harness elevated on NTFS.");
+                $"the volume has no journal cursor (walked by the {engine} engine), " +
+                "so there is no delta to read — run the harness elevated on NTFS.");
         }
 
-        ctx.Log($"journal cursor after the scan: usn={cursor} id={journalId}");
+        ctx.Log($"walked by the {engine} engine; journal cursor after the scan: usn={cursor} id={journalId}");
 
         var keptPath = ctx.Source.RelativePath(KeptFile);
         var deletedPath = ctx.Source.RelativePath(DeletedFile);

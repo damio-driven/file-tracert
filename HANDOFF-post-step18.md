@@ -29,7 +29,16 @@ nascondi → ri-mostra → cancella · la ricognizione di A4 (sotto). Dettagli n
 
 ## Cosa resta, in ordine di valore
 
-### 1. A4 — il motore ibrido (decisione presa; il disegno ha un prerequisito misurato)
+### ~~1. A4 — il motore ibrido~~ — **fatto (step 19)**
+Chiuso lo stesso giorno. Il prerequisito che la decisione non aveva — l'enumerazione deve portare il
+**FRN**, altrimenti l'incrementale è cieco — è stato misurato prima di scrivere codice e poi
+implementato: `Platform` legge gli id per handle di directory, `ScanService` separa il motore del
+**cursore** da quello della **camminata** (regola strutturale: il dump dell'MFT solo quando un root
+è la radice del volume), e il cursore si scrive solo se la camminata ha catturato identità. Il gate
+del delta chiede il cursore, non il motore. Dettagli e misure nel paragrafo «Fatto nello step 19» di
+`CLAUDE.md`.
+
+<details><summary>La descrizione originale del lavoro, per riferimento</summary>
 La decisione: prima scansione per **enumerazione** dei root, cursore USN preso **prima** della
 camminata, delta da lì.
 
@@ -50,6 +59,7 @@ file references»), e l'ibrido è esattamente ciò che quella riga toglie.
    `Volume.ScanEngine` fa entrambi i mestieri, in `ScanService.EnumerateRaw` e nel gate di
    eligibilità del delta.
 3. Convergenza in-process (`ScriptedUsnReader`) + scenario harness elevato.
+</details>
 
 ### 2. Piccoli, indipendenti, non elevati
 - **2a — `InSubtree`**: misurare con `EXPLAIN` se è l'`ESCAPE` di EF a impedire la seek su

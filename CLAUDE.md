@@ -994,6 +994,79 @@ lasciato aperte (H e C nello stesso tick; H smascherata sotto G nascosta): entra
   di 17 e 18» qui sotto; e l'harness elevato ha firmato `usn-hidden-subtree` su tutte e tre le
   coppie.
 
+### Fatto nello step 19 (2026-09-03)
+**Il motore ibrido: la scansione cammina il perimetro e prende comunque il cursore.** Chiude la voce
+**A4** della roadmap, cioè l'ultima delle «decisioni di prodotto prese il 2026-09-03». Nessuna
+migration, nessun cambiamento di contratto API, frontend non toccato.
+
+#### Il prerequisito che la decisione non aveva, misurato prima di scrivere codice
+La decisione diceva «prima scansione per enumerazione dei root, cursore preso prima della
+camminata». Presa alla lettera produce un incrementale **cieco**: il delta colloca ogni record
+risalendo dal **FRN del padre** alle righe `Directories.UsnFileRef`, e quella colonna la scriveva
+solo il ramo USN. Sonda usa-e-getta prima di toccare qualsiasi cosa: scansione a enumerazione,
+cursore scritto a mano (lo stato esatto che l'ibrido avrebbe lasciato), delta che crea un file
+**dentro una cartella già indicizzata** → `status=Applied indexed=0 unresolved=1`. Cursore
+avanzato, niente indicizzato, nessun errore. Il gate di `UsnDeltaApplier.Ineligible` portava la
+frase giusta dal 14d — *«the last full scan used enumeration, so the directory rows carry no file
+references»* — ed è esattamente la riga che l'ibrido toglie. Quindi il lavoro è cominciato da
+`Platform`, non dal cursore.
+
+#### 1. L'enumerazione impara a leggere l'identità
+`ScanEntry` guadagna `Frn`; `ManagedDirectoryEnumerator` lo riempie con
+`GetFileInformationByHandleEx` / `FileIdBothDirectoryInfo`: **un handle di directory** risponde per
+tutti i figli, quindi l'identità costa **per cartella e non per voce**, e il nome arriva nello
+stesso record dell'id — l'unico appaiamento che un rename concorrente non può rompere. Un secondo
+metodo di porta, `TryGetFileId`, risponde per **un path**: la camminata parte *dentro* un root
+sorvegliato e non lo restituisce mai, eppure quella riga è il padre contro cui si risolve ogni
+record creato lì dentro. `Platform` riporta ciò che ha letto; se un id sia affidabile lo decide il
+chiamante (FAT restituisce zeri, e questo strato li riporta come «nessuno»).
+
+**Due bug di interop trovati dai test e non dalla lettura, entrambi del tipo silenzioso**: `FileId`
+sta a offset **96**, non 104 (gli otto byte di allineamento dopo lo short name), e restituiva id
+*plausibili* con nomi a frammenti; e `BY_HANDLE_FILE_INFORMATION` va scritta a campi di **quattro
+byte**, perché un `FILETIME` dichiarato `long` fa inserire al CLR un padding dopo `FileAttributes` e
+ogni campo successivo legge la memoria sbagliata. Le due strade indipendenti per chiedere
+l'identità della stessa cartella ora rispondono lo **stesso numero**, ed è quello l'oracolo.
+
+**Costo, misurato su 25 942 voci in 2 413 directory**: **2 154–2 222 ms** con gli id,
+**2 267–2 369 ms** senza. Dentro il rumore — i ~2 400 handle in più spariscono contro la `stat` per
+voce che la camminata paga già.
+
+#### 2. Cursore e camminata sono due decisioni
+Il cursore vale su qualunque volume NTFS; il dump dell'MFT vale **solo** quando il perimetro è il
+volume intero, perché legge ogni record del disco qualunque cosa gli si chieda (14d: vince il
+re-scan del volume intero del 17%, perde sui sotto-alberi). La regola è **strutturale, non
+un'euristica «più veloce oggi»**: un'enumerazione dei root e un dump completo coprono lo stesso
+insieme **esattamente quando un root È la radice del volume**, che è il caso in cui 14d misurava la
+vittoria dello snapshot.
+
+Due conseguenze obbligate. Le cartelle **sintetizzate** (il root sorvegliato e i suoi antenati)
+chiedono la propria identità per path, una volta ciascuna. E **il cursore si scrive solo se la
+camminata ha catturato identità**: un cursore su righe che il delta non sa collocare farebbe
+avanzare l'incrementale mentre non indicizza niente, dichiarando successo — cioè il guasto che tutto
+questo giro esiste per evitare. I buchi singoli restano innocui: un padre che il catalogo non
+colloca è il caso che il delta già gestisce saltando il record.
+
+#### 3. Il gate del delta smette di chiedere «quale motore»
+Stava al posto della domanda vera — «le righe portano i file reference?» — perché solo il dump
+dell'MFT li produceva. Ora la risposta onesta è **il cursore stesso**. Il test di convergenza che
+codificava la vecchia grafia è stato **riscritto** intorno alla garanzia nuova, non cancellato, e la
+sua metà a monte vive accanto ai test dell'ibrido: insieme dicono «righe che il delta non sa
+collocare non gli vengono mai servite» senza che nessuna delle due parti debba fidarsi della grafia
+dell'altra.
+
+#### Verifica
+xUnit **971 verdi** (+12 su 959), build pulita warnings-as-errors in **Debug e Release**.
+**RED dimostrato per mutazione, sulla solution intera**: scegliere sempre il dump dell'MFT →
+**5 rossi**; togliere la lettura dell'identità degli antenati → **2**; togliere la guardia del
+cursore → **2**; e ogni volta il resto della suite resta verde. *(Una mutazione con `if (false)` non
+compila sotto warnings-as-errors e fa girare i test sulla DLL vecchia — falso rosso, visto: la
+condizione va resa opaca a compile time.)*
+
+#### Limiti noti e accettati
+- **Il servizio installato non è aggiornato** con questo giro.
+- **Nessuna migration**: distribuirlo è una copia di file.
+
 ### Deploy di 17 e 18 sul catalogo reale (2026-09-03)
 **Il servizio installato eredita l'esclusione alle cartelle, e pagina dove §7 lo prometteva.**
 Distribuiti insieme su richiesta dell'utente, in una sessione elevata che ha prima firmato
