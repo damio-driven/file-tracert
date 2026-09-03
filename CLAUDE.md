@@ -928,6 +928,72 @@ livello il tetto che lega è `LogMaxRows` = 500 000 righe (≈184 MB, misurato a
 oggi il DB dei log sta a 3,9 MB; e **su `C:` il percorso incrementale non è ancora acceso**,
 cioè i 739 421 file che contano continuano a dipendere da una scansione completa.
 
+### Deploy di 16 sul catalogo reale (2026-09-03)
+**Il servizio installato applica le decisioni di perimetro alle righe che ha già.** Distribuito su
+richiesta dell'utente subito dopo la chiusura dello step.
+
+**Stato di partenza, verificato prima di toccare qualcosa** — la solita unica domanda che conta:
+`GET /api/dashboard` dava **0 job in coda, 0 bloccati, 0 in corso**. Catalogo a **742 669** file,
+invariato dal deploy di 15b.
+
+**Sequenza**: publish col servizio attivo (**11,6 s**, 29 file SPA), `sc stop` pulito in **0,6 s**
+(nessun `-wal`/`-shm` residuo, cioè WAL checkpointato), backup `filetracert.db.pre16` con **sha256
+identico** all'originale (`9C0DF26B…`), `install-service.ps1` in **2,9 s**.
+
+**Una migration, additiva**: `AddFileExcludedByPath`, in cima a `__EFMigrationsHistory`. Colonna
+`INTEGER NOT NULL DEFAULT 0`.
+
+**Nessun rebuild dell'FTS**, ed era la cosa da controllare: le uniche due righe «Search index» nel
+DB dei log sono del **24/08**, cioè del deploy di 14a. Il backfill pessimista lascia
+`ExcludedByPath = 0` su tutte le righe, quindi l'insieme indicizzabile non si muove e la guardia a
+senso unico tace.
+
+**Verificato sul ferro**, servizio `Running`/`Automatic`, in ascolto solo su `127.0.0.1` e `::1`,
+**401** senza token, **zero Error/Critical** nel log dall'avvio (i 9 Warning sono gli
+`EntityFrameworkCore.Query` pre-esistenti):
+
+| controllo | esito |
+|---|---|
+| catalogo | 742 675 file · 114 212 directory · 742 669 righe FTS · 30 volumi |
+| righe con `ExcludedByPath = 1` | **0** — nessuna riconciliazione è ancora girata, come dev'essere |
+| **invariante di §6 a quattro termini** | **vera su tutte e 742 675 le righe** (`IsIncluded <> NOT(...)` → 0) |
+| `foreign_key_check` | nessuna violazione |
+
+**E la funzione vive, dimostrata senza scrivere niente.** Contando in sola lettura, con il
+predicato incorniciato del prodotto, quante righe **incluse** prenderebbe un segmento:
+
+| segmento | righe incluse che prenderebbe |
+|---|---|
+| `AppData`, `Windows` (già in `ExcludedPaths`) | **0** — sotto non è mai stato indicizzato nulla, ed è la risposta giusta |
+| `node_modules` (non configurato) | **252 163** su 742 675 |
+
+Prima dello step 16 aggiungere `node_modules` avrebbe escluso **zero** righe e la schermata Setup
+avrebbe annunciato un riallineamento. È A2 vista sul catalogo dell'utente.
+
+**I tempi, mediana di 5**, accanto a quelli del deploy di 15b — servizio appena riavviato, cache
+fredda, e valgono come ordine di grandezza, non come A/B:
+
+| endpoint | 15b | oggi |
+|---|---|---|
+| `GET /api/dashboard` | 156 ms | 176 ms |
+| `GET /api/volumes` | 88 ms | 60 ms |
+| `GET /api/volumes/{id}` (739 421 file) | 333 ms | 208 ms |
+| `GET /api/operations` | 5 ms | 9 ms |
+
+**Il deploy ha smentito un'affermazione del codice**, ed è il motivo per cui vale la pena misurare
+in produzione: `InSubtree` **non** paga una seek su `IX_Directories_MaterializedPath`. Il piano
+vero è `SEARCH Directories USING INDEX IX_Directories_VolumeId_ParentId (VolumeId=?)`, perché
+SQLite non guida un indice di prefisso da un `LIKE` il cui pattern è un **parametro**: 31 ms per
+directory esclusa sulle 113 831 directory del volume di sistema. Era il limite che la review aveva
+lasciato dichiarato come non verificato; ora è misurato, il commento è corretto, e **nessun test
+pinna ancora quel piano**.
+
+**Limiti dichiarati**: il **riavvio della macchina** continua a non essere stato fatto; il worker
+incrementale resta acceso **solo su `D:`** (gli altri volumi hanno `UsnJournalId` a `NULL` e il
+pre-filtro li salta), quindi il pass di sottoalbero di A3 non gira da solo su `C:`; e nessuna
+riconciliazione è stata eseguita sul catalogo dell'utente — la prova di A2 è stata fatta **in sola
+lettura**, di proposito, perché salvare un segmento nuovo escluderebbe davvero 252 163 sue righe.
+
 ### Fatto nello step 16 (2026-09-03, commit `cbfa973`…`f927b0d`)
 **Una decisione di perimetro raggiunge le righe che il catalogo ha già.** Chiude le voci **A2** e
 **A3** della roadmap, che erano lo stesso difetto visto da due lati: A2 il lato *impostazioni*
@@ -1052,10 +1118,13 @@ cartella nascosta ancora `IsIncluded = 1` con la causa non scritta.
   — `Coalesce` tiene l'ultimo record per FRN, quindi il pass interroga il path **nuovo**, non trova
   righe e non esclude nulla. Pre-esistente in famiglia (il merge delle directory matcha per path e
   non per FRN dal 14d), non riprodotto.
-- **Non verificata**: l'affermazione che `InSubtree` paghi una seek su
-  `IX_Directories_MaterializedPath`. Se EF traducesse `StartsWith` con prefisso parametro in
-  qualcosa di diverso da un `LIKE 'x%'`, sarebbe uno **scan** di 114 132 righe per ogni directory
-  esclusa nominata da un tick. Nessun test pinna quel piano.
+- ~~**Non verificata**: l'affermazione che `InSubtree` paghi una seek su
+  `IX_Directories_MaterializedPath`~~ — **misurata al deploy e falsa**: il piano sul catalogo vero è
+  `SEARCH Directories USING INDEX IX_Directories_VolumeId_ParentId (VolumeId=?)`, perché SQLite non
+  può guidare un indice di prefisso da un `LIKE` il cui pattern è un **parametro**. Sono **31 ms**
+  per directory esclusa sul volume di sistema (113 831 directory), quindi un tick che ne nomina
+  molte costa secondi dentro il worker. Il commento nel codice è stato corretto; **nessun test
+  pinna ancora quel piano**.
 - **Gli handler di Move non scrivono alcuna causa di perimetro** (`MoveFileIndexAsync` e i due di
   cartella): un move verso un segmento escluso lascia la riga inclusa fino alla scansione
   successiva. Pre-esistente, stessa famiglia della nota che 11g porta su `IndexUpdater`; questo

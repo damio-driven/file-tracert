@@ -693,11 +693,17 @@ public sealed class UsnDeltaApplier
     /// behind them</b> — which is the claim worth making, and it is not the same as "the rows
     /// underneath are free". They are not: the UPDATE and the index pair each touch every one of
     /// them, and that work is the point of the pass. What the shape buys is that the work stays
-    /// inside SQLite instead of arriving as one round trip per file. Each excluded directory pays a
-    /// seek on <c>IX_Directories_MaterializedPath</c> (C4) plus its updates; on a system volume a
-    /// tick can name a few directories the filter refuses and each of them can stand over thousands
-    /// of rows. A directory the catalog never held returns an empty id list and stops there, which
-    /// is the common case for journal traffic in places this index has never been.</para>
+    /// inside SQLite instead of arriving as one round trip per file. What each excluded directory
+    /// pays is <b>not</b> a seek on <c>IX_Directories_MaterializedPath</c>: measured on the real
+    /// catalog (2026-09-03, 113 831 directories on the system volume) the plan is
+    /// <c>SEARCH Directories USING INDEX IX_Directories_VolumeId_ParentId (VolumeId=?)</c> — SQLite
+    /// cannot drive a prefix index from a <c>LIKE</c> whose pattern is a parameter, so the volume's
+    /// directory rows are walked and the prefix is tested per row. **31 ms** per excluded directory
+    /// there, so a tick naming many of them is seconds inside the worker; a volume with few
+    /// directories is nothing. Then its updates, and on a system volume each excluded directory can
+    /// stand over thousands of rows. A directory the catalog never held returns an empty id list and
+    /// stops there, which is the common case for journal traffic in places this index has never
+    /// been.</para>
     ///
     /// <para><b>A chunk is the unit of atomicity as well as of statement size</b>, exactly like the
     /// two absence passes below and for the reason <see cref="BatchSize"/> is documented with: the
