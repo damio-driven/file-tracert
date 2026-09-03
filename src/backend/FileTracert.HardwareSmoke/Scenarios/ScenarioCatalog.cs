@@ -30,6 +30,7 @@ public static class ScenarioCatalog
         new ExclusionVsAbsenceScenario(),
         new UsnIncrementalSyncScenario(),
         new UsnHiddenSubtreeScenario(),
+        new HardLinkIdentityScenario(),
         new IndexUpdateFailOnceScenario(),
         new PhantomReservationScenario(),
         new InsufficientSpaceScenario(),
