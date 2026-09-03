@@ -1,4 +1,4 @@
-using FileTracert.Contracts.Enums;
+﻿using FileTracert.Contracts.Enums;
 
 namespace FileTracert.Data.Entities;
 
@@ -25,6 +25,23 @@ public class DirectoryNode : IAuditable
     /// "not on disk" for rows that were just indexed from disk.
     /// </summary>
     public bool IsPresent { get; set; } = true;
+
+    /// <summary>
+    /// Step 18: this folder, or an ancestor, is Hidden/System — as the last full scan or USN
+    /// delta saw it. EFFECTIVE, not own: the USN delta reads it off the parent row to inherit an
+    /// exclusion the record itself does not carry (a file inside a hidden folder has clean
+    /// attributes of its own). Only a scan that WALKS the folder clears it (<c>DirectoryMerger</c>);
+    /// no setting can, because no setting knows whether the folder is still hidden.
+    /// Not an inclusion flag: a folder that exists on disk exists (11g), visibility is unchanged.
+    /// </summary>
+    public bool ExcludedByScan { get; set; }
+
+    /// <summary>
+    /// Step 18: a segment of <see cref="MaterializedPath"/> is in <c>ExcludedPaths</c>. Effective
+    /// like <see cref="ExcludedByScan"/>, but derivable from the path, so <c>FilterReconciler</c>
+    /// writes it in both directions without reading the disk.
+    /// </summary>
+    public bool ExcludedByPath { get; set; }
 
     public string? PendingName { get; set; }
     public int? PendingParentId { get; set; }
