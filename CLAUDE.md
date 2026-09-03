@@ -924,6 +924,25 @@ compilare **solo** `Business` e lanciare `dotnet test --no-build` prova la DLL *
 nella bin dei test — 9/9 verdi con la mutazione dentro. Con la solution compilata, 1 rosso. Ora sta
 in memoria e in questa riga.
 
+#### La code review, indipendente e a contesto pulito
+Ha trovato **2 MAJOR e 2 MINOR**, tutti corretti nel commit di review. Il MAJOR con i denti:
+il guard di staleness di «Mostra altre» confrontava **solo la cartella** — e alla radice
+`currentDirectoryId` è `null` su **ogni** volume, quindi una pagina chiesta alla radice del
+volume 1 atterrava sulla radice del volume 2 appena aperta, appendendo cartelle di un altro disco
+(cliccabili: 404 da `BelongsToVolumeAsync`; selezionabili: un `SelectedItem` col volume sbagliato).
+Stesso buco nel picker, e nessun guard nello store del Setup. Ora ogni «altre» ricorda il volume
+per cui ha chiesto e scarta la risposta se non è più quello. **RED eseguito**: i tre test del cambio
+volume in volo rossi, poi verdi. Il secondo MAJOR: l'`OrderBy` paginato non aveva un tiebreak, e i
+nomi proiettati **non** sono unici (una Copy su un nome occupato lascia due righe visibili, 15a):
+`ThenBy(Id)`. Il test fissa il contratto ma **non ha dato un rosso** prima del fix — SQLite
+restituisce i pari in ordine di rowid in pratica, non per garanzia — ed è scritto così. I MINOR:
+l'ordine per nome delle cartelle del Setup era promesso dal servizio e fatto dall'implementazione
+Platform; ora lo fa **chi taglia la pagina** (un test con il fake fuori ordine: 1 rosso, poi verde)
+e `IFileSystemBrowser` dichiara di non promettere alcun ordine.
+
+Il reviewer **non aveva una shell**: ha letto il codice e non ha potuto eseguire niente. Le
+mutazioni che questo paragrafo riporta le ho eseguite io, sull'intera suite.
+
 #### Limiti noti e accettati
 - **Harness non eseguito**: nessun file viene toccato diversamente, e la sessione non era elevata.
 - **La Ricerca non è coinvolta**: non elenca cartelle.
