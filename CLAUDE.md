@@ -773,27 +773,25 @@ visibili. Lo step **15a** è il primo lavoro di **fase 2**: l'operazione **Copy*
 due difetti che l'utente ha scelto per primi (voci A1 e A6); il **16** le voci **A2 e A3**, cioè le
 decisioni di perimetro che non raggiungevano le righe già a catalogo; il **17** il paging dove §7
 lo prometteva (sottocartelle del Catalogo, picker, albero del Setup), con la passata E2E tornata a
-girare dopo otto step; il **18** l'esclusione che si eredita alle cartelle (i residui 1 e 2 del 16).
-**Non c'è lavoro obbligatorio aperto**: tutto ciò che segue è debito datato,
+girare dopo otto step; il **18** l'esclusione che si eredita alle cartelle (i residui 1 e 2 del 16);
+il **19** il motore ibrido (voce A4), cioè la scansione che cammina il perimetro e prende comunque
+il cursore USN. **Non c'è lavoro obbligatorio aperto**: tutto ciò che segue è debito datato,
 decisione di prodotto o fase 2.
 
-Gli step 16 e **18** sono **completi, harness elevato incluso**: 59/59 PASS sul giornale USN vero,
-quindi A3 e l'eredità alle cartelle sono firmate sul ferro e non solo in-process.
+Gli step 16, **18** e **19** sono **completi, harness elevato incluso**: 59/59 PASS sul giornale USN
+vero, quindi A3, l'eredità alle cartelle e il motore ibrido sono firmati sul ferro e non solo
+in-process.
 
 **Il servizio installato è aggiornato a 18** (2026-09-03) — 17 e 18 distribuiti insieme, vedi
-«Deploy di 17 e 18» qui sotto. Non resta nulla di non distribuito.
+«Deploy di 17 e 18» qui sotto. **Lo step 19 non è distribuito**: non ha migration, quindi è una
+copia di file, e resta una decisione dell'utente.
 
-**Decisioni di prodotto prese il 2026-09-03**, da eseguire nei prossimi step:
-- **A4 → motore ibrido.** Prima scansione per **enumerazione** dei soli root (veloce, limitata al
-  perimetro), ma il cursore USN (`NextUsn` + `UsnJournalId`) si prende **prima** della camminata e
-  si scrive a fine scan: l'incrementale parte lo stesso, e ciò che cambia durante la camminata lo
-  riporta il primo delta (il merge è idempotente). Niente euristica «più veloce oggi»: la
-  domanda vera era «quel volume avrà i delta?», e la risposta è sì per costruzione. Prova sul
-  giornale vero in sessione elevata.
-  **Il disegno è incompleto, e la misura lo dice** *(sonda del 2026-09-03, vedi la voce A4 della
-  lista qui sotto)*: preso alla lettera produce un incrementale che non colloca **niente**, perché
-  l'enumerazione non porta il **FRN** e il delta risale dal FRN del padre. Chi lo esegue deve
-  cominciare da lì — `ScanEntry` guadagna il FRN e l'enumeratore lo legge — non dal cursore.
+**Decisioni di prodotto prese il 2026-09-03**, entrambe **eseguite lo stesso giorno**:
+- ~~**A4 → motore ibrido.**~~ — **fatta allo step 19.** Prima scansione per **enumerazione** dei soli
+  root, cursore USN (`NextUsn` + `UsnJournalId`) preso **prima** della camminata e scritto a fine
+  scan. Il prerequisito che la decisione non aveva — l'enumerazione deve portare il **FRN**, o
+  l'incrementale è cieco — è stato misurato prima di scrivere codice e poi implementato. Vedi il
+  paragrafo dello step.
 - ~~**L'esclusione si eredita alle cartelle figlie.**~~ — **fatta allo step 18**, lo stesso giorno:
   una colonna sola, `Directories.ExcludedByScan` (la causa path si eredita già dal path dell'item).
   Vedi il paragrafo dello step.
@@ -816,26 +814,15 @@ quindi A3 e l'eredità alle cartelle sono firmate sul ferro e non solo in-proces
    una cartella che *smette* di essere nascosta non è rilevabile dal delta (14d) — un record di
    cartella che passa il filtro e non ha riga è indistinguibile da una cartella nuova, e i file
    dentro non generano record propri. Serve una scansione.
-4. **L'USN perde sui sotto-alberi** — `FSCTL_ENUM_USN_DATA` cammina tutta l'MFT
-   ignorando il perimetro (misurato in 14d). **Decisione presa il 2026-09-03: motore ibrido**
-   (enumerazione dei root per la prima scansione, cursore USN preso prima della camminata), vedi
-   «Decisioni di prodotto» in cima alla roadmap. Un'euristica per rapporto sotto-albero/MFT
-   avrebbe spento l'incrementale su `D:`, l'unico volume che ce l'ha.
-   **Il prerequisito, misurato il 2026-09-03 e non previsto dalla decisione**: la camminata a
-   enumerazione deve portare il **FRN**, altrimenti l'ibrido è un incrementale cieco. Il delta
-   colloca ogni record risalendo dal FRN del **padre** alle righe `Directories.UsnFileRef`, e
-   quella colonna la scrive solo il ramo USN (`ScanService` la prende da `item.Frn`, nullo per
-   costruzione sull'altro ramo). Sonda usa-e-getta: scansione a enumerazione, cursore scritto a
-   mano (lo stato esatto che l'ibrido lascerebbe), delta che crea un file **dentro una cartella già
-   indicizzata** → `status=Applied indexed=0 unresolved=1`, cursore avanzato, **niente
-   indicizzato**. Il modo di fallire peggiore: sembra funzionare. Oggi il prodotto è protetto
-   dal gate di `UsnDeltaApplier.Ineligible`, che porta la frase giusta fin dal 14d — *«the last
-   full scan used enumeration, so the directory rows carry no file references»* — e l'ibrido
-   quella riga la toglie. Quindi il lavoro comincia da `Platform`: `ScanEntry` guadagna il FRN e
-   `ManagedDirectoryEnumerator` lo legge (`GetFileInformationByHandleEx` /
-   `FileIdBothDirectoryInfo` restituisce nome, attributi, dimensione, date **e** FileId per handle
-   di directory, quindi si porta via anche la `FileInfo` per voce che l'enumeratore paga oggi).
-   Solo dopo ha senso separare il motore del **cursore** da quello della **camminata**.
+4. ~~**L'USN perde sui sotto-alberi**~~ — **chiusa allo step 19** (2026-09-03) con il **motore
+   ibrido**: la camminata sceglie il dump dell'MFT **solo** quando un root è la radice del volume
+   (il caso in cui 14d misurava la vittoria dello snapshot), altrimenti enumera il perimetro; il
+   cursore USN si prende comunque, e si scrive **solo se** la camminata ha catturato identità.
+   Il prerequisito che la decisione non aveva — l'enumerazione deve portare il **FRN**, altrimenti
+   il delta non colloca niente e il cursore avanza dichiarando successo — è stato misurato con una
+   sonda prima di scrivere codice (`status=Applied indexed=0 unresolved=1`) e chiuso in `Platform`.
+   Firmato sul ferro: `walked by the Enumeration engine; journal cursor after the scan: usn=…`
+   seguito da `delta: Applied … indexed=2 unplaced=0`. Vedi il paragrafo dello step.
 5. **Classificazione Cloud non affidabile** (§11, debito datato allo step 6.7). Coperto
    dall'esclusione manuale, che funziona.
 6. ~~**Un job ripreso da un checkpoint non ri-controlla lo spazio**~~ — **chiuso allo step 15b**
@@ -899,7 +886,8 @@ vero · **14a** filtro categoria della Ricerca · **14b** annullabilità delle q
 brief · **15a** l'operazione Copy · **15b** la ripresa che ricontrolla lo spazio e la corsa di
 Volumi · **16** le decisioni di perimetro che raggiungono le righe già a catalogo (la quarta causa
 di esclusione, e il sottoalbero che il delta esclude) · **17** il paging dove §7 lo prometteva ·
-**18** l'esclusione che si eredita alle cartelle. I finding della review del 2026-07-12 stanno in
+**18** l'esclusione che si eredita alle cartelle · **19** il motore ibrido (A4). I finding della
+review del 2026-07-12 stanno in
 `CODE-REVIEW-HANDOFF.md`, che porta in cima il proprio stato aggiornato.
 
 ### Fatto nello step 18 (2026-09-03, commit `0ba920a`…`2be8df6`)
@@ -1063,32 +1051,53 @@ cursore → **2**; e ogni volta il resto della suite resta verde. *(Una mutazion
 compila sotto warnings-as-errors e fa girare i test sulla DLL vecchia — falso rosso, visto: la
 condizione va resa opaca a compile time.)*
 
-#### Il ferro, e perché la firma manca
-**L'harness non ha prodotto una verifica utilizzabile, e va detto invece che presentato come tale.**
-La passata è finita **3 FAIL / 4 SKIP**, ma i tre FAIL sono **timeout di budget** (360 s) su una
-macchina entrata nello stato degradato che 12b e 13 documentano: creare un processo costava
-**1,6–15 s** invece di ~25 ms, con Defender in cima alla CPU. La prova che non è A4: scenari che
-**non scansionano affatto** — `create-folder`, `intra-collision-blocked` — sono passati da 0,7 s a
-65 s e 44 s nella stessa passata. La radice era anche auto-inflitta: le build andate in timeout
-avevano lasciato **13 processi `dotnet`** vivi a contendersi la macchina; ucciderli ha riportato lo
-spawn da 3 000 ms a ~600.
+#### Il ferro — la firma, presa il giorno dopo a macchina sana (2026-09-03, sessione elevata)
+**59 scenari, 59 PASS, 0 FAIL, 0 SKIP**, due passate identiche. I due scenari USN escono **PASS su
+tutte e tre le coppie**, dove il primo tentativo li aveva visti **SKIP**: è la firma che il paragrafo
+qui sotto dichiarava mancante, e la modifica che provano è il gate degli scenari che ora chiede il
+**cursore** invece del motore. `appsettings.json` rimesso byte-identico (sha256 `653f5990…`).
 
-**Un dato dal ferro però c'è, ed è quello che conta di più**: le note di SKIP riportano
-*«indexed by the Enumeration engine (cursor=35242760744)»*. Sul giornale **vero**, con l'ibrido, la
-camminata è per enumerazione **e il cursore viene scritto**. Gli SKIP nascono dal gate vecchio degli
-scenari, che chiedeva «quale motore» — cioè, dopo A4, avrebbero saltato proprio il caso nuovo
-chiamandolo un fatto della macchina («SKIP travestiti da passata pulita»). Il gate ora chiede il
-**cursore**, come il prodotto; è la modifica che la prossima passata deve provare.
+**La riga che vale tutto il giro**, sei volte nel log (2 scenari × 3 coppie):
+
+```
+walked by the Enumeration engine; journal cursor after the scan: usn=126002016 id=134275375767659020
+delta: Applied (7 journal record(s)) — indexed=2 absent=1 excluded=0 dirs=0 unplaced=0
+```
+
+Sul giornale **vero**, l'ibrido cammina il **perimetro** per enumerazione **e prende il cursore**; poi
+il delta **colloca** i record contro le righe che quella camminata ha scritto — `indexed=2`,
+`unplaced=0`. È esattamente il punto in cui la sonda pre-19 rispondeva `indexed=0 unresolved=1`, cioè
+il guasto che tutto questo giro esiste per evitare. Gli id di giornale sono quelli veri della
+macchina (`134275375767659020` è `D:`, lo stesso che il deploy di 14d aveva registrato).
+
+**E il contrasto va letto con la grafia nuova**: `falling back to enumeration` compare **0 volte**,
+che qui significa «il giornale è stato aperto davvero» — non più «il motore scelto è l'USN», perché
+dopo A4 la camminata per enumerazione **è** la strada giusta quando il root non è la radice del
+volume. La prova che l'USN c'è sono il cursore letto e il delta applicato, non l'assenza del
+fallback.
+
+**Il primo tentativo, e perché non contava.** Era finito **3 FAIL / 4 SKIP**, ma i tre FAIL erano
+**timeout di budget** (360 s) su una macchina entrata nello stato degradato che 12b e 13 documentano:
+creare un processo costava **1,6–15 s** invece di ~25 ms. La prova che non fosse A4: scenari che
+**non scansionano affatto** — `create-folder`, `intra-collision-blocked` — erano passati da 0,7 s a
+65 s e 44 s nella stessa passata. La radice era anche auto-inflitta: le build andate in timeout
+avevano lasciato **13 processi `dotnet`** vivi. A macchina sana (spawn ~66 ms, zero `dotnet` orfani)
+gli stessi scenari costano **0,6–5,4 s** con il budget di default a 180 s.
+
+#### Verifica finale
+Suite intera rieseguita **da elevato** dopo gli ultimi due ritocchi (gate dell'harness e controllo di
+limiti sul parsing unsafe): **971/971 verdi** in 1 m 37 s, zero rossi — quindi anche i due test
+temporali noti, e i `NtfsUsnReaderTests` che senza elevazione ritornano a vuoto. Build pulita,
+warnings-as-errors.
 
 #### Limiti noti e accettati
-- **Nessuna firma sul ferro per A4**: l'harness va rieseguito a macchina sana, e i due scenari USN
-  devono uscire **PASS** invece che SKIP.
-- **La suite intera non è stata rieseguita verde dopo gli ultimi due ritocchi** (gate dell'harness e
-  controllo di limiti sul parsing unsafe): la build è pulita e i **17** test dell'enumeratore e del
-  motore ibrido sono verdi, ma il tentativo di passata completa è caduto nella degradazione. I due
-  rossi visti nell'ultima passata completa sono i due test temporali noti, **verdi in isolamento**.
 - **Il servizio installato non è aggiornato** con questo giro.
 - **Nessuna migration**: distribuirlo è una copia di file.
+- **La camminata ibrida non è misurata sul catalogo vero**: i numeri di costo dell'enumerazione con
+  gli id (2 154–2 222 ms su 25 942 voci) restano quelli in-process. Un volume di sistema con i suoi
+  113 831 directory handle non è stato cronometrato.
+- **Gli E2E non sono stati eseguiti** in questa sessione: il loro `globalSetup` si rifiuta di partire
+  da elevato (12a).
 
 ### Deploy di 17 e 18 sul catalogo reale (2026-09-03)
 **Il servizio installato eredita l'esclusione alle cartelle, e pagina dove §7 lo prometteva.**
