@@ -288,6 +288,78 @@ public sealed class HybridScanEngineTests
         files.Single(f => f.Name == "link.jpg").UsnFileRef.Should().BeNull();
     }
 
+    /// <summary>
+    /// The hole the code review traced, checked instead of taken on trust: the path that won the
+    /// identity is deleted, its hard-linked sibling survives, and the next scan walks only the
+    /// survivor — carrying the FRN the DELETED path's row still holds.
+    /// </summary>
+    [Fact]
+    public async Task Deleting_the_path_that_held_the_identity()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, "Photos");
+
+        await ScanAsync(harness, volumeId, new SnapshotCountingUsnReader(), HardLinkEnumerator());
+
+        int keptId, ghostId;
+        await using (var read = harness.CreateContext())
+        {
+            keptId = (await read.Files.SingleAsync(f => f.Name == "a.jpg")).Id;
+            ghostId = (await read.Files.SingleAsync(f => f.Name == "link.jpg")).Id;
+        }
+
+        // a.jpg unlinked on disk; link.jpg is still the same file, so it still reports FRN 200.
+        var survivorOnly = new FakeDirectoryEnumerator([
+            new(@"Photos\Raw", "Raw", true, 0, T, T, FileAttributes.Directory, 110UL),
+            new(@"Photos\link.jpg", "link.jpg", false, 10, T, T, FileAttributes.Normal, 200UL),
+            new(@"Photos\Raw\c.jpg", "c.jpg", false, 30, T, T, FileAttributes.Normal, 202UL),
+        ])
+        {
+            FileIdsByPath = new Dictionary<string, ulong> { ["Photos"] = 100UL },
+        };
+
+        await ScanAsync(harness, volumeId, new SnapshotCountingUsnReader(), survivorOnly);
+
+        await using var after = harness.CreateContext();
+        var rows = await after.Files.Where(f => f.Name == "link.jpg").OrderBy(f => f.Id).ToListAsync();
+
+        rows.Should().HaveCount(2, "documenting what actually happens, not blessing it");
+        rows.Single(f => f.Id == keptId).IsPresent.Should().BeTrue();
+        rows.Single(f => f.Id == ghostId).IsPresent.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// The contrast that says whose fault the hole is. Same disk, same deletion, but the walk
+    /// carries no identity at all — which is how EVERY enumeration scan behaved before the hybrid.
+    /// Here the merge matches by path, the survivor keeps its own row and the deleted path gets
+    /// the absence, which is the right answer. So the ghost above is not caused by hard links: it
+    /// is caused by an identity that outlives the path it was granted to.
+    /// </summary>
+    [Fact]
+    public async Task Without_identities_the_same_deletion_resolves_correctly()
+    {
+        using var harness = new SqliteInMemoryContext();
+        var volumeId = Seed(harness, "Photos");
+
+        var pair = new FakeDirectoryEnumerator([
+            new(@"Photos\Raw", "Raw", true, 0, T, T, FileAttributes.Directory, null),
+            new(@"Photos\a.jpg", "a.jpg", false, 10, T, T, FileAttributes.Normal, null),
+            new(@"Photos\link.jpg", "link.jpg", false, 10, T, T, FileAttributes.Normal, null),
+        ]);
+        var survivorOnly = new FakeDirectoryEnumerator([
+            new(@"Photos\Raw", "Raw", true, 0, T, T, FileAttributes.Directory, null),
+            new(@"Photos\link.jpg", "link.jpg", false, 10, T, T, FileAttributes.Normal, null),
+        ]);
+
+        await ScanAsync(harness, volumeId, new SnapshotCountingUsnReader(), pair);
+        await ScanAsync(harness, volumeId, new SnapshotCountingUsnReader(), survivorOnly);
+
+        await using var after = harness.CreateContext();
+        after.Files.Where(f => f.Name == "link.jpg").Should().ContainSingle();
+        (await after.Files.SingleAsync(f => f.Name == "link.jpg")).IsPresent.Should().BeTrue();
+        (await after.Files.SingleAsync(f => f.Name == "a.jpg")).IsPresent.Should().BeFalse();
+    }
+
     /// <summary>Photos/ with a.jpg and link.jpg as two names for the SAME file (one FRN).</summary>
     private static FakeDirectoryEnumerator HardLinkEnumerator() =>
         new([

@@ -83,8 +83,13 @@ public sealed class ScanService
         var mountRoot = probed.MountPoints.FirstOrDefault()
             ?? throw new InvalidOperationException($"Volume {volume.VolumeGuid} has no mount point.");
 
+        // Ordered because the walk order decides something durable: which of two hard-linked paths
+        // keeps the file reference (see EnumerateRaw). Unordered, that claim would be whatever the
+        // provider happened to return, and could move between scans without anything changing on
+        // disk — the walk order is part of the contract now, so it is stated rather than assumed.
         var roots = await _db.WatchedRoots
             .Where(r => r.VolumeId == volumeId && r.IsActive)
+            .OrderBy(r => r.Id)
             .ToListAsync(ct);
         if (roots.Count == 0)
         {
@@ -378,6 +383,21 @@ public sealed class ScanService
     /// <c>ulong</c> per distinct file next to the <c>List&lt;ScanItem&gt;</c> of every entry that
     /// the caller already holds. Applied to both engines, so the guarantee is made here rather
     /// than borrowed from what a reader happens to do upstream.</para>
+    ///
+    /// <para><b>KNOWN HOLE — an identity outlives the path it was granted to.</b> Delete the path
+    /// that won the claim while its hard-linked sibling survives, and the next scan walks only the
+    /// survivor, carrying the reference the DELETED path's row still holds. The merge's FRN pass
+    /// matches that row and repoints it onto the survivor's path — where the survivor's own row
+    /// already sits, untouched, and is therefore marked absent. Two rows for one path, one of them
+    /// a permanent ghost no later scan re-matches. Pinned by
+    /// <c>HybridScanEngineTests.Deleting_the_path_that_held_the_identity</c>, and the sibling test
+    /// shows the pre-hybrid walk (no identities at all) resolving the same deletion correctly —
+    /// so the ghost is not caused by hard links, it is caused by the claim.</para>
+    ///
+    /// <para>Not closed here because the obvious fix reopens the crash: preferring the path match
+    /// when another row already occupies it hands the reference to that row while the first still
+    /// carries it, which is the UNIQUE violation again. Closing it properly is a decision about
+    /// identity versus path inside the merge (§6), not a guard in the walk.</para>
     /// </summary>
     private IEnumerable<ScanItem> EnumerateRaw(
         Volume volume, string mountRoot, List<WatchedRoot> roots, CancellationToken ct)

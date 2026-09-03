@@ -113,8 +113,11 @@ Tests         → Contracts, Data, Platform, Business, Host, HardwareSmoke, Pool
   `Platform/UsnPathResolver` (ricostruzione del path da un FRN di padre), portato
   qui allo step 14d quando lo stesso algoritmo è servito allo snapshot completo e
   al delta incrementale. Non dipendono da nulla: solo tipi BCL, mai un'entità.
-- **Tutta** la P/Invoke vive in `Platform`, che **implementa** le port interface
-  definite in `Contracts`. `Business` dipende solo da `Contracts` + `Data`
+- **Tutta** la P/Invoke di **prodotto** vive in `Platform`, che **implementa** le port
+  interface definite in `Contracts`. *(Unica eccezione, dallo step 20 e dichiarata:
+  `HardwareSmoke/Scenarios/HardLinkIdentityScenario` chiama `CreateHardLinkW` da sé. Il
+  prodotto non crea mai un hard link — solo un collaudo deve — e metterlo dietro la port
+  allargherebbe la superficie della piattaforma per il comodo di un test.)* `Business` dipende solo da `Contracts` + `Data`
   (mai da `Platform`): resta `net10.0` puro, non vede chiamate native, è
   testabile con mock. `Host` wira le implementazioni `Platform` in DI.
 - I pezzi legati a SQLite (FTS5, quirk UPSERT del bulk) sono isolati dietro
@@ -826,6 +829,12 @@ copia di file, e resta una decisione dell'utente.
    seguito da `delta: Applied … indexed=2 unplaced=0`. Vedi il paragrafo dello step.
 5. **Classificazione Cloud non affidabile** (§11, debito datato allo step 6.7). Coperto
    dall'esclusione manuale, che funziona.
+5b. **Un'identità sopravvive al path a cui è stata concessa** *(aperta allo step 20)*. Cancellato
+   il path che ha vinto il FRN mentre il gemello hard-linked resta, la scansione successiva lascia
+   **due righe per un path**, una delle quali fantasma e assente per sempre; il delta USN fa la
+   stessa ri-puntatura, e lì la riga vacante non viene nemmeno marcata assente. Fissata da due
+   test e da un `KNOWN HOLE`, **è una regressione rispetto al 18** in quello scenario. La fix ovvia
+   riapre il crash del 20: chiuderla è una decisione su identità-contro-path dentro il merge (§6).
 6. ~~**Un job ripreso da un checkpoint non ri-controlla lo spazio**~~ — **chiuso allo step 15b**
    (2026-08-27). Chiedeva quanto **manca**, non la domanda intera: vedi il paragrafo dello step.
 7. **C32** — la risposta di enqueue porta `SourceVolumeLabel`/`TargetVolumeLabel` null
@@ -1163,8 +1172,37 @@ commetteva. Scopata ai **file**: l'indice unico è sui file, e il FRN di una dir
 il delta risolve i padri (NTFS non ha hard link di directory, quindi azzerarlo sarebbe una perdita
 senza niente in cambio). Il commento del merge ora dice dove sta la garanzia, invece di dedurla.
 
+#### Il buco che resta, trovato dalla code review e verificato invece che creduto
+**Un'identità sopravvive al path a cui è stata concessa.** Cancella il path che ha vinto la
+rivendicazione mentre il suo gemello hard-linked resta: la scansione successiva cammina solo il
+superstite, portando il riferimento che la riga del path **cancellato** tiene ancora. Il pass per
+FRN aggancia quella riga e la ri-punta sul path del superstite — dove la riga *propria* del
+superstite già sta, intatta, e viene quindi marcata **assente**. Due righe per un path, una delle
+quali è un fantasma permanente che nessuna scansione successiva ri-aggancia.
+
+**Verificato in tutti e due i versi, non dedotto**: un test riproduce la sequenza e trova le due
+righe; il suo gemello fa la **stessa** cancellazione con una camminata **senza identità** — cioè
+com'era ogni scansione a enumerazione prima del 19 — e lì il merge aggancia per path, il superstite
+tiene la propria riga e l'assenza va al path cancellato, che è la risposta giusta. Quindi il
+fantasma non è colpa degli hard link: è colpa della rivendicazione, ed **è una regressione rispetto
+al 18** in quello scenario.
+
+**Non chiuso qui perché la fix ovvia riapre il crash**: preferire il match per path quando un'altra
+riga occupa già quel path consegna il riferimento a quella riga mentre la prima lo porta ancora —
+la violazione UNIQUE di nuovo. Chiuderlo è una decisione su **identità contro path dentro il
+merge** (§6), non una guardia nella camminata. Fissato da due test — *«fissato, non benedetto»*,
+come 11a — e da un `KNOWN HOLE` accanto a `EnumerateRaw`.
+
+**Lo stesso meccanismo raggiunge il delta USN**, e lì è più silenzioso: `Coalesce` deduplica i
+record per FRN, quindi il crash non ci arriva mai, ma un record che nomina un nome diverso dello
+stesso file ri-punta la riga esattamente allo stesso modo — e il delta **non ha un pass di
+assenza** (§6, 14d: «non nominato» ≠ «non c'è»), quindi la riga vacante resta lì con
+`IsPresent = 1` fino alla scansione completa successiva. Prima del 19 era irraggiungibile: il gate
+del delta ammetteva solo volumi le cui righe portavano i FRN, cioè solo quelli camminati dall'MFT,
+dove P1 collassa il gruppo a una riga sola e non esiste un fratello da orfanare.
+
 #### Verifica
-xUnit **973 verdi** (+2), build pulita warnings-as-errors in Debug e Release.
+xUnit **975 verdi** (+4), build pulita warnings-as-errors in Debug e Release.
 **RED dimostrato due volte, mai affermato**: in-process i due test nuovi cadono con l'eccezione
 **esatta** della produzione (e lì esplode il `BulkInsertFilesAsync` del primo scan, dove in
 produzione era l'`InsertUnmatchedAsync` del merge — due porte, stesso difetto), con i 6 test
