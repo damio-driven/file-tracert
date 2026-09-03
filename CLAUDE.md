@@ -763,10 +763,8 @@ decisioni di perimetro che non raggiungevano le righe già a catalogo.
 **Non c'è lavoro obbligatorio aperto**: tutto ciò che segue è debito datato,
 decisione di prodotto o fase 2.
 
-**Una cosa sola resta dovuta allo step 16**: una passata **elevata** dell'harness, che trasforma i
-6 SKIP in PASS e firma A3 sul giornale USN vero. Senza elevazione il volume non si apre e la
-scansione ripiega sull'enumerazione, quindi quegli scenari fanno SKIP invece di passare per la
-strada sbagliata.
+Lo step 16 è **completo, harness elevato incluso**: 59/59 PASS sul giornale USN vero, quindi anche
+A3 è firmata sul ferro e non solo in-process.
 
 **Il servizio installato è aggiornato a 15b** (2026-09-02) — vedi «Deploy di 15b» qui sotto.
 
@@ -1014,19 +1012,27 @@ quelle erano la *correzione* di un'affermazione sbagliata, scritta senza eseguir
 descriveva. Da lì la regola, che vale oltre questo step: **prima di scrivere cosa produce una
 mutazione, eseguila.**
 
-**Sul ferro** (`D:\Collaudo\A` ↔ `C:\Collaudo\B`), due passate identiche: **59 scenari, 53 PASS,
-0 FAIL, 6 SKIP** (86,4 s e 94,5 s). `appsettings.json` rimesso byte-identico (sha256
-`653f5990…`). La metà **A2 è provata su file veri** su tutte e tre le coppie: aggiunto il segmento
-`vault` → `included=4 excluded=1 needsScan=False`; tolto → `included=5 excluded=0 needsScan=True`.
+**Sul ferro** (`D:\Collaudo\A` ↔ `C:\Collaudo\B`). Prima **non elevato**, due passate identiche:
+59 scenari, 53 PASS, 0 FAIL, **6 SKIP** — i due scenari USN su tre coppie, che senza privilegi
+fanno SKIP invece di passare per la strada a enumerazione. Poi **elevato**, due passate identiche:
+**59 scenari, 59 PASS, 0 FAIL, 0 SKIP**, e la prova che il motore sia quello giusto è il
+**contrasto**: `falling back to enumeration` compare **0 volte** nel log elevato, dove nella
+passata non elevata c'erano i `Win32Exception (5)` su ogni volume. `appsettings.json` rimesso
+byte-identico (sha256 `653f5990…`).
+
+La metà **A2 è provata su file veri** su tutte e tre le coppie: aggiunto il segmento `vault` →
+`included=4 excluded=1 needsScan=False`; tolto → `included=5 excluded=0 needsScan=True`.
 **RED dimostrato sul ferro** rimettendo il prodotto pre-16: 3 FAIL esattamente sulle tre
-asserzioni A2, mentre presenza, riammissione e fratello restavano verdi.
+asserzioni A2, mentre presenza, riammissione e fratello restavano verdi. E per A3 il RED è stato
+dimostrato disattivando il guard di SKIP e lasciando girare il corpo sulla strada a enumerazione:
+**3 FAIL** esattamente sulle asserzioni A3, cioè la silhouette del difetto — righe dentro la
+cartella nascosta ancora `IsIncluded = 1` con la causa non scritta.
 
 #### Limiti noti e accettati
-- **A3 non è provata sul giornale VERO**: i 6 SKIP sono `usn-incremental-sync` ×3 e
-  `usn-hidden-subtree` ×3, tutti per **mancata elevazione** — senza privilegi il volume non si apre
-  e ogni scansione ripiega sull'enumerazione. Lo scenario **fa SKIP invece di passare**, che è la
-  cosa giusta: un PASS lì proverebbe la strada sbagliata. **Serve una passata elevata dell'harness
-  per firmare A3.** In-process la convergenza è provata da 24 casi.
+- **`usn-hidden-subtree` prova A3 su una fixture, non su un volume vivo**: la cartella diventa
+  nascosta e nient'altro cambia, che è il caso pulito. Un tick reale su un volume di sistema porta
+  anche traffico estraneo, ed è lì che vivono i tre residui qui sotto. In-process la convergenza è
+  provata da 24 casi; sul ferro da 3 coppie, col giornale vero.
 - **Il traffico di scrittura normale disfa l'esclusione degli attributi**: un file dentro una
   cartella nascosta, toccato da un delta **successivo** che non nomina la cartella, supera il
   filtro coi **propri** attributi puliti e il merge lo riscrive `IsIncluded = 1` azzerando le
