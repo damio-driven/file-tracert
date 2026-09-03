@@ -775,8 +775,9 @@ decisioni di perimetro che non raggiungevano le righe già a catalogo; il **17**
 lo prometteva (sottocartelle del Catalogo, picker, albero del Setup), con la passata E2E tornata a
 girare dopo otto step; il **18** l'esclusione che si eredita alle cartelle (i residui 1 e 2 del 16);
 il **19** il motore ibrido (voce A4), cioè la scansione che cammina il perimetro e prende comunque
-il cursore USN. **Non c'è lavoro obbligatorio aperto**: tutto ciò che segue è debito datato,
-decisione di prodotto o fase 2.
+il cursore USN; il **20** la regressione che il 19 aveva distribuito — un file con due nomi (hard
+link) faceva fallire la scansione sull'indice unico dei FRN. **Non c'è lavoro obbligatorio aperto**:
+tutto ciò che segue è debito datato, decisione di prodotto o fase 2.
 
 Gli step 16, **18** e **19** sono **completi, harness elevato incluso**: 59/59 PASS sul giornale USN
 vero, quindi A3, l'eredità alle cartelle e il motore ibrido sono firmati sul ferro e non solo
@@ -829,8 +830,15 @@ copia di file, e resta una decisione dell'utente.
    (2026-08-27). Chiedeva quanto **manca**, non la domanda intera: vedi il paragrafo dello step.
 7. **C32** — la risposta di enqueue porta `SourceVolumeLabel`/`TargetVolumeLabel` null
    (quel percorso non fa `Include` dei volumi). Innocuo: il picker la scarta.
-8. **P1** — hard link nello snapshot MFT: `nodes[frn]` è last-write-wins, quindi
-   sopravvive un solo path. Mai indagato.
+8. **P1** — hard link nello snapshot MFT: `nodes[frn]` è last-write-wins, quindi sopravvive un
+   solo path. **Indagato allo step 20**, che è quando ha smesso di essere teorico: sul perimetro
+   vero di `C:` ci sono **153 FRN rivendicati da più di un path**, fino a 7 (Git for Windows, il
+   launcher di Python). Il 20 chiude la metà che sanguinava — la camminata a **enumerazione** ora
+   indicizza **tutti** i path e ne fa portare l'identità a **uno**, invece di far fallire lo scan
+   sull'indice unico. **Resta aperta la metà MFT**: quando è il dump dell'MFT a camminare (cioè
+   solo quando un root è la radice del volume, dopo A4), i path in più non arrivano proprio al
+   catalogo. Chiuderla vuol dire non collassare più `nodes[frn]`, cioè cambiare la struttura con
+   cui lo snapshot ricostruisce i path.
 
 ### B. Decisioni di prodotto, non difetti *(vedi «Cosa resta all'umano»)*
 - ~~**Paging delle sottocartelle del Catalogo**~~ — **chiuso allo step 17** (2026-09-03), insieme
@@ -886,8 +894,8 @@ vero · **14a** filtro categoria della Ricerca · **14b** annullabilità delle q
 brief · **15a** l'operazione Copy · **15b** la ripresa che ricontrolla lo spazio e la corsa di
 Volumi · **16** le decisioni di perimetro che raggiungono le righe già a catalogo (la quarta causa
 di esclusione, e il sottoalbero che il delta esclude) · **17** il paging dove §7 lo prometteva ·
-**18** l'esclusione che si eredita alle cartelle · **19** il motore ibrido (A4). I finding della
-review del 2026-07-12 stanno in
+**18** l'esclusione che si eredita alle cartelle · **19** il motore ibrido (A4) · **20** un file con
+due nomi. I finding della review del 2026-07-12 stanno in
 `CODE-REVIEW-HANDOFF.md`, che porta in cima il proprio stato aggiornato.
 
 ### Fatto nello step 18 (2026-09-03, commit `0ba920a`…`2be8df6`)
@@ -1098,6 +1106,78 @@ warnings-as-errors.
   113 831 directory handle non è stato cronometrato.
 - **Gli E2E non sono stati eseguiti** in questa sessione: il loro `globalSetup` si rifiuta di partire
   da elevato (12a).
+
+### Fatto nello step 20 (2026-09-04)
+**Un file può avere due nomi, e il catalogo deve reggerlo.** È la regressione che lo step 19 ha
+distribuito e che il catalogo vero ha trovato **la sera stessa**, alla prima ri-scansione di `C:`:
+
+```
+SQLite Error 19: 'UNIQUE constraint failed: Files.VolumeId, Files.UsnFileRef'
+  at BulkIndexWriter.InsertUnmatchedAsync (BulkIndexWriter.ScanMerge.cs:448)
+```
+
+#### Il difetto, e perché era invisibile fino al 19
+Una riga `Files` è un **path**; NTFS ammette molti path per lo stesso file. Ma
+`(VolumeId, UsnFileRef)` è **unique** (§6), quindi al più una riga può portare l'identità. Il merge
+lo dava per garantito, e il commento di classe lo scriveva a parole:
+
+> *No duplicate-FRN hazard. […] impossible, because that staged row would have been matched by the
+> FRN pass first.*
+
+Quel ragionamento confronta ogni riga in staging **contro il catalogo**, e mai **staging contro
+staging**. Due righe che portano lo **stesso** riferimento mancano entrambe il pass per FRN,
+mancano entrambe quello per path, e vengono **inserite entrambe**. Reggeva per caso finché i FRN
+li produceva solo lo snapshot MFT, che tiene **un path per FRN** — cioè **P1**, che sembrava un
+difetto innocuo e invece era ciò che teneva in piedi l'invariante di un altro file. Lo step 19 ha
+dato il riferimento anche alla camminata a enumerazione, che i path li riporta tutti.
+
+**Gli hard link non sono esotici, ed è questo il punto.** Sonda con l'enumeratore vero del prodotto
+sul perimetro vero di `C:` (`Git`, `PROGETTI`, `Users\Damio`):
+
+| | |
+|---|---|
+| file camminati | 1 542 773 |
+| con FRN | 1 542 478 |
+| **FRN distinti** | **1 542 315** |
+| **FRN rivendicati da più di un path** | **153**, fino a **7 path** per file |
+
+Git for Windows spedisce ogni strumento di `libexec\git-core` come link al gemello in `bin`; il
+launcher di Python fa lo stesso; e ci sono perfino i file di task di Claude Code.
+
+#### La fix, e le tre strade non prese
+`ScanService.EnumerateRaw` diventa l'unico posto che rende il riferimento una **rivendicazione che
+al più un path per volume detiene**: il primo path camminato la tiene, gli altri sono righe che non
+ne portano nessuna — cioè **esattamente come si comportava ogni riga indicizzata per enumerazione
+prima del 19**. Nessun path viene perso e nessuna riga perde qualcosa che aveva.
+
+- **Non** collassando i path: quello *è* P1, e butta via un file che l'utente ha.
+- **Non** allentando l'indice: identità è ciò con cui il delta e il merge risolvono le righe.
+- **Non** deduplicando dentro il merge: due hard link finiscono in **lotti diversi** con la stessa
+  facilità con cui finiscono nello stesso, quindi una guardia per lotto lascerebbe il crash dov'è.
+  L'insieme è quindi per **volume**, e costa un `ulong` per file distinto accanto alla
+  `List<ScanItem>` di **ogni** voce che il chiamante già tiene in memoria.
+
+Applicata a **entrambi** i motori, così la garanzia è **fatta lì** invece che presa in prestito da
+ciò che un reader a monte fa per conto suo — che è precisamente l'errore che il commento vecchio
+commetteva. Scopata ai **file**: l'indice unico è sui file, e il FRN di una directory è ciò con cui
+il delta risolve i padri (NTFS non ha hard link di directory, quindi azzerarlo sarebbe una perdita
+senza niente in cambio). Il commento del merge ora dice dove sta la garanzia, invece di dedurla.
+
+#### Verifica
+xUnit **973 verdi** (+2), build pulita warnings-as-errors in Debug e Release.
+**RED dimostrato due volte, mai affermato**: in-process i due test nuovi cadono con l'eccezione
+**esatta** della produzione (e lì esplode il `BulkInsertFilesAsync` del primo scan, dove in
+produzione era l'`InsertUnmatchedAsync` del merge — due porte, stesso difetto), con i 6 test
+esistenti dell'ibrido verdi intorno; **sul ferro**, mutando via la fix, `hard-link-identity` esce
+**3 FAIL su 3 coppie** con la stessa riga di SQLite.
+
+**Harness completo, elevato: 62 scenari, 62 PASS, 0 FAIL, 0 SKIP** (59 più le tre coppie di
+`hard-link-identity`), `falling back to enumeration` **0 volte**. Lo scenario deve girare sul ferro
+perché la cosa sotto esame è se il volume consegna **davvero** lo stesso riferimento per due path
+diversi: un enumeratore finto ripeterebbe l'assunzione invece di provarla. Asserisce il contratto,
+non l'assenza del crash — **entrambi** i path restano indicizzati, **uno solo** porta l'identità, e
+una ri-scansione non perde una riga né sposta la rivendicazione. `appsettings.json` rimesso
+byte-identico (sha256 `653f5990…`).
 
 ### Deploy di 17 e 18 sul catalogo reale (2026-09-03)
 **Il servizio installato eredita l'esclusione alle cartelle, e pagina dove §7 lo prometteva.**
