@@ -502,9 +502,14 @@ UI): `Id` · `TimestampUtc` · `Severity` (Info|Warning|Error) · `Source` ·
 
 - **Paging/sort/filtro lato server ovunque** (milioni di righe). Pattern condiviso
   `PagedRequest` / `PagedResult<T>` (skip/take o cursore, `sortBy`).
-  **Un'eccezione nota, non chiusa**: la lista delle **sottocartelle** del Catalogo
-  non è paginata (`CatalogChildrenDto`). Chiuderla è un cambio di contratto + UI,
-  quindi una decisione di prodotto — vedi la roadmap.
+  L'eccezione che c'era (E5, le **sottocartelle** del Catalogo) è **chiusa allo step 17**:
+  `CatalogChildrenDto.Directories` è un `PagedResult` con `dirSkip`/`dirTake` **propri**,
+  indipendenti da `skip`/`take` dei file — una cartella con 800 sottocartelle e 3 file non deve
+  pagare la seconda lista per la prima, e ogni cartella elencata costa due sottoquery di
+  conteggio, quindi la pagina **è** il tetto su quel lavoro. Anche le cartelle del **disco** del
+  Setup (`GET /volumes/{id}/folders`) sono un `PagedResult`. In UI le cartelle si **appendono**
+  («Mostra altre N cartelle»), non si sfogliano: in un browser ad albero perdere le cartelle già
+  viste per vederne altre è un errore; i file tengono il loro pager precedente/successiva.
 - **Endpoint preview/dry-run**: `POST /operations/preview` esegue la logica del
   ledger e ritorna la fattibilità **senza creare il job** (riusa il motore
   dell'enqueue). Serve alla UI per dire "ci sta / non ci sta / stima offline"
@@ -759,14 +764,31 @@ Il prodotto è **installato come servizio** e gira su un catalogo vero da 742 03
 (step 13). Gli step **14a–14e** hanno pagato i difetti che quel catalogo ha reso
 visibili. Lo step **15a** è il primo lavoro di **fase 2**: l'operazione **Copy**; il **15b** ha chiuso i
 due difetti che l'utente ha scelto per primi (voci A1 e A6); il **16** le voci **A2 e A3**, cioè le
-decisioni di perimetro che non raggiungevano le righe già a catalogo.
+decisioni di perimetro che non raggiungevano le righe già a catalogo; il **17** il paging dove §7
+lo prometteva (sottocartelle del Catalogo, picker, albero del Setup), con la passata E2E tornata a
+girare dopo otto step.
 **Non c'è lavoro obbligatorio aperto**: tutto ciò che segue è debito datato,
 decisione di prodotto o fase 2.
 
 Lo step 16 è **completo, harness elevato incluso**: 59/59 PASS sul giornale USN vero, quindi anche
 A3 è firmata sul ferro e non solo in-process.
 
-**Il servizio installato è aggiornato a 15b** (2026-09-02) — vedi «Deploy di 15b» qui sotto.
+**Il servizio installato è aggiornato a 16** (2026-09-03) — vedi «Deploy di 16» qui sotto. Il
+**17** non è distribuito: nessuna migration, quindi è una copia di file, e resta una decisione
+dell'utente.
+
+**Decisioni di prodotto prese il 2026-09-03**, da eseguire nei prossimi step:
+- **A4 → motore ibrido.** Prima scansione per **enumerazione** dei soli root (veloce, limitata al
+  perimetro), ma il cursore USN (`NextUsn` + `UsnJournalId`) si prende **prima** della camminata e
+  si scrive a fine scan: l'incrementale parte lo stesso, e ciò che cambia durante la camminata lo
+  riporta il primo delta (il merge è idempotente). Niente euristica «più veloce oggi»: la
+  domanda vera era «quel volume avrà i delta?», e la risposta è sì per costruzione. Prova sul
+  giornale vero in sessione elevata.
+- **L'esclusione si eredita alle cartelle figlie.** I residui 1 e 2 dello step 16 (il traffico di
+  scrittura che disfa l'esclusione per attributi, il delta che fa crescere il catalogo dentro un
+  sottoalbero escluso) si chiudono con **flag di causa su `Directories`**, scritti da scan e delta
+  e letti dal delta sul padre. Non tocca `IsPresent` né la visibilità, quindi «una cartella che
+  esiste esiste» (11g) resta vero. Migration additiva, passo a sé.
 
 ### A. Difetti veri, in ordine di fastidio *(nessuno è MVP)*
 1. ~~**La corsa dell'auto-selezione su Volumi**~~ — **chiusa allo step 15b** (2026-08-27): lo
@@ -785,8 +807,10 @@ A3 è firmata sul ferro e non solo in-process.
    cartella che passa il filtro e non ha riga è indistinguibile da una cartella nuova, e i file
    dentro non generano record propri. Serve una scansione.
 4. **L'USN perde sui sotto-alberi** — `FSCTL_ENUM_USN_DATA` cammina tutta l'MFT
-   ignorando il perimetro (misurato in 14d). Scegliere il motore per rapporto fra
-   sotto-albero e MFT è il candidato ovvio.
+   ignorando il perimetro (misurato in 14d). **Decisione presa il 2026-09-03: motore ibrido**
+   (enumerazione dei root per la prima scansione, cursore USN preso prima della camminata), vedi
+   «Decisioni di prodotto» in cima alla roadmap. Un'euristica per rapporto sotto-albero/MFT
+   avrebbe spento l'incrementale su `D:`, l'unico volume che ce l'ha.
 5. **Classificazione Cloud non affidabile** (§11, debito datato allo step 6.7). Coperto
    dall'esclusione manuale, che funziona.
 6. ~~**Un job ripreso da un checkpoint non ri-controlla lo spazio**~~ — **chiuso allo step 15b**
@@ -797,8 +821,8 @@ A3 è firmata sul ferro e non solo in-process.
    sopravvive un solo path. Mai indagato.
 
 ### B. Decisioni di prodotto, non difetti *(vedi «Cosa resta all'umano»)*
-- **Paging delle sottocartelle del Catalogo** — oggi illimitato (E5, §7). Chiuderlo
-  cambia `CatalogChildrenDto` e la schermata.
+- ~~**Paging delle sottocartelle del Catalogo**~~ — **chiuso allo step 17** (2026-09-03), insieme
+  al picker e all'albero del Setup, che erano le altre due liste senza tetto.
 - **Filtro dimensione in Ricerca** — `SizeBytesMin/Max` esistono nell'API e nello store,
   non hanno un controllo a video (§8).
 - ~~**Accendere l'incrementale su `C:`**~~ — **decisione presa dall'utente il 2026-08-27: NO.**
@@ -828,7 +852,9 @@ A3 è firmata sul ferro e non solo in-process.
   un job può restare parcheggiato per un'operazione eseguibile finché non si fa
   «Riprova». Riordinarli tocca la macchina della coda.
 - **Gli E2E non girano da elevato** (per scelta, 12a), quindi non provano il percorso
-  USN; l'harness sì, dal collaudo del 2026-08-21.
+  USN; l'harness sì, dal collaudo del 2026-08-21. **Ultima passata: 2026-09-03, non elevata,
+  25/25 in 4,7 min** — la prima dal 21/08; i due rossi della prima passata del giorno erano un
+  selettore rimasto all'etichetta del 12b («Accoda →», rinominata dal 15a), non il prodotto.
 
 ### D. Fase 2
 Il §11, nell'ordine che l'utente deciderà.
@@ -847,8 +873,64 @@ vero · **14a** filtro categoria della Ricerca · **14b** annullabilità delle q
 **14c** le due schermate Volumi · **14d** l'USN incrementale · **14e** l'allineamento del
 brief · **15a** l'operazione Copy · **15b** la ripresa che ricontrolla lo spazio e la corsa di
 Volumi · **16** le decisioni di perimetro che raggiungono le righe già a catalogo (la quarta causa
-di esclusione, e il sottoalbero che il delta esclude). I finding della review del 2026-07-12 stanno in
+di esclusione, e il sottoalbero che il delta esclude) · **17** il paging dove §7 lo prometteva. I finding della review del 2026-07-12 stanno in
 `CODE-REVIEW-HANDOFF.md`, che porta in cima il proprio stato aggiornato.
+
+### Fatto nello step 17 (2026-09-03, commit `4166760`…`f7c0cf7`)
+**Il paging arriva dove §7 lo prometteva, e la passata E2E torna a girare.** Decisione di prodotto
+dell'utente («procedi a paginare, anzi, verifica altri punti dove manca»). Nessuna migration.
+
+#### La passata E2E, prima di tutto
+25 test, mai eseguiti dal 21/08 — otto step, fra cui il 15a (che ha cambiato il picker) e il 15b
+(la corsa di Volumi). Prima passata: **23/25**, entrambi i rossi in `projection.spec` su un
+`locator.click` scaduto a 20 s. Causa letta, non ipotizzata: la spec cercava «Accoda →», il 15a
+l'ha rinominato «Accoda spostamento →» / «Accoda copia →» di proposito. L'etichetta vive ora in un
+helper accanto a `pickDestination`; 2/2 sulla spec, poi **25/25** sull'intera suite. La fix 15b su
+Volumi è attraversata e verde. Lancio da Claude Code: `Start-Process cmd /c npm test` con finestra
+nascosta — una console c'è, `stop-host.ps1` si aggancia.
+
+#### La ricognizione (fatta prima di toccare), e la misura
+Tre liste senza tetto: le sottocartelle del Catalogo (E5), il picker Sposta/Copia (stesso
+endpoint) e le cartelle del disco del Setup. Bounded per costruzione e lasciati stare: volumi,
+scansioni, root, batch (500); log, notifiche, coda, ricerca e file già `PagedResult`. Sul catalogo
+vivo, in sola lettura: **845** sottocartelle al massimo in una cartella (tutte `node_modules` /
+`.nuget`), 24 cartelle sopra 200, 0 sopra 1 000. Ogni riga elencata paga **due sottoquery di
+conteggio**, quindi quel listato ne costava 1 690; un archivio foto con cartelle per data ci arriva.
+
+#### Le decisioni
+- **Due assi indipendenti**: `dirSkip`/`dirTake` per le cartelle, `skip`/`take` per i file, stesso
+  `MaxTake` 200. La pagina è il tetto sulle sottoquery.
+- **Le cartelle si appendono, i file si sfogliano.** «Mostra altre N cartelle · M non ancora
+  elencate» sotto la griglia; la stessa riga nel picker e nell'albero del Setup (per path, così
+  espandere una cartella larga non tocca le altre). Un browser ad albero che butta le cartelle già
+  viste per mostrarne altre cinquanta fa perdere il posto all'utente.
+- **Una ricarica conserva ciò che è a schermo**: il cambio pagina dei file e il push
+  `ProjectionChanged` rileggono le cartelle con `take = min(mostrate, 200)`, mai la sola prima
+  pagina. Una pagina che atterra dopo che l'utente ha aperto un'altra cartella viene scartata (la
+  regola del 15b: vince l'ultima richiesta, non l'ultima risposta), con un test che la inietta.
+- **Il Setup**: il browser del disco ordina già per nome; il servizio applica `Skip`/`Take` sopra.
+  L'enumerazione resta intera (ordinare lo richiede), il payload e ciò che l'albero renderizza no.
+- Il walker E2E del recinto chiede **tutte** le pagine: un perimetro verificato sulle prime
+  cinquanta cartelle non sarebbe un perimetro.
+
+#### Verifica
+xUnit **951 verdi** (+2 su 949), Vitest **265** (+9), build backend pulita (warnings-as-errors),
+`ng build` ok (i 4 warning di budget SCSS pre-esistenti, nessuno nuovo), E2E **25/25 in 4,7 min**.
+**RED eseguito, non affermato**: il test backend del Catalogo non compilava contro la forma vecchia;
+mutazioni sull'intera suite — la pagina che *sostituisce* invece di appendersi → **3 rossi** nello
+store del Catalogo (append, push, pagina file), **2** nel picker, **2** nel Setup; `Skip`/`Take`
+tolti dal servizio del Setup → **1 rosso** esatto. E una lezione di misura, costata un falso verde:
+compilare **solo** `Business` e lanciare `dotnet test --no-build` prova la DLL **vecchia** copiata
+nella bin dei test — 9/9 verdi con la mutazione dentro. Con la solution compilata, 1 rosso. Ora sta
+in memoria e in questa riga.
+
+#### Limiti noti e accettati
+- **Harness non eseguito**: nessun file viene toccato diversamente, e la sessione non era elevata.
+- **La Ricerca non è coinvolta**: non elenca cartelle.
+- **Il servizio installato non è aggiornato**: nessuna migration, copia di file, decisione
+  dell'utente.
+- **`invalidate` con più di 200 cartelle mostrate** ricarica le prime 200 e ripropone «Mostra
+  altre»: è il cap del server, ed è onesto dirlo invece di pretendere una pagina da mille.
 
 ### Deploy sul catalogo reale (2026-08-25, build `49619b5`)
 **Il servizio installato è passato da 14a a 14e**, e i numeri di 14c sono ora provati sul
