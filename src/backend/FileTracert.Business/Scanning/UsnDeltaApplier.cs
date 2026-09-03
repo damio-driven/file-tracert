@@ -563,8 +563,12 @@ public sealed class UsnDeltaApplier
             // reason DirectoryMerger asks: a folder the user has told us not to look at is not one
             // any scan would report as gone, so the delta must not either.
             var deletedDirectories = await LoadDirectoriesByFrnAsync(volumeId, deletedFrns, ct);
+            // Step 18: a deleted folder has no ALIVE record, so its hidden parent is never among
+            // the wanted parents and `perimeter` cannot know it — the row itself does. Without the
+            // column check the row came out ABSENT where a scan, which never looks inside a hidden
+            // folder, leaves it present: the two roads diverged on the very mechanism of this step.
             goneDirectoryIds.AddRange(deletedDirectories.Values
-                .Where(d => d.IsPresent && perimeter.Covers(d.Path))
+                .Where(d => d.IsPresent && !d.ExcludedByScan && perimeter.Covers(d.Path))
                 .Select(d => d.Id));
         }
 
@@ -750,9 +754,10 @@ public sealed class UsnDeltaApplier
     /// that is already out; nested or duplicate entries within one tick, where an excluded
     /// directory under another excluded directory covers the same rows a second time; and replay,
     /// a delta re-offered after a crash reaching all of them again. The guard is sound because of
-    /// the columns this pass writes. It writes three — the cause's own flag, <c>IsIncluded</c>, and
-    /// the row's audit stamp — and of those three <c>FileSearchIndex.IndexableSql</c> reads exactly
-    /// one, <c>IsIncluded</c>. So a pass that updated no row cannot have moved anything the index's
+    /// the columns this pass writes on <c>Files</c>. It writes three — the cause's own flag,
+    /// <c>IsIncluded</c>, and the row's audit stamp — and of those three
+    /// <c>FileSearchIndex.IndexableSql</c> reads exactly one, <c>IsIncluded</c> (the fourth write,
+    /// <c>Directories.ExcludedByScan</c> since step 18, is a column the index never reads). So a pass that updated no row cannot have moved anything the index's
     /// membership is a function of, and nothing it could have made stale is stale — which is a
     /// statement about THIS pass, not a promise that nobody else makes the index stale (see the
     /// KNOWN HOLE in <see cref="ReconcileAsync"/>).</para>

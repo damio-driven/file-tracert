@@ -88,6 +88,11 @@ public sealed class ScanPerimeter
     /// (it asks <see cref="SkipVerdict"/> about every catalog directory when it closes, so every
     /// descendant answers for itself); the USN delta does, because it only ever sees what changed
     /// and the rows under a folder that just went hidden did not change (step 16, A3).
+    /// <para>Step 18: without INHERITED entries this is the live view <see cref="ExcludedSubtrees.Roots"/>
+    /// documents; with them it is a filtered COPY, taken once, after the filling is done — the
+    /// single product caller reads it once per tick, at that point, and never mutates through it.
+    /// Inherited entries are left out on purpose: their subtrees were stamped by the tick that saw
+    /// the folder go hidden, and the pass that reads this would re-walk them to write nothing.</para>
     /// </summary>
     public IReadOnlyDictionary<string, PerimeterVerdict> ExcludedSubtreeRoots =>
         _inherited.Count == 0

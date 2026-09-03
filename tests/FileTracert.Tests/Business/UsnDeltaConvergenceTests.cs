@@ -458,6 +458,76 @@ public sealed class UsnDeltaConvergenceTests
     }
 
     /// <summary>
+    /// Review of step 18: the third reader of "is this path under an excluded folder" — the
+    /// deleted-directory branch of ReconcileAsync — asked the perimeter, which knows only what this
+    /// tick excluded plus what the ALIVE records' parents inherit; a deleted folder has no alive
+    /// record, so its hidden parent was never loaded and the row came out ABSENT, where a scan
+    /// (which never looks inside a hidden folder) leaves it present. The column exists; the branch
+    /// reads it now.
+    /// </summary>
+    [Fact]
+    public async Task A_folder_deleted_inside_a_folder_already_hidden_stays_present_as_after_a_scan()
+    {
+        var before = SubtreeWorld();
+        var mid = Replace(before, 140, i => i with { Attributes = FileAttributes.Directory | FileAttributes.Hidden });
+        var after = mid.Where(i => i.Frn != 150 && i.Frn != 206).ToList();
+
+        await AssertConvergesAfterTwoTicksAsync(before, mid, after,
+            [Change(mid, 140, UsnReason.BasicInfoChange | UsnReason.Close)],
+            [Change(mid, 206, UsnReason.FileDelete | UsnReason.Close, usn: 950),
+             Change(mid, 150, UsnReason.FileDelete | UsnReason.Close, usn: 951)],
+            extra: async db =>
+            {
+                var sub = await db.Directories.SingleAsync(d => d.MaterializedPath == @"Photos\Cache\Sub");
+                sub.IsPresent.Should().BeTrue("nobody looked inside the hidden folder — an exclusion is not an absence (§6)");
+                sub.ExcludedByScan.Should().BeTrue();
+                var file = await db.Files.SingleAsync(f => f.UsnFileRef == 206);
+                file.IsPresent.Should().BeTrue();
+                file.IsIncluded.Should().BeFalse();
+            });
+    }
+
+    /// <summary>
+    /// Review of step 18: the delta-side CLEAR, pinned on its own. Not a convergence case, on
+    /// purpose: a scan of the un-hidden world walks into the folder and re-includes its files,
+    /// while the delta only sees the folder's record — the files stay excluded until a scan, which
+    /// is the declared limit of 11g/18. What the delta DOES do is what this asserts: the folder's
+    /// own row forgets the cause (the merge went into it), and only that row.
+    /// </summary>
+    [Fact]
+    public async Task Un_hiding_a_folder_the_delta_names_clears_its_own_row_and_leaves_the_files_to_a_scan()
+    {
+        var before = SubtreeWorld();
+        var hidden = Replace(before, 140, i => i with { Attributes = FileAttributes.Directory | FileAttributes.Hidden });
+
+        using var harness = new SqliteInMemoryContext();
+        var reader = ReaderFor(before);
+        var volumeId = await SeedAndScanAsync(harness, reader, before);
+
+        reader.Script([Change(hidden, 140, UsnReason.BasicInfoChange | UsnReason.Close)], nextUsn: 900);
+        await using (var ctx = harness.CreateContext())
+        {
+            (await BuildApplier(ctx, reader, MetadataFor(hidden)).SyncVolumeAsync(volumeId, default))
+                .Status.Should().Be(UsnSyncStatus.Applied);
+        }
+
+        reader.Script([Change(before, 140, UsnReason.BasicInfoChange | UsnReason.Close, usn: 950)], nextUsn: 1000);
+        await using (var ctx = harness.CreateContext())
+        {
+            (await BuildApplier(ctx, reader, MetadataFor(before)).SyncVolumeAsync(volumeId, default))
+                .Status.Should().Be(UsnSyncStatus.Applied);
+        }
+
+        await using var read = harness.CreateContext();
+        (await read.Directories.SingleAsync(d => d.MaterializedPath == @"Photos\Cache"))
+            .ExcludedByScan.Should().BeFalse("the merge went into the folder: its own row forgets the cause");
+        (await read.Directories.SingleAsync(d => d.MaterializedPath == @"Photos\Cache\Sub"))
+            .ExcludedByScan.Should().BeTrue("nobody walked into the subfolder — a record for a folder names no descendant (14d)");
+        (await read.Files.Where(f => f.UsnFileRef == 205 || f.UsnFileRef == 206).AllAsync(f => !f.IsIncluded))
+            .Should().BeTrue("the files come back with the next scan, not with the folder's record: the declared limit");
+    }
+
+    /// <summary>
     /// The other cause on the same mechanism: the folder is not hidden, it is under a segment the
     /// user has just excluded. Deliberately NOT a convergence case — reaching it needs the setting
     /// to change between the two scans, and a re-scan reaches those rows through the directory area

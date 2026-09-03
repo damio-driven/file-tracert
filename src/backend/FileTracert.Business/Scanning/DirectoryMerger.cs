@@ -314,16 +314,24 @@ public sealed class DirectoryMerger
     /// <summary>Step 18: the rows the walk went into no longer carry an exclusion cause.</summary>
     private async Task ClearCausesAsync(List<int> ids, int batchSize, CancellationToken ct)
     {
-        if (ids.Count == 0) return;
+        if (ids.Count == 0)
+        {
+            return;
+        }
+
         var now = DateTime.UtcNow;
         foreach (var chunk in ids.Chunk(batchSize))
         {
+            ct.ThrowIfCancellationRequested();
+
             var batch = chunk.ToList();
+            await using var tx = await _db.Database.BeginTransactionAsync(ct);
             await _db.Directories
                 .Where(d => batch.Contains(d.Id))
                 .ExecuteUpdateAsync(s => s
                     .SetProperty(d => d.ExcludedByScan, false)
                     .SetProperty(d => d.UpdatedUtc, now), ct);
+            await tx.CommitAsync(ct);
         }
     }
 
