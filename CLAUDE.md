@@ -884,7 +884,7 @@ di esclusione, e il sottoalbero che il delta esclude) · **17** il paging dove �
 **18** l'esclusione che si eredita alle cartelle. I finding della review del 2026-07-12 stanno in
 `CODE-REVIEW-HANDOFF.md`, che porta in cima il proprio stato aggiornato.
 
-### Fatto nello step 18 (2026-09-03, commit `0ba920a`…`e16920b`)
+### Fatto nello step 18 (2026-09-03, commit `0ba920a`…`2be8df6`)
 **L'esclusione si eredita alle cartelle.** Decisione di prodotto dell'utente («sì, falla ereditare
 alle cartelle figlie»), presa e chiusa lo stesso giorno. Chiude i residui **1 e 2** dello step 16;
 il terzo (stesso-tick) resta, e si chiude in `Classify`.
@@ -924,7 +924,7 @@ scansione completa la scrive per ogni cartella del volume che guarda.
   la promuove: il delta ha nominato la cartella, il verdetto può essere cambiato.
 
 #### Verifica
-xUnit **957 verdi** (+5 su 952), build pulita warnings-as-errors. La convergenza scan-vs-delta è
+xUnit **959 verdi** (+7 su 952, due dalla review), build pulita warnings-as-errors. La convergenza scan-vs-delta è
 estesa a **due tick** (i difetti esistono solo tra un tick e l'altro) e lo snapshot confronta anche
 la colonna nuova: i **24 casi esistenti restano verdi**, cioè le due strade scrivono la stessa
 colonna sulle stesse righe. Due casi nuovi: file scritto dentro la cartella già nascosta (stessa
@@ -938,6 +938,27 @@ il sync torna `UpToDate` e il caso non prova niente.
 **Harness**: `usn-hidden-subtree` guadagna il secondo tick (scrittura dentro la cartella nascosta,
 sottocartella nuova, `Search` muta, fratello intatto, nessuna scansione). Legge il giornale vero,
 quindi **SKIP non elevato**: il PASS è della sessione elevata.
+
+#### La code review, indipendente e a contesto pulito
+Tre agenti sono caduti per un **529** dell'API prima che il quarto (Opus, con shell) finisse. Ha
+trovato **1 MAJOR e 5 MINOR**, tutti presi nel commit `2be8df6`. Il MAJOR con i denti: c'era un
+**terzo lettore** di «questo path sta sotto una cartella esclusa?» — la branca delle directory
+**cancellate** in `ReconcileAsync` — che chiedeva al perimetro, il quale conosce solo ciò che
+questo tick ha escluso più ciò che i padri dei record **vivi** ereditano. Una cartella cancellata
+non ha record vivo, il suo padre nascosto non viene caricato, e la riga usciva **assente** dal delta
+dove una scansione (che dentro una cartella nascosta non guarda) la lascia presente: le due strade
+divergevano proprio sul meccanismo dello step, e nessuno dei due casi nuovi lo copriva (scrivono e
+creano, non cancellano). La colonna c'era già; la branca ora la legge. RED eseguito: il caso `rmdir`
+a due tick rosso, poi verde. I MINOR: l'azzeramento lato delta non era pinnato (ora un test a sé,
+**non** di convergenza, perché la scansione del mondo smascherato rientra nella cartella e ri-include
+i file mentre il delta vede solo il record della cartella — il limite dichiarato, asserito come
+tale); `OutsideEveryRoot` aveva perso il proprio commento; `ClearCausesAsync` prende la forma del
+file (transazione per chunk, check di cancellazione); due premesse di commento smentite dal codice.
+Lasciato consapevolmente: la mappa attributo→colonna scritta in tre posti, come già per `Files`.
+
+Il reviewer ha verificato da sé, con mutazione sulla solution intera, che i due casi a due tick
+sono rossi senza la semina del perimetro, e ha risposto sul codice alle due domande che avevo
+lasciato aperte (H e C nello stesso tick; H smascherata sotto G nascosta): entrambe corrette.
 
 #### Limiti noti e accettati
 - **Il verso opposto continua a costare una scansione**: una cartella che *smette* di essere
