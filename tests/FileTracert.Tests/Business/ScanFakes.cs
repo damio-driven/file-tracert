@@ -75,6 +75,21 @@ internal sealed class FakeDirectoryEnumerator(IReadOnlyList<ScanEntry> entries) 
     /// </summary>
     public IEnumerable<ScanEntry> Enumerate(string mountRoot, string relativeRoot, CancellationToken ct) =>
         entries.Where(e => ScanPath.IsWithin(e.RelativePath, ScanPath.Normalize(relativeRoot)));
+
+    /// <summary>
+    /// Answers from the same list, matched on the tail of the absolute path — the fixture has no
+    /// mount root of its own, and inventing a second source of ids would let a test pass on an
+    /// identity the fixture never actually describes.
+    /// </summary>
+    public ulong? TryGetFileId(string absolutePath)
+    {
+        var normalized = absolutePath.Replace('/', '\\').TrimEnd('\\');
+        return entries
+            .Where(e => e.Frn is not null && e.RelativePath.Length > 0
+                && normalized.EndsWith("\\" + e.RelativePath, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(e => e.RelativePath.Length)
+            .FirstOrDefault()?.Frn;
+    }
 }
 
 /// <summary>Enumerator that blows up, to exercise the scan failure path.</summary>
@@ -82,6 +97,8 @@ internal sealed class ThrowingDirectoryEnumerator : IDirectoryEnumerator
 {
     public IEnumerable<ScanEntry> Enumerate(string mountRoot, string relativeRoot, CancellationToken ct) =>
         throw new IOException("Enumeration failed.");
+
+    public ulong? TryGetFileId(string absolutePath) => null;
 }
 
 internal sealed class FakeUsnReader(IReadOnlyList<UsnEntry> entries, long nextUsn, ulong journalId = 1)

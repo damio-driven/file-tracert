@@ -1,4 +1,6 @@
+using System.ComponentModel;
 using FileTracert.Contracts.Platform;
+using FileTracert.Platform.Internal;
 using Microsoft.Extensions.Logging;
 
 namespace FileTracert.Platform;
@@ -32,9 +34,14 @@ internal sealed class ManagedDirectoryEnumerator : IDirectoryEnumerator
             ct.ThrowIfCancellationRequested();
             var directory = stack.Pop();
 
+            // One handle answers for every child of this directory, so identity costs per
+            // directory rather than per entry. Read BEFORE the children are listed, so a name
+            // that disappears in between simply has no id instead of borrowing someone else's.
+            var fileIds = SafeFileIds(directory);
+
             foreach (var path in SafeEnumerate(directory))
             {
-                var entry = TryBuildEntry(path, mountRoot);
+                var entry = TryBuildEntry(path, mountRoot, fileIds);
                 if (entry is null)
                 {
                     continue;
@@ -76,7 +83,38 @@ internal sealed class ManagedDirectoryEnumerator : IDirectoryEnumerator
         return [];
     }
 
-    private ScanEntry? TryBuildEntry(string path, string mountRoot)
+    /// <summary>
+    /// Child name → file reference number for one directory. A directory we cannot open is one
+    /// whose children we are about to skip anyway, so the failure is logged and answered with an
+    /// empty map: identity is missing, never wrong.
+    /// </summary>
+    private Dictionary<string, ulong> SafeFileIds(string directory)
+    {
+        try
+        {
+            return DirectoryFileIds.ForChildren(directory);
+        }
+        catch (Win32Exception ex)
+        {
+            _logger.LogDebug(ex, "Could not read file ids under {Directory}; entries will carry none.", directory);
+            return [];
+        }
+    }
+
+    public ulong? TryGetFileId(string absolutePath)
+    {
+        try
+        {
+            return DirectoryFileIds.ForPath(absolutePath);
+        }
+        catch (Win32Exception ex)
+        {
+            _logger.LogDebug(ex, "Could not read the file id of {Path}.", absolutePath);
+            return null;
+        }
+    }
+
+    private ScanEntry? TryBuildEntry(string path, string mountRoot, Dictionary<string, ulong> fileIds)
     {
         try
         {
@@ -84,15 +122,17 @@ internal sealed class ManagedDirectoryEnumerator : IDirectoryEnumerator
             var attributes = info.Attributes;
             var isDirectory = attributes.HasFlag(FileAttributes.Directory);
             var relativePath = Path.GetRelativePath(mountRoot, path);
+            var name = Path.GetFileName(path);
 
             return new ScanEntry(
                 relativePath,
-                Path.GetFileName(path),
+                name,
                 isDirectory,
                 isDirectory ? 0 : info.Length,
                 info.CreationTimeUtc,
                 info.LastWriteTimeUtc,
-                attributes);
+                attributes,
+                fileIds.TryGetValue(name, out var frn) ? frn : null);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {

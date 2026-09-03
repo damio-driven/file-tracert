@@ -212,6 +212,8 @@ public sealed class ScanShutdownTests
                     $@"Docs\f{i}.pdf", $"f{i}.pdf", false, 1, T, T, FileAttributes.Normal);
             }
         }
+
+        public ulong? TryGetFileId(string absolutePath) => null;
     }
 
     private sealed class TokenCapturingEnumerator : IDirectoryEnumerator
@@ -223,6 +225,8 @@ public sealed class ScanShutdownTests
             Captured = ct;
             yield break;
         }
+
+        public ulong? TryGetFileId(string absolutePath) => null;
     }
 
     private sealed class TokenCapturingUsnReader : IUsnReader
