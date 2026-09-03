@@ -373,6 +373,23 @@ describe('CatalogStore subfolder paging (step 17)', () => {
     expect(childrenSpy).toHaveBeenLastCalledWith(1, null, 50, 50, 0, 100);
   });
 
+  it('a page that lands after the user switched VOLUME at the root is dropped (null == null is not "same folder")', async () => {
+    const late = new Subject<CatalogChildrenDto>();
+    const { store } = setupWide(120, late);
+    await store.selectVolume(mockVolume);
+
+    const pending = store.loadMoreDirectories();
+    await store.selectVolume({ ...mockVolume, id: 2, label: 'Other' });
+    late.next(paged(dirsFrom(50, 50), 120, null));
+    late.complete();
+    await pending;
+
+    expect(store.selectedVolume()?.id).toBe(2);
+    // Volume 2's root: the first page the spy answers, and nothing from volume 1 appended.
+    expect(store.children()?.directories.items).toHaveLength(50);
+    expect(store.loadingMoreDirs()).toBe(false);
+  });
+
   it('a page that lands after the user opened another folder is dropped (last request wins)', async () => {
     const late = new Subject<CatalogChildrenDto>();
     const { store } = setupWide(120, late);

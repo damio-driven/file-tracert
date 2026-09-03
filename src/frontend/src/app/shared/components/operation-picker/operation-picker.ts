@@ -269,14 +269,16 @@ export class OperationPicker implements OnInit {
   /** Step 17: the next page of subfolders, appended under the ones already listed. */
   protected async loadMoreChildren(): Promise<void> {
     if (this.targetVolumeId === null || this.loadingMoreDirs()) return;
+    const volumeId = this.targetVolumeId;
     const dirId = this.openDirId;
     const shown = this.dirChildren().length;
     if (shown >= this.dirTotal()) return;
     this.loadingMoreDirs.set(true);
     try {
       const page = await firstValueFrom(
-        this.catalogApi.children(this.targetVolumeId, dirId, 0, 50, shown, 50));
-      if (this.openDirId !== dirId) return;
+        this.catalogApi.children(volumeId, dirId, 0, 50, shown, 50));
+      // Same volume AND same folder: the root is `null` on every volume.
+      if (this.targetVolumeId !== volumeId || this.openDirId !== dirId) return;
       this.dirChildren.update(dirs => [...dirs, ...page.directories.items]);
       this.dirTotal.set(page.directories.totalCount);
     } catch (e) {

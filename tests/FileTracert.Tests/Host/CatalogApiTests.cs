@@ -140,6 +140,55 @@ public sealed class CatalogApiTests
         capped.Directories.Items.Should().HaveCount(5);
     }
 
+    /// <summary>
+    /// Review of step 17: two folders can share a projected name (a Copy landing on an occupied
+    /// name leaves both rows visible, 15a). Paged across separate requests, a tie at a page
+    /// boundary must not duplicate or drop a row, so the order carries a tiebreaker on Id.
+    /// </summary>
+    [Fact]
+    public async Task GetChildren_pages_are_stable_when_folders_share_a_projected_name()
+    {
+        int volumeId = 0;
+        using var factory = new FileTracertAppFactory
+        {
+            DisableVolumeSync = true,
+            DisableScan = true,
+            Seed = async (db, ct) =>
+            {
+                var vol = new Volume { VolumeGuid = $@"\\?\Volume{{{Guid.NewGuid()}}}\", Label = "Ties", FileSystem = "NTFS", Kind = VolumeKind.Fixed, IsCatalogable = true, IsOnline = true };
+                db.Volumes.Add(vol);
+                await db.SaveChangesAsync(ct);
+                volumeId = vol.Id;
+
+                var root = new DirectoryNode { VolumeId = vol.Id, Name = "", MaterializedPath = "", IsMaterialized = true };
+                db.Directories.Add(root);
+                await db.SaveChangesAsync(ct);
+
+                // Three rows projected under the same name (two physical "same" folders would not
+                // coexist, but a PendingName can collide with a physical Name), plus one distinct.
+                db.Directories.Add(new DirectoryNode { VolumeId = vol.Id, ParentId = root.Id, Name = "same", MaterializedPath = "same", IsMaterialized = true });
+                db.Directories.Add(new DirectoryNode { VolumeId = vol.Id, ParentId = root.Id, Name = "x1", MaterializedPath = "x1", IsMaterialized = true, PendingName = "same", PendingState = EntityPendingState.PendingRename });
+                db.Directories.Add(new DirectoryNode { VolumeId = vol.Id, ParentId = root.Id, Name = "x2", MaterializedPath = "x2", IsMaterialized = true, PendingName = "same", PendingState = EntityPendingState.PendingRename });
+                db.Directories.Add(new DirectoryNode { VolumeId = vol.Id, ParentId = root.Id, Name = "zzz", MaterializedPath = "zzz", IsMaterialized = true });
+                await db.SaveChangesAsync(ct);
+            },
+        };
+        var client = Authed(factory);
+
+        var seen = new List<int>();
+        for (var skip = 0; skip < 4; skip += 1)
+        {
+            var page = await client.GetFromJsonAsync<CatalogChildrenDto>($"/api/catalog/{volumeId}/children?dirSkip={skip}&dirTake=1", JsonOpts);
+            page!.Directories.Items.Should().ContainSingle();
+            seen.Add(page.Directories.Items[0].Id);
+        }
+
+        seen.Should().OnlyHaveUniqueItems();
+        seen.Should().HaveCount(4);
+        // Ties resolve by Id, so the three "same" rows come out in insertion order, before "zzz".
+        seen.Take(3).Should().BeInAscendingOrder();
+    }
+
     [Fact]
     public async Task GetChildren_subdirectory_returns_files_in_that_directory()
     {

@@ -101,6 +101,10 @@ public sealed class CatalogController : ControllerBase
             // No NULLIF guard on the empty string as in the FTS SQL: an overlay is written only
             // by OverlayWriter, after OperationName.TryValidateLeaf has rejected blank names.
             .OrderBy(d => d.PendingName ?? d.Name)
+            // Projected names are not unique (a Copy landing on an occupied name leaves both
+            // rows visible, 15a). Paged across separate requests, a tie at a page boundary
+            // would duplicate or drop a row without a total order: Id breaks the tie.
+            .ThenBy(d => d.Id)
             .Skip(pagedDirs.Skip)
             .Take(pagedDirs.Take)
             .Select(d => new

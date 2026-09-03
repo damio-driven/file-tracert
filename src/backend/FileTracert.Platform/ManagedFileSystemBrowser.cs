@@ -1,4 +1,4 @@
-using FileTracert.Contracts.Platform;
+﻿using FileTracert.Contracts.Platform;
 using FileTracert.Contracts.Scanning;
 using Microsoft.Extensions.Logging;
 
@@ -42,7 +42,8 @@ internal sealed class ManagedFileSystemBrowser : IFileSystemBrowser
             result.Add(new FolderNode(name, rel, HasSubDirectory(dir)));
         }
 
-        result.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
+        // Unordered on purpose: the order is the paging service's contract (step 17 review), and
+        // a second sort here would be a second spelling of the same rule.
         return result;
     }
 

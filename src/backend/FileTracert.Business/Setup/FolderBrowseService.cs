@@ -35,7 +35,9 @@ public sealed class FolderBrowseService
     }
 
     /// <summary>
-    /// One page of the immediate sub-folders of <paramref name="path"/>, in name order.
+    /// One page of the immediate sub-folders of <paramref name="path"/>, in name order — the
+    /// order is decided HERE, where the page is cut, not trusted to the port: a page cut over an
+    /// order nobody guarantees is not a page.
     /// Step 17: the disk decides how many folders a level holds (a package cache has hundreds),
     /// so the answer is paged like every other list of §7. The enumeration itself is not — the
     /// browser must read the whole level to sort it — but the payload, and what the tree has to
@@ -58,6 +60,8 @@ public sealed class FolderBrowseService
 
         var all = _browser.ListFolders(volume.VolumeGuid, normalized);
         var page = all
+            .OrderBy(n => n.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(n => n.RelativePath, StringComparer.Ordinal)
             .Skip(paged.Skip)
             .Take(paged.Take)
             .Select(n => new FolderNodeDto(n.Name, n.RelativePath, n.HasChildren))

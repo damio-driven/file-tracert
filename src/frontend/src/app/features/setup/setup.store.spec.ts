@@ -1,6 +1,6 @@
 import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { of } from 'rxjs';
+import { Subject, of } from 'rxjs';
 import { vi } from 'vitest';
 
 import { SetupApi } from '../../core/api/setup-api.service';
@@ -117,5 +117,25 @@ describe('SetupStore folder paging (step 17)', () => {
     expect(store.remainingFoldersAt('')).toBe(20);
     expect(store.isBrowsingMore('')).toBe(false);
     expect(store.foldersAt('Foto')).toHaveLength(1);
+  });
+
+  it('a page that lands after init() moved the store to another volume is dropped', async () => {
+    const late = new Subject<PagedResult<FolderNodeDto>>();
+    const browse = vi.fn((_v: number, _path: string, skip = 0) => skip > 0
+      ? late.asObservable()
+      : of({ items: [folder(0)], totalCount: 2, skip: 0, take: 50 }));
+    const store = configure({ browse });
+    store.init(1);
+    await store.loadFolders('');
+
+    const pending = store.loadMoreFolders('');
+    store.init(2);
+    late.next({ items: [folder(1)], totalCount: 2, skip: 1, take: 50 });
+    late.complete();
+    await pending;
+
+    expect(store.volumeId()).toBe(2);
+    expect(store.foldersAt('')).toEqual([]);
+    expect(store.isBrowsingMore('')).toBe(false);
   });
 });

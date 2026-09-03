@@ -90,9 +90,12 @@ export const SetupStore = signalStore(
         if (!current || store.browsingMore()[path]) return;
         if (current.items.length >= current.totalCount) return;
 
+        const volumeId = store.volumeId()!;
         patchState(store, (s) => ({ browsingMore: { ...s.browsingMore, [path]: true }, error: null }));
         try {
-          const page = await firstValueFrom(api.browse(store.volumeId()!, path, current.items.length));
+          const page = await firstValueFrom(api.browse(volumeId, path, current.items.length));
+          // `init()` moved the store to another volume meanwhile: this page is not its.
+          if (store.volumeId() !== volumeId) return;
           patchState(store, (s) => {
             const latest = s.browseCache[path] ?? current;
             const items = [...latest.items, ...page.items];

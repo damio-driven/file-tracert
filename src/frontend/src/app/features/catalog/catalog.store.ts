@@ -183,6 +183,9 @@ export const CatalogStore = signalStore(
           const page = await firstValueFrom(
             api.children(vol.id, store.currentDirId(), store.fileSkip(), store.fileTake(), shown, DIR_PAGE));
           const latest = store.children();
+          // Same volume AND same folder: at the root `currentDirectoryId` is null for every
+          // volume, so the directory alone would let volume 1's page land on volume 2's root.
+          if (store.selectedVolume()?.id !== vol.id) return;
           if (latest === null || latest.currentDirectoryId !== opened.currentDirectoryId) return;
           const items = [...latest.directories.items, ...page.directories.items];
           patchState(store, {

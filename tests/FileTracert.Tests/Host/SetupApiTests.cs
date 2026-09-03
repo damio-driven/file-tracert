@@ -100,9 +100,11 @@ public sealed class SetupApiTests
     [Fact]
     public async Task Browse_pages_the_folders_of_one_level()
     {
+        // Handed out of order on purpose: the page order is the SERVICE's contract, not something
+        // it may trust a port implementation to have done (review of step 17).
         using var factory = NewFactory(folders: new Dictionary<string, IReadOnlyList<FolderNode>>
         {
-            [""] = [new FolderNode("a", "a", false), new FolderNode("b", "b", false), new FolderNode("c", "c", true)],
+            [""] = [new FolderNode("c", "c", true), new FolderNode("a", "a", false), new FolderNode("b", "b", false)],
         });
         using var client = Authed(factory);
         var id = await VolumeIdAsync(client);

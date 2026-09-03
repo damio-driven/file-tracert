@@ -77,6 +77,7 @@ function setup(volumes: VolumeDto[] = [], mode: 'move' | 'copy' = 'move') {
     dirChildren: { (): CatalogDirDto[] };
     dirTotal: { (): number };
     loadMoreChildren(): Promise<void>;
+    onVolumeChange(): Promise<void>;
     error: { (): string | null };
     enqueuedCount: { (): number };
     waitingCount: { (): number };
@@ -554,6 +555,28 @@ describe('OperationPicker subfolder paging', () => {
     await cmp.loadMoreChildren();
     expect(children).toHaveBeenLastCalledWith(1, null, 0, 50, 2, 50);
     expect(cmp.dirChildren().map(d => d.name)).toEqual(['Documenti', 'Archivio', 'Zeta']);
+  });
+
+  it('a "more" page that lands after the target volume changed at the root is dropped', async () => {
+    const { children, cmp } = setup();
+    const late = new Subject<CatalogChildrenDto>();
+    children.mockImplementation((volumeId: number, _dirId: number | null, _s?: number, _t?: number, dirSkip = 0) => {
+      if (dirSkip > 0) return late.asObservable();
+      return of(volumeId === 1
+        ? childrenResult([dir(10, 'Documenti'), dir(11, 'Archivio')], 3)
+        : childrenResult([dir(30, 'Backup')]));
+    });
+
+    await cmp.navigateToRoot();
+    const pending = cmp.loadMoreChildren();
+    cmp.targetVolumeId = 2;
+    await cmp.onVolumeChange();
+    late.next(childrenResult([dir(12, 'Zeta')], 3));
+    late.complete();
+    await pending;
+
+    expect(cmp.dirChildren().map(d => d.name)).toEqual(['Backup']);
+    expect(cmp.dirTotal()).toBe(1);
   });
 
   it('renders the "more" row only while the catalog holds folders beyond the page', async () => {

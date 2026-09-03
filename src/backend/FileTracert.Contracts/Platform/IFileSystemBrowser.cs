@@ -1,4 +1,4 @@
-namespace FileTracert.Contracts.Platform;
+﻿namespace FileTracert.Contracts.Platform;
 
 /// <summary>
 /// Port for browsing the <em>real</em> filesystem of a mounted volume during
@@ -11,7 +11,8 @@ public interface IFileSystemBrowser
     /// <summary>
     /// Immediate sub-folders of <paramref name="relativePath"/> (empty = volume root)
     /// on the volume identified by <paramref name="volumeGuid"/>. Inaccessible
-    /// folders are skipped, not thrown.
+    /// folders are skipped, not thrown. <b>No order is promised</b>: the caller that pages
+    /// the list sorts it.
     /// </summary>
     /// <exception cref="System.InvalidOperationException">The volume is not currently mounted.</exception>
     IReadOnlyList<FolderNode> ListFolders(string volumeGuid, string relativePath);
