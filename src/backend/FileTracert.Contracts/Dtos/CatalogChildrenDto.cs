@@ -1,9 +1,9 @@
-using FileTracert.Contracts.Paging;
+﻿using FileTracert.Contracts.Paging;
 
 namespace FileTracert.Contracts.Dtos;
 
 public sealed record CatalogChildrenDto(
-    IReadOnlyList<CatalogDirDto> Directories,
+    PagedResult<CatalogDirDto> Directories,
     PagedResult<CatalogFileDto> Files,
     bool VolumeIsOnline,
     string? VolumeLabel,

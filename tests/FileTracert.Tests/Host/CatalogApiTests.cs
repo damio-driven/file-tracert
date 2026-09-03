@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -72,12 +72,72 @@ public sealed class CatalogApiTests
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
 
         var dto = await resp.Content.ReadFromJsonAsync<CatalogChildrenDto>(JsonOpts);
-        dto!.Directories.Should().HaveCount(2);
-        dto.Directories.Select(d => d.Name).Should().BeEquivalentTo(["Docs", "Photos"]);
+        dto!.Directories.Items.Should().HaveCount(2);
+        dto.Directories.Items.Select(d => d.Name).Should().BeEquivalentTo(["Docs", "Photos"]);
         dto.Files.TotalCount.Should().Be(1);
         dto.Files.Items[0].Name.Should().Be("readme.txt");
         dto.VolumeIsOnline.Should().BeTrue();
         dto.VolumeLabel.Should().Be("Cat Disk");
+    }
+
+    /// <summary>
+    /// Step 17 (E5, §7): the subdirectory list is paged on its own axis. A folder with 800
+    /// subfolders and three files must not pay the second list for the first, and each listed
+    /// folder costs two counting subqueries, so the page IS the bound on that work.
+    /// </summary>
+    [Fact]
+    public async Task GetChildren_pages_subdirectories_independently_of_files()
+    {
+        int volumeId = 0;
+        using var factory = new FileTracertAppFactory
+        {
+            DisableVolumeSync = true,
+            DisableScan = true,
+            Seed = async (db, ct) =>
+            {
+                var vol = new Volume { VolumeGuid = $@"\\?\Volume{{{Guid.NewGuid()}}}\", Label = "Wide", FileSystem = "NTFS", Kind = VolumeKind.Fixed, IsCatalogable = true, IsOnline = true };
+                db.Volumes.Add(vol);
+                await db.SaveChangesAsync(ct);
+                volumeId = vol.Id;
+
+                var root = new DirectoryNode { VolumeId = vol.Id, Name = "", MaterializedPath = "", IsMaterialized = true };
+                db.Directories.Add(root);
+                await db.SaveChangesAsync(ct);
+
+                // Inserted out of name order on purpose: the page must follow the projected name.
+                foreach (var name in new[] { "d", "b", "e", "a", "c" })
+                    db.Directories.Add(new DirectoryNode { VolumeId = vol.Id, ParentId = root.Id, Name = name, MaterializedPath = name, IsMaterialized = true });
+
+                db.Files.Add(new FileEntry
+                {
+                    VolumeId = vol.Id, DirectoryId = root.Id,
+                    Name = "readme.txt", Extension = "txt", Category = FileCategory.Document,
+                    SizeBytes = 100, FileCreatedUtc = DateTime.UtcNow, FileModifiedUtc = DateTime.UtcNow,
+                    IsIncluded = true, IsPresent = true, LastIndexedUtc = DateTime.UtcNow,
+                });
+                await db.SaveChangesAsync(ct);
+            },
+        };
+        var client = Authed(factory);
+
+        var first = await client.GetFromJsonAsync<CatalogChildrenDto>($"/api/catalog/{volumeId}/children?dirTake=2", JsonOpts);
+        first!.Directories.Items.Select(d => d.Name).Should().Equal("a", "b");
+        first.Directories.TotalCount.Should().Be(5);
+        first.Directories.Skip.Should().Be(0);
+        first.Directories.Take.Should().Be(2);
+        // The file page is untouched by the directory page.
+        first.Files.TotalCount.Should().Be(1);
+        first.Files.Take.Should().Be(50);
+
+        var last = await client.GetFromJsonAsync<CatalogChildrenDto>($"/api/catalog/{volumeId}/children?dirSkip=4&dirTake=2", JsonOpts);
+        last!.Directories.Items.Select(d => d.Name).Should().Equal("e");
+        last.Directories.TotalCount.Should().Be(5);
+        last.Directories.Skip.Should().Be(4);
+
+        // The same cap as every other list: a client cannot ask for the whole table.
+        var capped = await client.GetFromJsonAsync<CatalogChildrenDto>($"/api/catalog/{volumeId}/children?dirTake=100000", JsonOpts);
+        capped!.Directories.Take.Should().Be(FileTracert.Contracts.Paging.PagedRequest.MaxTake);
+        capped.Directories.Items.Should().HaveCount(5);
     }
 
     [Fact]
@@ -217,7 +277,7 @@ public sealed class CatalogApiTests
         var resp = await client.GetAsync($"/api/catalog/{volumeId}/children");
         var dto = await resp.Content.ReadFromJsonAsync<CatalogChildrenDto>(JsonOpts);
 
-        dto!.Directories.Select(d => d.Name).Should().BeEquivalentTo(["Here", "GoneButQueued"]);
+        dto!.Directories.Items.Select(d => d.Name).Should().BeEquivalentTo(["Here", "GoneButQueued"]);
     }
 
     [Fact]
@@ -253,7 +313,7 @@ public sealed class CatalogApiTests
         var resp = await client.GetAsync($"/api/catalog/{volumeId}/children");
         var dto = await resp.Content.ReadFromJsonAsync<CatalogChildrenDto>(JsonOpts);
 
-        dto!.Directories.Single(d => d.Name == "Parent").ChildDirectoryCount.Should().Be(1);
+        dto!.Directories.Items.Single(d => d.Name == "Parent").ChildDirectoryCount.Should().Be(1);
     }
 
     [Fact]

@@ -1,4 +1,4 @@
-using System.Net.Http.Json;
+﻿using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using FileTracert.Contracts.Dtos;
@@ -169,7 +169,7 @@ public sealed class ProjectionApiTests
         original.Name.Should().Be("report.txt");
         original.ProjectedState.Should().Be(nameof(EntityPendingState.None),
             "a copy promises nothing about the file it reads");
-        source.Directories.Single(d => d.Name == "Sub").FileCount
+        source.Directories.Items.Single(d => d.Name == "Sub").FileCount
             .Should().Be(1, "the badge count and the listing must agree");
 
         var destination = await ChildrenAsync(client, _alphaId, _subId);
@@ -217,7 +217,7 @@ public sealed class ProjectionApiTests
         var source = await ChildrenAsync(client, _alphaId, _docsId);
         source.Files.Items.Should().BeEmpty("the file is projected into its destination");
         source.Files.TotalCount.Should().Be(0);
-        source.Directories.Single(d => d.Name == "Sub").FileCount
+        source.Directories.Items.Single(d => d.Name == "Sub").FileCount
             .Should().Be(1, "the badge count and the listing must agree");
 
         var destination = await ChildrenAsync(client, _alphaId, _subId);
@@ -239,7 +239,7 @@ public sealed class ProjectionApiTests
         });
 
         var children = await ChildrenAsync(client, _alphaId, _docsId);
-        var album = children.Directories.Should().ContainSingle(d => d.Name == "Album 2026").Subject;
+        var album = children.Directories.Items.Should().ContainSingle(d => d.Name == "Album 2026").Subject;
         album.ProjectedState.Should().Be(nameof(EntityPendingState.PendingCreate));
         album.PendingJobId.Should().Be(job.Id);
 
@@ -261,7 +261,7 @@ public sealed class ProjectionApiTests
         });
 
         var children = await ChildrenAsync(client, _alphaId, null);
-        var docs = children.Directories.Should().ContainSingle().Subject;
+        var docs = children.Directories.Items.Should().ContainSingle().Subject;
         docs.Name.Should().Be("Documenti");
         docs.ProjectedState.Should().Be(nameof(EntityPendingState.PendingRename));
         docs.PendingJobId.Should().Be(job.Id);
@@ -285,16 +285,16 @@ public sealed class ProjectionApiTests
         });
 
         var betaRoot = await ChildrenAsync(client, _betaId, null);
-        var docs = betaRoot.Directories.Should().ContainSingle(d => d.Name == "Docs").Subject;
+        var docs = betaRoot.Directories.Items.Should().ContainSingle(d => d.Name == "Docs").Subject;
         docs.ProjectedState.Should().Be(nameof(EntityPendingState.PendingMove));
 
         var inside = await ChildrenAsync(client, _betaId, docs.Id);
-        inside.Directories.Select(d => d.Name).Should().Contain("Sub");
+        inside.Directories.Items.Select(d => d.Name).Should().Contain("Sub");
         inside.Files.Items.Should().ContainSingle(f => f.Name == "report.txt");
 
         // The source volume no longer offers it.
         var alphaRoot = await ChildrenAsync(client, _alphaId, null);
-        alphaRoot.Directories.Should().BeEmpty();
+        alphaRoot.Directories.Items.Should().BeEmpty();
     }
 
     // ── Search ───────────────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-using FileTracert.Business.Projection;
+﻿using FileTracert.Business.Projection;
 using FileTracert.Contracts.Dtos;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Paging;
@@ -33,6 +33,8 @@ public sealed class CatalogController : ControllerBase
         [FromQuery] int? directoryId,
         [FromQuery] int skip = 0,
         [FromQuery] int take = 50,
+        [FromQuery] int dirSkip = 0,
+        [FromQuery] int dirTake = 50,
         CancellationToken ct = default)
     {
         var volume = await _db.Volumes
@@ -43,6 +45,10 @@ public sealed class CatalogController : ControllerBase
             return NotFound();
 
         var paged = new PagedRequest(skip, take).Normalized();
+        // Step 17 (E5): the subdirectory list is paged on its OWN axis. A folder with 800
+        // subfolders and three files must not pay the second list for the first, and every listed
+        // folder costs the two counting subqueries below — so the page is the bound on that work.
+        var pagedDirs = new PagedRequest(dirSkip, dirTake).Normalized();
 
         int parentId;
         string? parentPath;
@@ -57,7 +63,7 @@ public sealed class CatalogController : ControllerBase
             if (root is null)
             {
                 // No index yet for this volume.
-                return Ok(new CatalogChildrenDto([], EmptyPage(paged), volume.IsOnline, volume.Label, volume.LastDriveLetter, null, null));
+                return Ok(new CatalogChildrenDto(EmptyPage<CatalogDirDto>(pagedDirs), EmptyPage<CatalogFileDto>(paged), volume.IsOnline, volume.Label, volume.LastDriveLetter, null, null));
             }
 
             parentId = root.Id;
@@ -82,15 +88,21 @@ public sealed class CatalogController : ControllerBase
         // answers the overwhelmingly common no-overlay half.
         // Visibility: on disk (materialized AND present) OR carrying an overlay — that second
         // half is what makes a queued CreateFolder navigable before it exists.
-        var subDirs = await _db.Directories
+        var subDirsQuery = _db.Directories
             .AsNoTracking()
             .Where(d => ((d.ParentId == parentId && d.PendingParentId == null) || d.PendingParentId == parentId) &&
-                        ((d.IsMaterialized && d.IsPresent) || d.PendingState != EntityPendingState.None))
+                        ((d.IsMaterialized && d.IsPresent) || d.PendingState != EntityPendingState.None));
+
+        var totalDirs = await subDirsQuery.CountAsync(ct);
+
+        var subDirs = await subDirsQuery
             // Projected name — the rule lives in FileTracert.Business/Projection/Projected.cs;
             // EF cannot translate a call to it, so this is its third and last spelling.
             // No NULLIF guard on the empty string as in the FTS SQL: an overlay is written only
             // by OverlayWriter, after OperationName.TryValidateLeaf has rejected blank names.
             .OrderBy(d => d.PendingName ?? d.Name)
+            .Skip(pagedDirs.Skip)
+            .Take(pagedDirs.Take)
             .Select(d => new
             {
                 d.Id,
@@ -109,11 +121,13 @@ public sealed class CatalogController : ControllerBase
             })
             .ToListAsync(ct);
 
-        var dirDtos = subDirs
-            .Select(d => new CatalogDirDto(
-                d.Id, d.Name, d.MaterializedPath, d.ChildCount, d.FileCount,
-                d.PendingState.ToString(), d.PendingJobId))
-            .ToList();
+        var pagedDirDtos = new PagedResult<CatalogDirDto>(
+            subDirs
+                .Select(d => new CatalogDirDto(
+                    d.Id, d.Name, d.MaterializedPath, d.ChildCount, d.FileCount,
+                    d.PendingState.ToString(), d.PendingJobId))
+                .ToList(),
+            totalDirs, pagedDirs.Skip, pagedDirs.Take);
 
         // Files in the current directory by projected position, paged.
         //
@@ -164,7 +178,7 @@ public sealed class CatalogController : ControllerBase
 
         var pagedFiles = new PagedResult<CatalogFileDto>(fileDtos, totalFiles, paged.Skip, paged.Take);
 
-        return Ok(new CatalogChildrenDto(dirDtos, pagedFiles, volume.IsOnline, volume.Label, volume.LastDriveLetter, directoryId, parentPath));
+        return Ok(new CatalogChildrenDto(pagedDirDtos, pagedFiles, volume.IsOnline, volume.Label, volume.LastDriveLetter, directoryId, parentPath));
     }
 
     /// <summary>
@@ -183,6 +197,6 @@ public sealed class CatalogController : ControllerBase
         return located.TryGetValue(dir.Id, out var projected) && projected.VolumeId == volumeId;
     }
 
-    private static PagedResult<CatalogFileDto> EmptyPage(PagedRequest paged) =>
+    private static PagedResult<T> EmptyPage<T>(PagedRequest paged) =>
         new([], 0, paged.Skip, paged.Take);
 }
