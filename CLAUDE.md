@@ -809,8 +809,13 @@ A3 è firmata sul ferro e non solo in-process.
   come prova assoluta, se un giorno la si vorrà. `D:` ha il cursore acceso dal 2026-08-25 ed è
   l'unico volume su cui il percorso incrementale gira davvero (verificato sul catalogo vivo il
   2026-08-27: `Windows-SSD` e i due volumi offline hanno `UsnJournalId` a `NULL`).
-- **Il riavvio vero della macchina** non è mai stato fatto: è l'unica cosa che manca
-  alla prova dell'avvio automatico del servizio (step 13). Vale ancora dopo il deploy di 15b.
+- ~~**Il riavvio vero della macchina** non è mai stato fatto~~ — **provato il 2026-09-03**, e con
+  esso l'avvio automatico del servizio, che era l'ultima voce aperta dello step 13. Boot alle
+  **09:38:57 UTC**, prima riga di log del servizio alle **09:39:13** — 16 secondi dopo, senza che
+  nessuno lo avviasse — fino a «Database initialized (migrated, WAL on)» e alla registrazione del
+  device watcher. La prova sta nel **DB dei log**, non nello stato corrente del processo: quello
+  viene sostituito dal primo `install-service.ps1` che passa, e infatti il processo di oggi è del
+  deploy di 16, non del boot.
 
 ### C. Igiene nota, tollerata
 - **`%TEMP%` accumula `ft-test-*-logs.db`**: `WebApplicationFactory.Dispose` non ferma
@@ -988,7 +993,7 @@ directory esclusa sulle 113 831 directory del volume di sistema. Era il limite c
 lasciato dichiarato come non verificato; ora è misurato, il commento è corretto, e **nessun test
 pinna ancora quel piano**.
 
-**Limiti dichiarati**: il **riavvio della macchina** continua a non essere stato fatto; il worker
+**Limiti dichiarati**: il worker
 incrementale resta acceso **solo su `D:`** (gli altri volumi hanno `UsnJournalId` a `NULL` e il
 pre-filtro li salta), quindi il pass di sottoalbero di A3 non gira da solo su `C:`; e nessuna
 riconciliazione è stata eseguita sul catalogo dell'utente — la prova di A2 è stata fatta **in sola
