@@ -786,9 +786,8 @@ Gli step 16, **18** e **19** sono **completi, harness elevato incluso**: 59/59 P
 vero, quindi A3, l'eredità alle cartelle e il motore ibrido sono firmati sul ferro e non solo
 in-process.
 
-**Il servizio installato è aggiornato a 18** (2026-09-03) — 17 e 18 distribuiti insieme, vedi
-«Deploy di 17 e 18» qui sotto. **Lo step 19 non è distribuito**: non ha migration, quindi è una
-copia di file, e resta una decisione dell'utente.
+**Il servizio installato è aggiornato a 20** (2026-09-04), e **l'incrementale USN è acceso anche su
+`C:`** — vedi «Deploy di 19 e 20» qui sotto. Non resta nulla di non distribuito.
 
 **Decisioni di prodotto prese il 2026-09-03**, entrambe **eseguite lo stesso giorno**:
 - ~~**A4 → motore ibrido.**~~ — **fatta allo step 19.** Prima scansione per **enumerazione** dei soli
@@ -854,14 +853,15 @@ copia di file, e resta una decisione dell'utente.
   al picker e all'albero del Setup, che erano le altre due liste senza tetto.
 - **Filtro dimensione in Ricerca** — `SizeBytesMin/Max` esistono nell'API e nello store,
   non hanno un controllo a video (§8).
-- ~~**Accendere l'incrementale su `C:`**~~ — **decisione presa dall'utente il 2026-08-27: NO.**
-  I 739 421 file di `C:` continueranno a dipendere da una scansione completa, e va bene così:
-  accenderlo costa una ri-scansione esplicita del volume, cioè una camminata completa dell'MFT
-  per indicizzare tre sottoalberi — il caso che 14d ha misurato come **perdente** per l'USN.
-  L'utente ha detto che non gli servirà mai scansionare un volume così grosso; resta buono solo
-  come prova assoluta, se un giorno la si vorrà. `D:` ha il cursore acceso dal 2026-08-25 ed è
-  l'unico volume su cui il percorso incrementale gira davvero (verificato sul catalogo vivo il
-  2026-08-27: `Windows-SSD` e i due volumi offline hanno `UsnJournalId` a `NULL`).
+- ~~**Accendere l'incrementale su `C:`**~~ — **il no del 2026-08-27 è stato ribaltato dall'utente il
+  2026-09-04, perché la sua premessa era caduta.** Quel no diceva: accenderlo costa una camminata
+  completa dell'MFT per indicizzare tre sottoalberi, cioè il caso che 14d ha misurato come
+  perdente. **L'ibrido (A4) ha tolto proprio quel costo**: la ri-scansione cammina i soli root e
+  prende comunque il cursore. Fatto e provato sul catalogo vero — vedi «Deploy di 19 e 20». Ora
+  `C:` **e** `D:` hanno il cursore, e i 870 000 file dell'utente ricevono i delta ogni 30 s invece
+  di dipendere da una scansione completa.
+  *(La lezione, che vale oltre questa voce: una decisione presa su un vincolo va **riproposta**
+  quando il vincolo sparisce, invece di essere data per rinnovata.)*
 - ~~**Il riavvio vero della macchina** non è mai stato fatto~~ — **provato il 2026-09-03**, e con
   esso l'avvio automatico del servizio, che era l'ultima voce aperta dello step 13. Boot alle
   **09:38:57 UTC**, prima riga di log del servizio alle **09:39:13** — 16 secondi dopo, senza che
@@ -1201,6 +1201,35 @@ assenza** (§6, 14d: «non nominato» ≠ «non c'è»), quindi la riga vacante 
 del delta ammetteva solo volumi le cui righe portavano i FRN, cioè solo quelli camminati dall'MFT,
 dove P1 collassa il gruppo a una riga sola e non esiste un fratello da orfanare.
 
+#### Il secondo difetto dello stesso giro: A4 aveva spostato la domanda ovunque tranne in un posto
+Chiuso il crash e ri-scansionato `C:`, **non succedeva niente**: il cursore c'era e non avanzava, il
+file nuovo non arrivava a catalogo, e il processo era **fermo** (+0 s di CPU in 20 s — cioè non era
+lento, non stava lavorando affatto).
+
+`UsnSyncWorker.CollectEligibleAsync` chiedeva ancora `ScanEngine == VolumeScanEngine.UsnJournal`.
+Lo step 19 ha cambiato quella domanda in `UsnDeltaApplier` (che ora chiede il **cursore**, e per il
+giornale interroga il **filesystem**, non il motore che ha camminato) e nel gate degli scenari
+dell'harness — e ha lasciato indietro il pre-filtro SQL del worker. Un volume ibrido resta
+`ScanEngine = Enumeration`, quindi il worker scartava **esattamente i volumi che l'ibrido esiste per
+servire**. Sul catalogo vero l'effetto era **silenzioso e totale**: il volume di sistema ha preso il
+cursore e nessun delta l'ha mai letto. *La funzione sembrava installata ed era inerte* — nessun
+errore, nessun warning, solo un numero in una colonna che nessuno consultava.
+
+**E il test che avrebbe dovuto prenderlo fissava la regola vecchia**
+(`An_enumeration_scanned_volume_is_never_offered_to_the_journal`), con un commento — «le sue righe
+di directory non portano file reference» — che A4 aveva reso falso. Riscritto intorno alla garanzia
+che vale adesso, non cancellato: la metà che va tenuta è che un volume **senza** cursore non deve
+farsi aprire il giornale.
+
+**Due trappole trovate scrivendolo, entrambe capaci di produrre un verde falso**, e vanno scritte
+perché sono la ragione per cui il difetto è passato: (1) un delta vuoto checkpointa `NextUsn`, quindi
+dopo un ciclo **ogni** volume riprende dallo stesso numero che il fake dichiara — il test vecchio
+scriveva un avvertimento su questo e poi distingueva i suoi due volumi proprio per `SinceUsn`; ora
+il volume camminato per enumerazione è **l'unico** che ha un cursore, e una lettura sola è
+inequivocabile; (2) la premessa è **asserita, non assunta** — il test verifica che quel volume sia
+ancora `ScanEngine = Enumeration` quando il worker l'ha guardato, perché `VolumeMapper` scrive quella
+colonna dal filesystem e un ri-sync avrebbe reso il test vacuo. Con la premessa asserita, il RED c'è.
+
 #### Verifica
 xUnit **975 verdi** (+4), build pulita warnings-as-errors in Debug e Release.
 **RED dimostrato due volte, mai affermato**: in-process i due test nuovi cadono con l'eccezione
@@ -1216,6 +1245,84 @@ diversi: un enumeratore finto ripeterebbe l'assunzione invece di provarla. Asser
 non l'assenza del crash — **entrambi** i path restano indicizzati, **uno solo** porta l'identità, e
 una ri-scansione non perde una riga né sposta la rivendicazione. `appsettings.json` rimesso
 byte-identico (sha256 `653f5990…`).
+
+### Deploy di 19 e 20, e l'incrementale acceso su `C:` (2026-09-03/04)
+**Il giro in cui il catalogo vero ha bocciato due volte il prodotto, e la seconda bocciatura era
+silenziosa.** Sequenza reale, scritta com'è andata invece che come sarebbe stata più bella.
+
+#### 1. Il deploy di 19, e il crash
+Publish 10,0 s · `sc stop` pulito in **0,3 s** (nessun `-wal`/`-shm`) · backup `filetracert.db.pre19`
+con **sha256 identico** · install 2,8 s. Verificato: `Running`/`Automatic`, UI 200, **401** senza
+token, solo `127.0.0.1` e `::1`, **nessuna migration nuova** (19 non ne ha), invariante §6 vera su
+**742 676** righe, `foreign_key_check` pulito, **zero Error**.
+
+Poi la ri-scansione esplicita di `C:` — che è ciò che accende l'incrementale, e che l'utente aveva
+chiesto. **Fallita dopo ~4 minuti** con l'`UNIQUE constraint` degli hard link (vedi lo step 20).
+Il catalogo è rimasto **a metà scansione** e non corrotto, che è esattamente ciò che 9a promette:
+lotti committati, `LastFullScanUtc` **non** mosso, cioè nessuno scan si è dichiarato completo.
+Nessun crash-loop: `ScanWorker` prende solo i volumi mai scansionati più le richieste esplicite.
+
+**Rollback a 18 su decisione dell'utente**, da un `git worktree` sul commit dello step 18: publish
+282 s (l'`ng build` a freddo), install 4,9 s, servizio verificato. Il percorso rotto non è più stato
+installato mentre preparavo la fix.
+
+#### 2. Il deploy di 20, e il secondo difetto — quello che non si vedeva
+Stessa procedura, backup `filetracert.db.pre20` con sha256 identico, install 2,9 s. La ri-scansione
+di `C:` **è arrivata in fondo**: 280 s, `LastFullScanUtc` mosso, **cursore scritto**
+(`Windows-SSD | Enumeration | usn=35416148024 | id=133981459517700239`) — cioè A4 sul catalogo
+vero: il perimetro camminato per enumerazione, il cursore preso lo stesso.
+
+E poi **non è successo niente**. Un file creato sotto un root sorvegliato non arrivava a catalogo,
+il cursore non avanzava, e il processo era **fermo** (+0 s di CPU in 20 s: non stava masticando un
+delta enorme, non stava facendo nulla). Il difetto: `UsnSyncWorker.CollectEligibleAsync` chiedeva
+ancora `ScanEngine == UsnJournal`. **A4 ha spostato quella domanda ovunque tranne lì** — l'ha
+cambiata in `UsnDeltaApplier`, nel gate degli scenari dell'harness, e ha lasciato il pre-filtro SQL
+del worker. Un volume ibrido resta `Enumeration` e **veniva scartato dal worker**: cursore scritto,
+nessuno che lo legge. *La funzione era inerte e sembrava installata* — nessun errore, nessun
+warning, solo un numero in una colonna che nessuno consultava. E il test che avrebbe dovuto
+prenderlo **fissava la regola vecchia** invece di coglierne la caduta.
+
+#### 3. L'incrementale su `C:`, acceso e provato
+Decisione dell'utente rivista in questa sessione (il 27/08 era **no**, e la premessa era il costo di
+una camminata completa dell'MFT — che l'ibrido ha tolto). Dopo la fix del worker, sul catalogo vero:
+
+```
+Volume 1 USN delta: 101343 record(s) -> 395 indexed, 138 absent, 0 excluded, 9 director(ies), 4419 outside the catalog
+```
+
+101 343 record di arretrato rigiocati in un tick. Poi il ciclo completo su un file vero sotto
+`Users\Damio`, come il deploy di 14d fece su `D:`:
+
+| | esito | ritardo |
+|---|---|---|
+| creazione | **indicizzato**, `IsIncluded=1 IsPresent=1`, 33 B | ≤ 15 s |
+| cancellazione | **assente**, `IsPresent=0` con `IsIncluded=1` e le **quattro cause a zero** | ≤ 15 s |
+
+`LastFullScanUtc` **non si è mosso** in nessuno dei due: l'ha fatto il delta, non una scansione. È
+§6 sul catalogo dell'utente — l'assenza non è un'esclusione, e la riga non viene mai cancellata.
+
+#### Stato finale verificato
+| controllo | esito |
+|---|---|
+| servizio | `Running`/`Automatic`, UI 200, **401** senza token, solo `127.0.0.1` e `::1` |
+| catalogo | 993 780 righe `Files` · 151 341 directory · 870 136 righe FTS · 31 volumi |
+| **invariante §6** | **vera su tutte le righe** · `foreign_key_check` pulito |
+| migration | nessuna nuova (né 19 né 20 ne hanno) · **nessun rebuild FTS** |
+| cursori | `Windows-SSD` **e** `Dati`, entrambi in avanzamento |
+| log dal deploy | **zero Error/Critical** |
+
+**Un `SQLITE_BUSY` osservato e non nascosto**: durante i ~5 minuti di scansione di `C:` il
+`VolumeSyncWorker` ha perso il write lock, ha loggato l'eccezione **intera** e ha detto «riprovo al
+prossimo intervallo» — e si è ripreso al ciclo dopo, senza altri errori. È la resilienza di §9 sotto
+contesa, non un difetto di questo giro.
+
+**Limiti dichiarati**: il buco degli hard link (§«Fatto nello step 20») è **distribuito**, e il suo
+prezzo sono righe fantasma che nessuna schermata mostra (il Catalogo filtra `IsMaterialized AND
+IsPresent`, la Ricerca e i contatori filtrano `IsPresent`). Il rollback a 18 è **provato in questa
+stessa sessione**, quindi tornare indietro costa una publish. Nessuna misura A/B degli endpoint in
+questo giro. E `D:` ora ha un compagno: il worker serve **due** volumi, quindi un tick lungo su `C:`
+ritarda quello di `D:` — un volume alla volta è di progetto, il limite è quello che 14d dichiara
+(`ReadChanges` è sincrona).
 
 ### Deploy di 17 e 18 sul catalogo reale (2026-09-03)
 **Il servizio installato eredita l'esclusione alle cartelle, e pagina dove §7 lo prometteva.**
