@@ -13,7 +13,7 @@ describe('Setup', () => {
       providers: [
         provideZonelessChangeDetection(),
         { provide: VolumesApi, useValue: { list: () => of([]) } },
-        { provide: SetupApi, useValue: { browse: () => of([]), getFilter: () => of({ allowedExtensions: [], excludedPaths: [] }) } },
+        { provide: SetupApi, useValue: { browse: () => of({ items: [], totalCount: 0, skip: 0, take: 50 }), getFilter: () => of({ allowedExtensions: [], excludedPaths: [] }) } },
         { provide: ActivatedRoute, useValue: { snapshot: { queryParamMap: convertToParamMap({}) } } },
       ],
     });

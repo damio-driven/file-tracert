@@ -84,10 +84,43 @@
   font-size: 12px;
 }
 
+// The "more" row sits in the tree like a node, but reads as a control: dim, no expander.
+.more {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 4px 6px 4px 24px;
+  background: none;
+  border: 0;
+  border-radius: var(--r-ctl);
+  color: var(--txt-dim);
+  font-size: 12px;
+  cursor: pointer;
+  transition: color var(--t-fast) var(--ease-out), background var(--t-fast) var(--ease-out);
+
+  &:hover:not(:disabled) {
+    color: var(--txt);
+    background: var(--panel-2);
+  }
+  &:focus-visible {
+    outline: 2px solid var(--teal);
+    outline-offset: 1px;
+  }
+  &:disabled {
+    cursor: default;
+  }
+}
+
+.more-count {
+  font-size: 11px;
+  color: var(--txt-faint);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .row,
   .exp,
-  .add {
+  .add,
+  .more {
     transition: none;
   }
   // Keyboard users still need the action reachable; mouse-only reveal is fine.

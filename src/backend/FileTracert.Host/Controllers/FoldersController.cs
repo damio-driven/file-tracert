@@ -1,5 +1,6 @@
-using FileTracert.Business.Setup;
+﻿using FileTracert.Business.Setup;
 using FileTracert.Contracts.Dtos;
+using FileTracert.Contracts.Paging;
 using Microsoft.AspNetCore.Mvc;
 
 namespace FileTracert.Host.Controllers;
@@ -17,12 +18,17 @@ public sealed class FoldersController : ControllerBase
     public FoldersController(FolderBrowseService browse) => _browse = browse;
 
     [HttpGet]
-    public async Task<ActionResult<IReadOnlyList<FolderNodeDto>>> Get(
-        int volumeId, [FromQuery] string path = "", CancellationToken ct = default)
+    public async Task<ActionResult<PagedResult<FolderNodeDto>>> Get(
+        int volumeId,
+        [FromQuery] string path = "",
+        [FromQuery] int skip = 0,
+        [FromQuery] int take = PagedRequest.DefaultTake,
+        CancellationToken ct = default)
     {
         try
         {
-            return Ok(await _browse.ListAsync(volumeId, path, ct));
+            var paged = new PagedRequest(skip, take).Normalized();
+            return Ok(await _browse.ListAsync(volumeId, path, paged, ct));
         }
         catch (KeyNotFoundException)
         {

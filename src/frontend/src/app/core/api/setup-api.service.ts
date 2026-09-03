@@ -6,6 +6,7 @@ import {
   CreateWatchedRootRequest,
   FilterSettingsDto,
   FolderNodeDto,
+  PagedResult,
   ReconcileResultDto,
   UpdateWatchedRootRequest,
   WatchedRootDto,
@@ -17,8 +18,10 @@ import {
 export class SetupApi {
   private readonly http = inject(HttpClient);
 
-  browse(volumeId: number, path: string): Observable<FolderNodeDto[]> {
-    return this.http.get<FolderNodeDto[]>(`/api/volumes/${volumeId}/folders`, { params: { path } });
+  /** One page (50) of the folders at `path` on the real disk, from `skip` (step 17). */
+  browse(volumeId: number, path: string, skip = 0): Observable<PagedResult<FolderNodeDto>> {
+    return this.http.get<PagedResult<FolderNodeDto>>(
+      `/api/volumes/${volumeId}/folders`, { params: { path, skip, take: 50 } });
   }
 
   createRoot(volumeId: number, body: CreateWatchedRootRequest): Observable<WatchedRootDto> {

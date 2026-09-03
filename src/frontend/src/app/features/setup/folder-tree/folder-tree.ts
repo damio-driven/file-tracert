@@ -41,4 +41,8 @@ export class FolderTree implements OnInit {
   protected isExpanded(childPath: string): boolean {
     return this.expanded().has(childPath);
   }
+
+  protected loadMore(): void {
+    void this.store.loadMoreFolders(this.path());
+  }
 }

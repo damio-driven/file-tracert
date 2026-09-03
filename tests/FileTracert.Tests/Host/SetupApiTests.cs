@@ -1,6 +1,7 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Http.Json;
 using FileTracert.Contracts.Dtos;
+using FileTracert.Contracts.Paging;
 using FileTracert.Contracts.Enums;
 using FileTracert.Contracts.Platform;
 using FileTracert.Data;
@@ -86,9 +87,38 @@ public sealed class SetupApiTests
         using var client = Authed(factory);
         var id = await VolumeIdAsync(client);
 
-        var folders = await client.GetFromJsonAsync<List<FolderNodeDto>>($"/api/volumes/{id}/folders?path=");
+        var folders = await client.GetFromJsonAsync<PagedResult<FolderNodeDto>>($"/api/volumes/{id}/folders?path=");
 
-        folders!.Select(f => f.Name).Should().ContainInOrder("Foto", "Video");
+        folders!.Items.Select(f => f.Name).Should().ContainInOrder("Foto", "Video");
+        folders.TotalCount.Should().Be(2);
+    }
+
+    /// <summary>
+    /// Step 17: the disk decides how many folders a level holds, so the browse answer is paged
+    /// like every other list. The browser already sorts by name; the page follows that order.
+    /// </summary>
+    [Fact]
+    public async Task Browse_pages_the_folders_of_one_level()
+    {
+        using var factory = NewFactory(folders: new Dictionary<string, IReadOnlyList<FolderNode>>
+        {
+            [""] = [new FolderNode("a", "a", false), new FolderNode("b", "b", false), new FolderNode("c", "c", true)],
+        });
+        using var client = Authed(factory);
+        var id = await VolumeIdAsync(client);
+
+        var first = await client.GetFromJsonAsync<PagedResult<FolderNodeDto>>($"/api/volumes/{id}/folders?path=&take=2");
+        first!.Items.Select(f => f.Name).Should().Equal("a", "b");
+        first.TotalCount.Should().Be(3);
+        first.Skip.Should().Be(0);
+        first.Take.Should().Be(2);
+
+        var last = await client.GetFromJsonAsync<PagedResult<FolderNodeDto>>($"/api/volumes/{id}/folders?path=&skip=2&take=2");
+        last!.Items.Select(f => f.Name).Should().Equal("c");
+        last.Items[0].HasChildren.Should().BeTrue();
+
+        var capped = await client.GetFromJsonAsync<PagedResult<FolderNodeDto>>($"/api/volumes/{id}/folders?path=&take=100000");
+        capped!.Take.Should().Be(PagedRequest.MaxTake);
     }
 
     [Fact]

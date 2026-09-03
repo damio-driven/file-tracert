@@ -5,11 +5,13 @@ import { vi } from 'vitest';
 
 import { SetupApi } from '../../core/api/setup-api.service';
 import { VolumesApi } from '../../core/api/volumes-api.service';
-import { FolderNodeDto, VolumeDetailDto, WatchedRootDto } from '../../core/models/catalog.models';
+import { FolderNodeDto, PagedResult, VolumeDetailDto, WatchedRootDto } from '../../core/models/catalog.models';
 import { SetupStore } from './setup.store';
 
 const fotoRoot: WatchedRootDto = { id: 7, relativePath: 'Foto', isActive: true, effectiveFilter: 'Immagini' };
-const topFolders: FolderNodeDto[] = [{ name: 'Foto', relativePath: 'Foto', hasChildren: true }];
+const topFolders: PagedResult<FolderNodeDto> = {
+  items: [{ name: 'Foto', relativePath: 'Foto', hasChildren: true }], totalCount: 1, skip: 0, take: 50,
+};
 
 function configure(api: Partial<SetupApi>, volumesApi: Partial<VolumesApi> = {}) {
   TestBed.configureTestingModule({
@@ -32,7 +34,8 @@ describe('SetupStore', () => {
     await store.loadFolders('');
 
     expect(browse).toHaveBeenCalledTimes(1);
-    expect(store.foldersAt('')).toEqual(topFolders);
+    expect(store.foldersAt('')).toEqual(topFolders.items);
+    expect(store.remainingFoldersAt('')).toBe(0);
   });
 
   it('adds a root and keeps it in state', async () => {
@@ -84,5 +87,35 @@ describe('SetupStore', () => {
     // was never indexed while it was off — both facts belong on screen.
     expect(store.lastReconcile()?.includedCount).toBe(12);
     expect(store.lastReconcile()?.needsScan).toBe(true);
+  });
+});
+
+describe('SetupStore folder paging (step 17)', () => {
+  function folder(i: number): FolderNodeDto {
+    return { name: `f${String(i).padStart(3, '0')}`, relativePath: `f${i}`, hasChildren: false };
+  }
+
+  it('loadMoreFolders appends the next page of one level and leaves the others alone', async () => {
+    const browse = vi.fn((_v: number, path: string, skip = 0) => of({
+      items: path === '' ? Array.from({ length: Math.min(50, 120 - skip) }, (_, i) => folder(skip + i)) : [folder(900)],
+      totalCount: path === '' ? 120 : 1, skip, take: 50,
+    }));
+    const store = configure({ browse });
+    store.init(1);
+    await store.loadFolders('');
+    await store.loadFolders('Foto');
+
+    expect(store.foldersAt('')).toHaveLength(50);
+    expect(store.remainingFoldersAt('')).toBe(70);
+
+    await store.loadMoreFolders('');
+
+    expect(browse).toHaveBeenLastCalledWith(1, '', 50);
+    expect(store.foldersAt('')).toHaveLength(100);
+    expect(store.foldersAt('')[0].name).toBe('f000');
+    expect(store.foldersAt('')[99].name).toBe('f099');
+    expect(store.remainingFoldersAt('')).toBe(20);
+    expect(store.isBrowsingMore('')).toBe(false);
+    expect(store.foldersAt('Foto')).toHaveLength(1);
   });
 });

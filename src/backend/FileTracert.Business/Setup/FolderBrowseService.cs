@@ -1,4 +1,5 @@
-using FileTracert.Contracts.Dtos;
+﻿using FileTracert.Contracts.Dtos;
+using FileTracert.Contracts.Paging;
 using FileTracert.Contracts.Platform;
 using FileTracert.Data;
 using Microsoft.EntityFrameworkCore;
@@ -33,7 +34,14 @@ public sealed class FolderBrowseService
         _browser = browser;
     }
 
-    public async Task<IReadOnlyList<FolderNodeDto>> ListAsync(int volumeId, string path, CancellationToken ct)
+    /// <summary>
+    /// One page of the immediate sub-folders of <paramref name="path"/>, in name order.
+    /// Step 17: the disk decides how many folders a level holds (a package cache has hundreds),
+    /// so the answer is paged like every other list of §7. The enumeration itself is not — the
+    /// browser must read the whole level to sort it — but the payload, and what the tree has to
+    /// render, is bounded by the page.
+    /// </summary>
+    public async Task<PagedResult<FolderNodeDto>> ListAsync(int volumeId, string path, PagedRequest paged, CancellationToken ct)
     {
         var volume = await _db.Volumes.AsNoTracking().FirstOrDefaultAsync(v => v.Id == volumeId, ct)
             ?? throw new KeyNotFoundException($"Volume {volumeId} not found.");
@@ -48,8 +56,12 @@ public sealed class FolderBrowseService
             throw new VolumeOfflineException(volumeId);
         }
 
-        return _browser.ListFolders(volume.VolumeGuid, normalized)
+        var all = _browser.ListFolders(volume.VolumeGuid, normalized);
+        var page = all
+            .Skip(paged.Skip)
+            .Take(paged.Take)
             .Select(n => new FolderNodeDto(n.Name, n.RelativePath, n.HasChildren))
             .ToList();
+        return new PagedResult<FolderNodeDto>(page, all.Count, paged.Skip, paged.Take);
     }
 }

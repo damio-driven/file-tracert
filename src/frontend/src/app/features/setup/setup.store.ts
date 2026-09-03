@@ -9,6 +9,7 @@ import {
   FilterOverrideDto,
   FilterSettingsDto,
   FolderNodeDto,
+  PagedResult,
   ReconcileResultDto,
   WatchedRootDto,
 } from '../../core/models/catalog.models';
@@ -17,7 +18,10 @@ interface SetupState {
   volumeId: number | null;
   roots: WatchedRootDto[];
   filter: FilterSettingsDto | null;
-  browseCache: Record<string, FolderNodeDto[]>;
+  /** Per path: the folders fetched so far and how many the disk holds (step 17, paged). */
+  browseCache: Record<string, PagedResult<FolderNodeDto>>;
+  /** Paths whose next page is on its way. */
+  browsingMore: Record<string, boolean>;
   loading: boolean;
   busy: boolean;
   error: string | null;
@@ -29,6 +33,7 @@ const initial: SetupState = {
   roots: [],
   filter: null,
   browseCache: {},
+  browsingMore: {},
   loading: false,
   busy: false,
   error: null,
@@ -49,7 +54,15 @@ export const SetupStore = signalStore(
     }
 
     return {
-      foldersAt: (path: string): FolderNodeDto[] => store.browseCache()[path] ?? [],
+      foldersAt: (path: string): FolderNodeDto[] => store.browseCache()[path]?.items ?? [],
+
+      /** Folders of `path` the disk holds beyond the ones fetched (0 when the level is complete). */
+      remainingFoldersAt: (path: string): number => {
+        const page = store.browseCache()[path];
+        return page ? Math.max(0, page.totalCount - page.items.length) : 0;
+      },
+
+      isBrowsingMore: (path: string): boolean => store.browsingMore()[path] === true,
 
       init(volumeId: number): void {
         patchState(store, { ...initial, volumeId });
@@ -65,6 +78,35 @@ export const SetupStore = signalStore(
           patchState(store, (s) => ({ browseCache: { ...s.browseCache, [path]: folders }, loading: false }));
         } catch (e) {
           fail(e);
+        }
+      },
+
+      /**
+       * Step 17: the next page of one level, APPENDED under the folders already in the tree.
+       * Per path, so expanding one wide folder never touches the others.
+       */
+      async loadMoreFolders(path: string): Promise<void> {
+        const current = store.browseCache()[path];
+        if (!current || store.browsingMore()[path]) return;
+        if (current.items.length >= current.totalCount) return;
+
+        patchState(store, (s) => ({ browsingMore: { ...s.browsingMore, [path]: true }, error: null }));
+        try {
+          const page = await firstValueFrom(api.browse(store.volumeId()!, path, current.items.length));
+          patchState(store, (s) => {
+            const latest = s.browseCache[path] ?? current;
+            const items = [...latest.items, ...page.items];
+            return {
+              browseCache: {
+                ...s.browseCache,
+                [path]: { items, totalCount: page.totalCount, skip: 0, take: items.length },
+              },
+            };
+          });
+        } catch (e) {
+          fail(e);
+        } finally {
+          patchState(store, (s) => ({ browsingMore: { ...s.browsingMore, [path]: false } }));
         }
       },
 

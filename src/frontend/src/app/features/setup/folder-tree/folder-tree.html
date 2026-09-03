@@ -37,4 +37,18 @@
       <li class="muted">Nessuna sottocartella.</li>
     }
   }
+  <!-- Step 17: the level is paged; the next page is appended below, per path. -->
+  @if (store.remainingFoldersAt(path()) > 0) {
+    <li class="node node--more">
+      <button
+        class="more"
+        type="button"
+        [disabled]="store.isBrowsingMore(path())"
+        (click)="loadMore()"
+      >
+        {{ store.isBrowsingMore(path()) ? 'Caricamento…' : 'Mostra altre cartelle' }}
+        <span class="mono more-count">{{ store.foldersAt(path()).length }} di {{ store.foldersAt(path()).length + store.remainingFoldersAt(path()) }}</span>
+      </button>
+    </li>
+  }
 </ul>
