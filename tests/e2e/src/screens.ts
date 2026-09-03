@@ -144,6 +144,15 @@ export async function pickDestination(
   }
 }
 
+/**
+ * Confirms the picker. The label names the verb since step 15a — «Accoda spostamento →» /
+ * «Accoda copia →» — so that a dialog whose only primary said «Accoda» could not be mistaken for
+ * the other operation; the specs here move, so the move label is the one they press.
+ */
+export async function confirmEnqueue(page: Page): Promise<void> {
+  await picker(page).getByRole('button', { name: 'Accoda spostamento →' }).click();
+}
+
 // ── Coda ──────────────────────────────────────────────────────────────────────────────────────
 
 /** One job row of the Coda, by the id the API gave the job. */

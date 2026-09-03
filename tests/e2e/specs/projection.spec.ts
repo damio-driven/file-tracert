@@ -2,6 +2,7 @@ import { expect, test } from '../src/fixtures.js';
 import { watchAndScanSandbox } from '../src/scenario.js';
 import {
   catalogVolume,
+  confirmEnqueue,
   crumb,
   fileRow,
   jobRow,
@@ -49,7 +50,7 @@ test.describe('Proiezione', () => {
     await page.getByRole('button', { name: 'Sposta selezionati…' }).click();
 
     await pickDestination(page, letter, [...sandbox.pathSegments, 'archivio']);
-    await page.getByRole('button', { name: 'Accoda →' }).click();
+    await confirmEnqueue(page);
     await expect(picker(page).locator('.enqueued-title')).toHaveText('1 operazione accodata');
     await picker(page).getByRole('button', { name: 'Chiudi' }).click();
 
@@ -108,7 +109,7 @@ test.describe('Proiezione', () => {
     await page.getByLabel('Seleziona foto-0002.jpg').check();
     await page.getByRole('button', { name: 'Sposta selezionati…' }).click();
     await pickDestination(page, letter, [...sandbox.pathSegments, 'archivio']);
-    await page.getByRole('button', { name: 'Accoda →' }).click();
+    await confirmEnqueue(page);
     await expect(picker(page).locator('.enqueued-title')).toHaveText('1 operazione accodata');
     await picker(page).getByRole('button', { name: 'Chiudi' }).click();
 
